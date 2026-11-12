@@ -615,7 +615,7 @@ analysis "Truck ride" {
   random: psd("truck", Z)                      // "truck" (ASTM D4169, 0.52 g rms), "navmat" (NAVMAT P-9492, 6.06 g rms) or psd([(20Hz, 0.01), (80Hz, 0.04), (350Hz, 0.04), (2000Hz, 0.007)], Z) in g²/Hz
   duration: 2h                                 // how long it is shaken (default: for good, 10⁷ cycles); finish: and reliability: set its S-N curve
 }
-modes: defaults to 12 here. A sweep shows the stresses and movement at the worst frequency (each spot at its own peak) with the response across the band; random shows 3σ stresses (RMS in the result) and Steinberg's three-band fatigue life. The safety factor is against the fatigue strength for the cycles shaken (default target 1.5); a life shorter than duration: fails. A warning says when the modes found reach too little of the band or move under 80 % of the mass: ask for more modes:.
+modes: defaults to 12 here. A sweep shows the stresses and movement at the worst frequency (each spot at its own peak) with the response across the band; random shows 3σ stresses (RMS in the result) and Steinberg's three-band fatigue life. The safety factor is against the fatigue strength for the cycles shaken (default target 1.5); a life shorter than duration: fails. A warning says when the modes found reach too little of the band, or move under 80 % of the mass and stop below twice the band's top: ask for more modes: (mass left out of modes well above the band sits in stiff parts that follow the table).
 Drops, knocks and tip-overs are held only by the floor they land on (no fix:, load:, gravity or excite:):
 analysis "Desk drop" {
   parts: [case, lid]

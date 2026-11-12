@@ -39,6 +39,12 @@ export interface ProcessSpec {
 
 export type Severity = "fail" | "warn";
 
+/** What a sheet() part's own forms are, so the sheet checks judge them as forms: each hem's inside radius, and the room each louvre takes (centre, unit axes, half sizes, in the part's own coordinates). */
+export interface SheetFormsRule {
+  hems: number[];
+  louvres: { c: V3; axes: [V3, V3, V3]; half: V3 }[];
+}
+
 /**
  * The numbers a part is checked against, resolved from the process, its
  * settings and the part's material. Absent sections are not checked.
@@ -82,7 +88,7 @@ export interface Rules {
   /** moulded composites: the laminate laid over the part's outer surface, mm, and its cured density, g/cm³ (and its plies, when the process gives them) */
   layup?: { wall: number; density: number; plies?: PlyBook };
   /** sheet metal: constant thickness t (null: measure), minimum inside bend radius */
-  sheet?: { t: number | null; bendR: number | null; bendFactor: number; holeEdge: number; brake?: number; maxT?: number };
+  sheet?: { t: number | null; bendR: number | null; bendFactor: number; holeEdge: number; brake?: number; maxT?: number; forms?: SheetFormsRule };
   /** profile cutting: a flat plate cut through along normal (null: find it) */
   profile?: { normal: V3 | null; t: number | null; maxT: number; minWeb: number };
   /** closed internal voids trap resin or powder */

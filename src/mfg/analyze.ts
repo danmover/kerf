@@ -1237,7 +1237,21 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
     if (Number.isFinite(th[s])) perFace[fi].push(th[s]);
     faceSamples[fi].push(s);
   }
-  const role: ("skin" | "edge" | "bad")[] = faces.map((f, i) => {
+  // a sheet() part's own forms are judged as forms: its louvres are pressed after the blank is cut (the design checks
+  // cover their room and depth), and its hems are folded back flat on purpose
+  const forms = sh.forms;
+  const inLouvre = (x: number, y: number, z: number) =>
+    !!forms?.louvres.some((b) => b.axes.every((a, k) => Math.abs((x - b.c[0]) * a[0] + (y - b.c[1]) * a[1] + (z - b.c[2]) * a[2]) <= b.half[k]));
+  const louvreFace = faces.map((f) => {
+    if (!forms?.louvres.length) return false;
+    for (let tri = f.start; tri < f.start + f.count; tri++) if (!inLouvre(c.tc[tri * 3], c.tc[tri * 3 + 1], c.tc[tri * 3 + 2])) return false;
+    return true;
+  });
+  const hemR = forms?.hems ?? [];
+  const about = (r: number, want: number) => Math.abs(r - want) <= Math.max(0.02, 0.05 * want);
+  const hemFace = faces.map((f) => f.type === "CYLINDRE" && !f.fullTurn && f.radius !== undefined && hemR.some((r) => about(f.radius!, r) || about(f.radius!, r + t)));
+  const role: ("skin" | "edge" | "bad" | "form")[] = faces.map((f, i) => {
+    if (louvreFace[i] || hemFace[i]) return "form";
     if (Math.abs(median(perFace[i]) - t) <= tol) return "skin";
     if (f.type === "CYLINDRE" && f.length !== undefined && Math.abs(f.length - t) <= tol) return "edge";
     if (f.type === "PLANE") {
@@ -1251,7 +1265,7 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
   });
   const flatBad = new Set<number>();
   faces.forEach((f, i) => {
-    if (f.type !== "PLANE" && f.type !== "CYLINDRE") flatBad.add(i);
+    if (role[i] !== "form" && f.type !== "PLANE" && f.type !== "CYLINDRE") flatBad.add(i);
   });
   if (flatBad.size) {
     out.push({
@@ -1289,7 +1303,7 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
   });
   const sharp = c.sharpEdges().filter((e) => e.concave && role[e.f1] === "skin" && role[e.f2] === "skin");
   const bendFaces = faces.filter((f, i) => f.type === "CYLINDRE" && f.concave && !f.fullTurn && role[i] === "skin").length;
-  stats.bends = bendFaces + chains(sharp);
+  stats.bends = bendFaces + chains(sharp) + hemR.length;
   if (tight.size || sharp.length) {
     const n = chains(sharp);
     out.push({
@@ -1307,6 +1321,29 @@ function sheet(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding[] {
     const bends = bendFaces;
     out.push({ rule: "bend-radius", status: "pass", title: bends ? `Bends R${fmt(bendR)} or more` : "Flat sheet", detail: bends ? `${plural(bends, "bend")}, all at a safe radius` : "No bends" });
   }
+  // hems: folded flat (closed) is fine in soft sheet and cracks along the fold in the hard alloys
+  if (hemR.length) {
+    const closed = hemR.filter((r) => r < 0.5 * t).length;
+    const open = hemR.length - closed;
+    const brittle = /6061|7075|2024|4140|A3[58]\d/.test(rules.material);
+    if (closed && brittle)
+      out.push({
+        rule: "hem",
+        status: "warn",
+        title: `${closed === 1 ? "A closed hem" : "Closed hems"} in ${rules.material}`,
+        detail: `${plural(closed, "hem")} ${closed === 1 ? "is" : "are"} folded back flat, and ${rules.material} cracks along a fold that tight.`,
+        fix: `Open ${closed === 1 ? "it" : "them"} into a teardrop with hem_gap: (at least ${fmt(t)} mm), or make the part from Aluminum 5052 or mild steel.`,
+      });
+    else
+      out.push({
+        rule: "hem",
+        status: "pass",
+        title: plural(hemR.length, "hem"),
+        detail: `${[closed ? `${plural(closed, "hem")} folded back flat` : "", open ? `${plural(open, "open hem")}` : ""].filter(Boolean).join(" and ")}: ${rules.material} takes ${closed ? "a closed hem" : "them"} without cracking, and each is two hits on the brake`,
+      });
+  }
+  const louvres = forms?.louvres.length ?? 0;
+  if (louvres) out.push({ rule: "louvre", status: "pass", title: plural(louvres, "louvre"), detail: "Pressed with a louvre tool after the blank is cut, so the flat is plain sheet there; the design checks cover the room round each and how deep it goes" });
   // the press brake: bend length and sheet thickness
   if (sh.brake && stats.bends) {
     let longest = 0;

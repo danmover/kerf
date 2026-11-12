@@ -6,6 +6,7 @@ import { evaluate } from "../src/lang/evaluator";
 import { KernelCore } from "../src/kernel/core";
 import { shapeValid } from "../src/kernel/profiles";
 import { sheetChecks } from "../src/core/sheetChecks";
+import { processProbes } from "../src/mfg/report";
 import type { Model } from "../src/core/model";
 import { initKernel } from "./helpers/kernel";
 
@@ -215,5 +216,32 @@ describe("hems in the sheet checks", () => {
   it("counts a hem's folded-back part as a strip to bend, and leaves a roll out", () => {
     const r = sheetChecks(evaluate(part('sheet(rect(100, 60), t: 1, flanges: [hem("front", 3), hem("back", roll: 2)])')));
     expect(r.find((i) => i.id === "sheet:flange:p")).toMatchObject({ status: "warn", detail: expect.stringMatching(/^the front hem is 3 mm:/) });
+  });
+});
+
+describe("the process checks on a sheet's forms", () => {
+  const box = (material: string) => `design "T"\npart p {\n  material: "${material}"\n  body sheet(rect(200, 120), t: 1.2, r: 1.2, flanges: [flange("front", 40, hem: 8), flange("back", 40, roll: 3), flange("left", 40), flange("right", 40)], louvres: [louvre(60, 6, 3, count: 3), louvre(40, 5, 2.5, on: "back", count: 2)])\n}\n`;
+  const findings = (src: string) => {
+    const model = evaluate(src);
+    expect(model.diagnostics.map((d) => d.message)).toEqual([]);
+    const p = model.parts[0];
+    const core = new KernelCore();
+    core.build({ hash: p.hash, recipe: p.recipe, label: p.label });
+    return core.process(processProbes(model, new Set([p.hash])))[0].findings;
+  };
+
+  it("judges hems and louvres as the forms they are, not as tight bends and odd walls", () => {
+    const f = findings(box("Aluminum 5052"));
+    expect(f.filter((x) => x.status === "fail").map((x) => x.title)).toEqual([]);
+    expect(f.find((x) => x.rule === "sheet-uniform")).toMatchObject({ status: "pass", title: "One 1.2 mm sheet" });
+    expect(f.find((x) => x.rule === "bend-radius")).toMatchObject({ status: "pass" });
+    expect(f.find((x) => x.rule === "hem")).toMatchObject({ status: "pass", title: "1 hem", detail: expect.stringMatching(/^1 hem folded back flat: Aluminum 5052 takes a closed hem/) });
+    expect(f.find((x) => x.rule === "louvre")).toMatchObject({ status: "pass", title: "5 louvres" });
+  });
+
+  it("warns of a closed hem in an alloy that cracks along it", () => {
+    const hem = findings(box("Aluminum 6061")).find((x) => x.rule === "hem")!;
+    expect(hem).toMatchObject({ status: "warn", title: "A closed hem in Aluminum 6061" });
+    expect(hem.fix).toMatch(/hem_gap: \(at least 1.2 mm\)/);
   });
 });

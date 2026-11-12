@@ -90,6 +90,8 @@ export interface SheetForm {
   near: string;
   /** flat left between it and the next louvre on the same face, mm */
   web?: number;
+  /** the room it takes on the bent part (slit, hood and cheeks, a little grown), for the process checks to leave out */
+  box: SheetBox;
 }
 
 /** A flat region of the bent part as an oriented box (centre, unit axes, half sizes), for collision checks. */
@@ -962,7 +964,16 @@ function buildSheet(baseProfile: Profile, o: SheetOpts, flanges: FlangeArgs[], e
     const rowY = (j: number) => (j - (lv.count - 1) / 2) * pitch;
     const place = (onName: string, fr: LvFrame, face: string, foot: P[], margin: number, near: string) => {
       numbered[onName] = (numbered[onName] ?? 0) + 1;
-      const form: SheetForm = { kind: "louvre", name: `${onName} louvre ${numbered[onName]}`, on: onName, c: fr.O, length: lv.length, width: lv.width, height: lv.height, margin, near };
+      const name = `${onName} louvre ${numbered[onName]}`;
+      // the slit and hood from the sheet's far face (Z −t) to the hood's top (Z height), grown a little
+      const F = lvFoot(lv.length, lv.width, t, 0.25 * t);
+      const box: SheetBox = {
+        name,
+        c: add3(fr.O, add3(mul3(fr.X, (F.x0 + F.x1) / 2), add3(mul3(fr.Y, (F.y0 + F.y1) / 2), mul3(fr.Z, (lv.height - t) / 2)))),
+        axes: [fr.X, fr.Y, fr.Z],
+        half: [(F.x1 - F.x0) / 2, (F.y1 - F.y0) / 2, (lv.height + t) / 2 + 0.25 * t],
+      };
+      const form: SheetForm = { kind: "louvre", name, on: onName, c: fr.O, length: lv.length, width: lv.width, height: lv.height, margin, near, box };
       lvAt.push({ fr, L: lv.length, w: lv.width, H: lv.height, face, foot, form });
     };
     const far = (here: string, margin: number, near: string) => {

@@ -349,7 +349,7 @@ export function shakeResponse(m: ShakeModel, ask: ShakeAsk, warnings: string[]):
       return s;
     });
     if (sh.hi > topFreq * 1.05 && k === m.shapes.length) warnings.push(`The modes found reach only ${fmtHz(topFreq)}, below the top of the sweep (${fmtHz(sh.hi)}), so higher frequencies are answered without the modes above that.`);
-    if (base && massShare < 0.8) warnings.push(`The modes found move ${Math.round(massShare * 100)} % of the mass along the shaking, so the answer is a little low; ask for more modes: (up to 12).`);
+    if (base) warnings.push(...missingMass(massShare, topFreq, sh.hi, m.shapes.length));
     // the nodes that work hardest or move most in each mode
     const candS = new Set<number>();
     const candD = new Set<number>();
@@ -565,7 +565,7 @@ export function shakeResponse(m: ShakeModel, ask: ShakeAsk, warnings: string[]):
   const lo = pts[0][0],
     hi = pts[pts.length - 1][0];
   if (hi > topFreq * 1.05 && k === m.shapes.length) warnings.push(`The modes found reach only ${fmtHz(topFreq)}, below the top of the spectrum (${fmtHz(hi)}), so the shaking above that is answered without the modes up there.`);
-  if (massShare < 0.8) warnings.push(`The modes found move ${Math.round(massShare * 100)} % of the mass along the shaking, so the answer is a little low; ask for more modes: (up to 12).`);
+  warnings.push(...missingMass(massShare, topFreq, hi, m.shapes.length));
   const { R, R2 } = modalCovariance(w, gam, zeta, pts);
   // R = V Λ Vᵀ: the response is the sum of k independent shapes Σⱼ √λₘ Vⱼₘ φⱼ, so RMS values add as squares
   const { val, vec } = symEigen(R, k);
@@ -687,6 +687,17 @@ export function shakeResponse(m: ShakeModel, ask: ShakeAsk, warnings: string[]):
     lifeAt: m.nodePos(worstN),
     lifeMaterial: m.materialAt(worstN),
   };
+}
+
+/**
+ * The share of the mass the modes found leave out matters only when they stop near the band: what they leave out
+ * then may answer inside it. Modes found to twice the band's top leave the rest to stiff parts (most of it next to
+ * the supports) that follow the table, as an analyst would take modes to 1.5–2 times the highest frequency shaken.
+ */
+export function missingMass(share: number, topFreq: number, bandTop: number, found: number): string[] {
+  if (share >= 0.8 || topFreq >= 2 * bandTop) return [];
+  const more = found < 12 ? "ask for more modes: (up to 12)" : "12 modes is the most Kerf finds, so allow a little margin";
+  return [`The modes found move ${Math.round(share * 100)} % of the mass along the shaking and reach only ${fmtHz(topFreq)}, so the answer is a little low; ${more}.`];
 }
 
 const fmtHz = (f: number) => `${f < 10 ? f.toFixed(2) : f < 100 ? f.toFixed(1) : Math.round(f)} Hz`;
