@@ -775,6 +775,12 @@ export function modelSummary(m: Model | null): string {
     const air = useAirflow.getState();
     lines.push("Analyses:\n" + m.analyses.map((x) => `  - ${analysisLine(x, a.runs.get(x.label), a.drivetrain.get(x.label), useDesign.getState().report?.items, air.runs.get(x.label), x.kind === "study" ? studyStatus(x) : undefined)}`).join("\n"));
   }
+  if (m.mates?.list.length) {
+    const how = (x: NonNullable<Model["mates"]>["list"][number]) =>
+      x.status === "ok" ? "holds" : x.status === "limit" ? `held at its limit${x.message ? `: ${x.message}` : ""}` : x.status === "waiting" ? "waiting for the kernel to list the parts' faces" : `cannot hold, left out: ${x.message ?? ""}`;
+    const free = m.mates.free.map((f) => `${f.body} ${f.words}`);
+    lines.push("Mates:\n" + m.mates.list.map((x) => `  - ${x.name}: ${x.kind}(${x.a}, ${x.b}) ${how(x)}`).join("\n") + (free.length ? `\n  What the mated parts can still do: ${free.join("; ")}` : ""));
+  }
   const errs = m.diagnostics.filter((d) => d.severity === "error");
   if (errs.length) lines.push("Source errors:\n" + errs.map((d) => `  - line ${lineCol(useDesign.getState().source, d.start).line}: ${d.message}`).join("\n"));
   const warns = m.diagnostics.filter((d) => d.severity === "warning");

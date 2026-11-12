@@ -1249,6 +1249,8 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
             {loadText(i)}
           </div>
         ))}
+        {spec.preload && <BoltsSetup spec={spec} r={r} />}
+        {(spec.touching || spec.preload) && <TouchingSetup spec={spec} r={r} />}
         {spec.accel && (
           <div>
             <span className="tag">accel</span>
@@ -1393,7 +1395,7 @@ function NotesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
             `Temperatures on a ${h} mm voxel grid. ${heat}`
           ) : (
             <>
-              Linear elastic analysis on a {h} mm voxel grid: small deflections, no contact or creep
+              Linear elastic analysis on a {h} mm voxel grid: small deflections, {spec.touching ? "contact only where touching: says (other touching parts glued)" : "no contact"} or creep
               {r.buckling ? "; buckling assumes a perfect shape, so real parts buckle somewhat sooner" : ", and buckling only when buckling: is set"}. {heat}
               {spec.thermal || spec.uniformTemp !== undefined ? " Hot plastics are softened and weakened at their temperature. " : ""}
               Peaks are smoothed at sharp corners and fillets smaller than a cell. Use it to compare designs and find weak spots; test a printed part before relying on it{spec.safety < 2 ? ", especially with a safety target under 2" : ""}.
@@ -2013,5 +2015,85 @@ function EmptyState() {
         </pre>
       </div>
     </div>
+  );
+}
+
+/** The preload: bolts of an analysis, with what each was tightened to and carries in the last result. */
+function BoltsSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) {
+  const p = spec.preload!;
+  const kN = (v: number) => (Math.abs(v) >= 1000 ? `${fmtNum(v / 1000, 2)} kN` : `${fmtNum(v, 0)} N`);
+  const how = (w: { force?: number; torque?: number }) => (w.force !== undefined ? `to ${kN(w.force)}` : w.torque !== undefined ? `by ${fmtNum(w.torque / 1000, 2)} N·m on its thread` : "as it usually is");
+  type B = NonNullable<StructuralResult["bolts"]>[number];
+  const line = (b: B) =>
+    !(b.preload > 0)
+      ? "left untightened"
+      : `${b.size}${b.grade ? ` ${b.grade}` : ""} into ${b.into}: ${kN(b.preload)} (${b.why}), ${kN(b.force)} under the loads${b.proof > 0 ? `, ${fmtNum((100 * b.force) / b.proof, 0)} % of its proof load` : ""}`;
+  const base = (b: B) => b.part.replace(/ #\d+$/, "");
+  const named = new Set(p.bolts.map((w) => w.part));
+  const others = r?.bolts?.filter((b) => !named.has(base(b))) ?? [];
+  return (
+    <>
+      {p.bolts.map((w, i) => {
+        const done = r?.bolts?.filter((b) => base(b) === w.part) ?? [];
+        return (
+          <div key={`b${i}`}>
+            <span className="tag">preload</span>
+            {w.part} · tightened {how(w)}
+            {done.length ? <span className="dim"> · {done.map((b) => `${done.length > 1 ? `${b.part}: ` : ""}${line(b)}`).join("; ")}</span> : null}
+          </div>
+        );
+      })}
+      {p.all && (
+        <div>
+          <span className="tag">preload</span>
+          {p.bolts.length ? "every other" : "every"} screw and bolt · tightened {how(p.all)}
+          {others.length ? <span className="dim"> · {others.map((b) => `${b.part}: ${line(b)}`).join("; ")}</span> : null}
+        </div>
+      )}
+    </>
+  );
+}
+
+/** The touching: pairs of an analysis (and the parts its tightened bolts clamp), with what each pressed, parted and slid in the last result. */
+function TouchingSetup({ spec, r }: { spec: StructuralSpec; r?: StructuralResult }) {
+  const t = spec.touching ?? { pairs: [] };
+  const how = (mu: number | "rough" | "glued", lift: boolean) => `${mu === "rough" ? "rough" : mu === "glued" ? "glued" : mu === 0 ? "frictionless" : `μ ${fmtNum(mu, 2)}`}${lift || mu === "glued" ? "" : ", never parting"}`;
+  const pc = (v: number) => `${fmtNum(v * 100, 0)} %`;
+  const res = (a: string, b: string) => r?.touching?.find((x) => (x.a === a && x.b === b) || (x.a === b && x.b === a));
+  const line = (x: NonNullable<StructuralResult["touching"]>[number]) =>
+    !x.cells
+      ? " · not touching"
+      : x.held
+        ? x.held === "apart"
+          ? " · pulled apart: held together for the answer"
+          : " · slides away: held for the answer"
+        : ` · pressed ${pc(x.pressed)}${x.open > 0.005 ? `, apart ${pc(x.open)}` : ""}${x.sliding > 0.005 ? `, sliding ${pc(x.sliding)}` : ""} · ${fmtNum(x.force, 1)} N, peak ${fmtNum(x.peak.value, 2)} MPa`;
+  const auto = r?.touching?.filter((x) => x.auto) ?? [];
+  return (
+    <>
+      {t.pairs.map((p, i) => {
+        const x = res(p.a, p.b);
+        return (
+          <div key={`t${i}`}>
+            <span className="tag">touching</span>
+            {p.a} and {p.b} · {how(p.mu, p.lift)}
+            {x ? <span className="dim">{line(x)}</span> : null}
+          </div>
+        );
+      })}
+      {t.all ? (
+        <div>
+          <span className="tag">touching</span>
+          every other pair that touches · {how(t.all.mu, t.all.lift)} (screws, nuts and inserts stay glued)
+          {auto.length ? <span className="dim"> · {auto.map((x) => `${x.a} and ${x.b}${line(x)}`).join("; ")}</span> : null}
+        </div>
+      ) : spec.preload ? (
+        <div>
+          <span className="tag">touching</span>
+          what the tightened bolts clamp · {how(0.3, true)}
+          {auto.length ? <span className="dim"> · {auto.map((x) => `${x.a} and ${x.b}${line(x)}`).join("; ")}</span> : null}
+        </div>
+      ) : null}
+    </>
   );
 }

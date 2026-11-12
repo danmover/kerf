@@ -4,6 +4,7 @@
 import type { MeshData } from "./build";
 import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, FromWorker, InspectRequest, InspectResult, ToWorker } from "./protocol";
 import type { PartInspection } from "./inspect";
+import type { FaceCatalogue } from "../core/mates";
 import type { V3, Xform } from "./recipe";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
@@ -311,6 +312,7 @@ export class KernelClient {
       case "projected":
       case "pick-measured":
       case "inspected":
+      case "faces":
       case "part-inspected":
       case "imported":
       case "measured": {
@@ -436,6 +438,11 @@ export class KernelClient {
   /** Detail inspection of built parts (sharp edges, support, walls), by geometry hash, for the design review. */
   inspect(hashes: string[]) {
     return this.value<Record<string, PartInspection | { error: string }>>("review", (s) => `Inspecting the parts ran for more than ${s} s, so Kerf stopped it.`, hashes, (jobId) => ({ type: "inspect", jobId, hashes }));
+  }
+
+  /** Built parts' flat and round faces in their own coordinates, by geometry hash, for mates. */
+  faceCatalogues(hashes: string[]) {
+    return this.value<Record<string, FaceCatalogue | { error: string }>>("inspect", (s) => `Listing the parts' faces ran for more than ${s} s, so Kerf stopped it.`, hashes, (jobId) => ({ type: "faces", jobId, hashes }));
   }
 
   /** Named features, sharp edges and selection matches of one part (in its own coordinates), for inspect_part. */

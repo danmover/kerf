@@ -3,9 +3,11 @@
 // sampled back onto the real CAD surface for display. Environment-agnostic
 // so it runs in the analysis worker and in Node tests.
 
-import { CORNERS, principal, vonMises, elementMatrices, elementMatricesFor, layeredConstitutive, type ElementMatrices } from "./element";
+import { CORNERS, constitutive, principal, vonMises, elementMatrices, elementMatricesFor, layeredConstitutive, type ElementMatrices } from "./element";
 import { infillStiffness, infillStrength, layerStiffness, type InfillPattern } from "../../mfg/infill";
-import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg, restiffen, type Hierarchy, type NodeSprings } from "./solver";
+import { applyK, buildHierarchy, coarseningPlan, makeLevel, pcg, restiffen, withFine, type Hierarchy, type NodeSprings } from "./solver";
+import { AXES, frictionStress, holdLoose, OPEN, OPEN_E, SLIP_G, STICK, touchLayer, touchResults, touchStates, type TouchLayer } from "./touching";
+import { boltLayout, boltStress, type BoltInfo, type BoltWant } from "./bolts";
 import { jacobiEigen } from "./dense";
 import { meshBounds, meshVolume, voxelizeMesh, type TriMesh, type V3 } from "./voxel";
 import { sampleInterior, type ResultVolume } from "./volume";
@@ -13,7 +15,7 @@ import { joulePower, solveCurrent, type CurrentGrid, type CurrentSolve } from ".
 import { rhoAt, type ElectricMaterial } from "../electricMaterials";
 import { amps, ohms } from "../thermalSummary";
 export type { ResultVolume } from "./volume";
-import type { ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec } from "../spec";
+import type { BoltResult, ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec, TouchingSpec, TouchResult } from "../spec";
 import { isoSurface, optimise, profileLoops, smoothSurface, surfaceStats, TopologyError, type Loop, type TopologyRun } from "./topology";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
@@ -38,6 +40,12 @@ export interface FeaPart {
   material: number;
   /** printed on an FDM printer: which way its layers stack and what is solid inside it */
   print?: PartPrint;
+  /** a fastener, nut or insert: stays glued under touching: "all" */
+  joining?: boolean;
+  /** a screw or bolt: where its head is and its size, to tighten it (preload) */
+  bolt?: BoltInfo;
+  /** a nut, threaded insert or standoff: what a screw's thread holds in */
+  threads?: "nut" | "insert";
 }
 
 /** How a printed part is printed, as the analysis models it. */
@@ -101,6 +109,10 @@ export interface StructuralInput {
   fatigue?: FatigueInput;
   /** topology optimisation: find the stiffest shape that keeps a share of the material, then analyse that shape */
   topology?: TopologySpec;
+  /** touching parts as contacts that press, part and slide, instead of glued where they touch */
+  touching?: TouchingSpec;
+  /** bolts tightened before the loads (each part by name); the parts they clamp touch as contacts unless touching: says */
+  preload?: BoltWant[];
 }
 
 /** Topology optimisation: the shape found, against the parts it was cut from. */
@@ -403,6 +415,10 @@ export interface StructuralResult {
   staticSafety?: SafetyAt & { nearBoundary: boolean; away: SafetyAt | null };
   /** topology optimisation: the parts are the shape found, and the stresses are that shape's */
   topology?: TopologyResult;
+  /** touching parts as contacts: what each pair presses, parts and slides */
+  touching?: TouchResult[];
+  /** tightened bolts: what each was tightened to and carries under the loads */
+  bolts?: BoltResult[];
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -454,6 +470,10 @@ const LAYER_SHEAR = 0.7;
 const PIN_STIFF = 100;
 /** rounds of the solve that finds where each pin presses on its bore */
 const PIN_ROUNDS = 10;
+/** most solves to settle where touching parts press, part and slide */
+const TOUCH_ROUNDS = 16;
+/** rounds for tightening the bolts before the loads (each tunes the prestress to the tension wanted) */
+const BOLT_ROUNDS = 12;
 const MAX_CELLS = 3_500_000;
 /** solid elements, about three times the "fine" target: beyond this memory and time grow past what a browser tab should spend */
 export const MAX_ELEMENTS = 350_000;
@@ -575,6 +595,15 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     if (!inp.loads.length) throw new FeaError("topology: needs loads to be stiff against: add load: force(...), pressure(...) or torque(...).");
     if (!(inp.topology.keep > 0 && inp.topology.keep < 1)) throw new FeaError("topology: is the share of the material to keep, between 0 % and 100 %, like topology: 30%.");
   }
+  if (inp.touching || inp.preload?.length) {
+    const other = inp.modes ? "natural frequencies" : inp.drop ? "a drop" : inp.buckling ? "buckling" : inp.fatigue ? "fatigue" : inp.topology ? "topology optimisation" : null;
+    if (other)
+      throw new FeaError(
+        inp.touching
+          ? `touching: lets touching parts press, part and slide under the loads, which ${other} cannot follow: check ${other} with the parts glued, in an analysis of its own.`
+          : `preload: tightens the bolts so the parts they clamp press together, part and slide, which ${other} cannot follow: check ${other} in an analysis of its own.`,
+      );
+  }
 
   // ---------- grid ----------
   // Cells fit the bounding box exactly (their size differs slightly per axis), so the outer faces of
@@ -659,6 +688,29 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     }
   }
   if (nActive < 8) throw new FeaError(`The parts are too small for ${fmt(h)} mm elements. Use a smaller element size, for example resolution: ${fmt(h / 3)}mm.`);
+
+  // ---------- bolts tightened before the loads: each shank stands free in its hole ----------
+  const boltL = inp.preload?.length
+    ? boltLayout(
+        { n: [nx, ny, nz], h: hv, origin, owner, active, fill },
+        inp.parts.map((p) => ({ name: p.name, ...(p.bolt ? { bolt: p.bolt } : {}), ...(p.threads ? { threads: p.threads } : {}), metal: inp.materials[p.material].E >= 40000, ...(p.joining ? { joining: true } : {}) })),
+        inp.preload,
+      )
+    : null;
+  const bolts = boltL?.bolts ?? [];
+  if (boltL) {
+    warnings.push(...boltL.warnings);
+    for (const e of boltL.freed)
+      if (active[e]) {
+        active[e] = 0;
+        nActive--;
+      }
+  }
+  /** each grid cell's bolt (by index), where it is a bolt's stretched free length, or −1 */
+  const boltOf = bolts.length ? new Int16Array(ne).fill(-1) : null;
+  bolts.forEach((b, i) => {
+    for (const e of b.grip) boltOf![e] = i;
+  });
   const tMesh = now();
 
   const eIndex = (i: number, j: number, k: number) => i + nx * (j + ny * k);
@@ -1354,24 +1406,25 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   /** the element matrices an element uses */
   const emOf = (e: number): ElementMatrices => (cls[e] ? classMats[cls[e] - 1] : em);
   const thermalStrain = (e: number) => (cellT ? inp.thermalMaterials![matOf(e)].alpha * (cellT[e] - refTemp) : 0);
+  const detJ = (hx * hy * hz) / 8;
+  const thvOf = new Map<ElementMatrices, Float64Array>();
+  /** an element's thermal load for a unit E·α·ΔT: Σ_g T_gᵀ·D·(1, 1, 1, 0, 0, 0)·V/8 */
+  const thermalLoad = (m: ElementMatrices) => {
+    let thv = thvOf.get(m);
+    if (thv) return thv;
+    const dv = new Float64Array(6);
+    for (let r = 0; r < 6; r++) dv[r] = m.D[r * 6] + m.D[r * 6 + 1] + m.D[r * 6 + 2];
+    thv = new Float64Array(24);
+    for (const T of m.strainGauss)
+      for (let j = 0; j < 24; j++) {
+        let s = 0;
+        for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
+        thv[j] += detJ * s;
+      }
+    thvOf.set(m, thv);
+    return thv;
+  };
   if (cellT) {
-    const detJ = (hx * hy * hz) / 8;
-    const thvOf = new Map<ElementMatrices, Float64Array>();
-    const thermalLoad = (m: ElementMatrices) => {
-      let thv = thvOf.get(m);
-      if (thv) return thv;
-      const dv = new Float64Array(6);
-      for (let r = 0; r < 6; r++) dv[r] = m.D[r * 6] + m.D[r * 6 + 1] + m.D[r * 6 + 2];
-      thv = new Float64Array(24);
-      for (const T of m.strainGauss)
-        for (let j = 0; j < 24; j++) {
-          let s = 0;
-          for (let r = 0; r < 6; r++) s += T[r * 24 + j] * dv[r];
-          thv[j] += detJ * s;
-        }
-      thvOf.set(m, thv);
-      return thv;
-    };
     for (let e = 0; e < ne; e++) {
       if (!active[e]) continue;
       const eth = thermalStrain(e);
@@ -1391,13 +1444,247 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // ---------- rigid-body check per held piece ----------
   checkHeld();
 
+  // ---------- touching parts: contacts that press, part and slide instead of glued ----------
+  // the parts tightened bolts clamp touch as contacts too, so the loads can part and slide them (with the friction
+  // touching: "all" gives, μ 0.3 otherwise; a pair touching: names keeps what it says)
+  const boltPairs: TouchingSpec["pairs"] = [];
+  {
+    const have = new Set<string>();
+    const named = (a: string, c: string) => inp.touching?.pairs.some((t) => (t.a === a && t.b === c) || (t.a === c && t.b === a));
+    for (const b of bolts)
+      for (const p of b.clamps)
+        for (const q of b.clamps) {
+          const a = inp.parts[p].name,
+            c = inp.parts[q].name;
+          if (a >= c || have.has(`${a}|${c}`) || named(a, c)) continue;
+          have.add(`${a}|${c}`);
+          boltPairs.push({ a, b: c, mu: inp.touching?.all?.mu ?? 0.3, lift: inp.touching?.all?.lift ?? true, auto: true });
+        }
+  }
+  const touchSpec: TouchingSpec | undefined = boltPairs.length ? { ...(inp.touching ?? {}), pairs: [...(inp.touching?.pairs ?? []), ...boltPairs] } : inp.touching;
+  const touch: TouchLayer | null = touchSpec ? touchLayer({ n: [nx, ny, nz], h: hv, origin, owner, active }, inp.parts.map((p) => ({ name: p.name, joining: p.joining })), touchSpec) : null;
+  if (touch) warnings.push(...touch.warnings);
+  const touchOn = !!touch && touch.cells.length > 0;
+  /** each grid cell's index in the contact layer, or −1 */
+  const layerIx = touchOn ? new Int32Array(ne).fill(-1) : null;
+  if (touch && layerIx) touch.cells.forEach((e, c) => (layerIx[e] = c));
+  /** each layer cell's own element class (stuck), and the sliding and parted ones by the way it faces */
+  const cls0 = touchOn ? Uint8Array.from(cls) : cls;
+  const touchCls = new Map<string, number>();
+  /**
+   * The element of a layer cell that is not stuck: sliding (bears across the faces, not along them), apart (only its
+   * own material along the faces), a ring cell sliding (bears only across the faces) or a ring cell apart (empty).
+   */
+  const touchClass = (axis: number, kind: "slide" | "apart" | "ring" | "void") => {
+    const k = kind === "void" ? kind : `${kind}|${axis}`;
+    let c = touchCls.get(k);
+    if (c === undefined) {
+      const ax = AXES[axis];
+      let D: Float64Array;
+      if (kind === "void") D = constitutive(nu).map((v) => v * OPEN_E);
+      else if (kind === "ring") D = layeredConstitutive(0, 1 / OPEN_E, SLIP_G / OPEN_E, ax).map((v) => v * OPEN_E);
+      else D = layeredConstitutive(nu, kind === "apart" ? OPEN_E : 1, SLIP_G, ax);
+      classMats.push(elementMatricesFor(D, `touch|${nu}|${k}|${ax.map((x) => x.toFixed(4)).join(",")}`, nu, hx, hy, hz));
+      c = classMats.length;
+      touchCls.set(k, c);
+    }
+    return c;
+  };
+  /** loads from the touching faces: the friction sliding faces carry, and the thermal push parted faces lose */
+  let fT: Float64Array | null = null;
+  const sg0 = new Float64Array(6);
+  const applyTouch = () => {
+    if (!touch || !touchOn) return;
+    fT ??= new Float64Array(3 * nn);
+    fT.fill(0);
+    for (let c = 0; c < touch.cells.length; c++) {
+      const e = touch.cells[c];
+      const st = touch.state[c];
+      cls[e] = st === STICK ? cls0[e] : touchClass(touch.axis[c], touch.ring[c] ? (st === OPEN ? "void" : "ring") : st === OPEN ? "apart" : "slide");
+      const me = emOf(e);
+      const n0 = elemNode0(e);
+      if (frictionStress(touch, c, sg0)) {
+        // the friction it carries as a stress σ0: f = −fill·Σ_g T_gᵀ·σ0·V/8
+        for (const T of me.strainGauss)
+          for (let j = 0; j < 24; j++) {
+            let v = 0;
+            for (let r = 0; r < 6; r++) v += T[r * 24 + j] * sg0[r];
+            fT[3 * (n0 + off[j / 3 | 0]) + (j % 3)] -= fill[e] * detJ * v;
+          }
+      }
+      const eth = thermalStrain(e);
+      if (eth && cls[e] !== cls0[e]) {
+        // the thermal load was made with the stuck element: correct it to the one in use
+        const t1 = thermalLoad(me);
+        const t0 = thermalLoad(cls0[e] ? classMats[cls0[e] - 1] : em);
+        const k = inp.materials[matOf(e)].E * kfac[e] * kPrint[e] * fill[e] * eth;
+        for (let j = 0; j < 24; j++) fT[3 * (n0 + off[j / 3 | 0]) + (j % 3)] += k * (t1[j] - t0[j]);
+      }
+    }
+  };
+  /** the force each layer cell takes from the other part, through the nodes it shares with that part's cells (3 per cell) */
+  const touchForces = (uu: Float64Array) => {
+    const T = touch!;
+    const L = T.cells.length;
+    const F = new Float64Array(3 * L);
+    const ue = new Float64Array(24),
+      fe = new Float64Array(24);
+    const other = T.pairs.map((pr) => new Set(pr.other));
+    for (let c = 0; c < L; c++) {
+      const e = T.cells[c];
+      const me = emOf(e);
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) {
+        const d = 3 * (n0 + off[a]);
+        ue[3 * a] = uu[d];
+        ue[3 * a + 1] = uu[d + 1];
+        ue[3 * a + 2] = uu[d + 2];
+      }
+      // its nodal forces: K·u, with the friction it carries and less its free thermal expansion
+      const sK = dense[e];
+      for (let i = 0; i < 24; i++) {
+        let v = 0;
+        for (let j = 0; j < 24; j++) v += me.K[i * 24 + j] * ue[j];
+        fe[i] = sK * v;
+      }
+      if (frictionStress(T, c, sg0))
+        for (const G of me.strainGauss)
+          for (let j = 0; j < 24; j++) {
+            let v = 0;
+            for (let r = 0; r < 6; r++) v += G[r * 24 + j] * sg0[r];
+            fe[j] += fill[e] * detJ * v;
+          }
+      const eth = thermalStrain(e);
+      if (eth) {
+        const thv = thermalLoad(me);
+        const k = inp.materials[matOf(e)].E * kfac[e] * kPrint[e] * fill[e] * eth;
+        for (let j = 0; j < 24; j++) fe[j] -= k * thv[j];
+      }
+      // the corners it shares with a cell of the other part
+      const set = other[T.pair[c]];
+      const i0 = e % nx,
+        j0 = Math.floor(e / nx) % ny,
+        k0 = Math.floor(e / (nx * ny));
+      for (let a = 0; a < 8; a++) {
+        const ci = i0 + (a & 1),
+          cj = j0 + ((a >> 1) & 1),
+          ck = k0 + ((a >> 2) & 1);
+        let shared = false;
+        for (let q = 0; q < 8 && !shared; q++) {
+          const ii = ci - (q & 1),
+            jj = cj - ((q >> 1) & 1),
+            kk = ck - ((q >> 2) & 1);
+          if (ii < 0 || jj < 0 || kk < 0 || ii >= nx || jj >= ny || kk >= nz) continue;
+          const f = ii + nx * (jj + ny * kk);
+          if (active[f] && set.has(owner[f])) shared = true;
+        }
+        if (!shared) continue;
+        F[3 * c] += fe[3 * a];
+        F[3 * c + 1] += fe[3 * a + 1];
+        F[3 * c + 2] += fe[3 * a + 2];
+      }
+    }
+    return F;
+  };
+  /** each layer cell's stress (with the friction it carries) and its strain less thermal expansion, at its centre */
+  const touchFields = (uu: Float64Array) => {
+    const L = touch!.cells.length;
+    const S = new Float64Array(6 * L),
+      E = new Float64Array(6 * L);
+    const ue = new Float64Array(24),
+      eps = new Float64Array(6);
+    for (let c = 0; c < L; c++) {
+      const e = touch!.cells[c];
+      const me = emOf(e);
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) {
+        const d = 3 * (n0 + off[a]);
+        ue[3 * a] = uu[d];
+        ue[3 * a + 1] = uu[d + 1];
+        ue[3 * a + 2] = uu[d + 2];
+      }
+      const eth = thermalStrain(e);
+      for (let r = 0; r < 6; r++) {
+        let v = 0;
+        for (let j = 0; j < 24; j++) v += me.strainCenter[r * 24 + j] * ue[j];
+        eps[r] = r < 3 ? v - eth : v;
+        E[6 * c + r] = eps[r];
+      }
+      const Ee = inp.materials[matOf(e)].E * kfac[e] * kPrint[e];
+      for (let r = 0; r < 6; r++) {
+        let v = 0;
+        for (let q = 0; q < 6; q++) v += me.D[r * 6 + q] * eps[q];
+        S[6 * c + r] = Ee * v;
+      }
+      if (frictionStress(touch!, c, sg0)) for (let r = 0; r < 6; r++) S[6 * c + r] += sg0[r];
+    }
+    return { S, E };
+  };
+
+  /** the tightened bolts' prestress, as loads on the nodes: f = −fill·Σ_g T_gᵀ·σ0·V/8 over each free length */
+  let fB: Float64Array | null = null;
+  const sgB = new Float64Array(6);
+  const boltLoads = () => {
+    if (!bolts.length) return;
+    fB ??= new Float64Array(3 * nn);
+    fB.fill(0);
+    for (const b of bolts) {
+      if (!(b.p !== 0)) continue;
+      boltStress(b, sgB);
+      for (const e of b.grip) {
+        const me = emOf(e);
+        const n0 = elemNode0(e);
+        for (const T of me.strainGauss)
+          for (let j = 0; j < 24; j++) {
+            let v = 0;
+            for (let r = 0; r < 6; r++) v += T[r * 24 + j] * sgB[r];
+            fB[3 * (n0 + off[(j / 3) | 0]) + (j % 3)] -= fill[e] * detJ * v;
+          }
+      }
+    }
+  };
+  /** the tension in a bolt, N: the stress along it (with its prestress) over its free length, as a force across it */
+  const boltForce = (bi: number, uu: Float64Array) => {
+    const b = bolts[bi];
+    const [a0, a1, a2] = b.axis;
+    const ue = new Float64Array(24),
+      eps = new Float64Array(6);
+    let s = 0;
+    for (const e of b.grip) {
+      const me = emOf(e);
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) {
+        const d = 3 * (n0 + off[a]);
+        ue[3 * a] = uu[d];
+        ue[3 * a + 1] = uu[d + 1];
+        ue[3 * a + 2] = uu[d + 2];
+      }
+      const eth = thermalStrain(e);
+      for (let r = 0; r < 6; r++) {
+        let v = 0;
+        for (let j = 0; j < 24; j++) v += me.strainCenter[r * 24 + j] * ue[j];
+        eps[r] = r < 3 ? v - eth : v;
+      }
+      const Ee = inp.materials[matOf(e)].E * kfac[e] * kPrint[e];
+      const sig = new Float64Array(6);
+      for (let r = 0; r < 6; r++) {
+        let v = 0;
+        for (let q = 0; q < 6; q++) v += me.D[r * 6 + q] * eps[q];
+        sig[r] = Ee * v;
+      }
+      const saa = sig[0] * a0 * a0 + sig[1] * a1 * a1 + sig[2] * a2 * a2 + 2 * (sig[3] * a0 * a1 + sig[4] * a1 * a2 + sig[5] * a2 * a0);
+      s += fill[e] * (saa + b.p) * hx * hy * hz;
+    }
+    return s / b.length;
+  };
+
   // ---------- solve ----------
   progress("Setting up the solver", 0.22);
   const dense = new Float64Array(ne);
   for (let e = 0; e < ne; e++) if (active[e]) dense[e] = inp.materials[matOf(e)].E * fill[e] * kfac[e] * kPrint[e];
   // ---------- topology optimisation: the shape to keep, which the rest of the analysis then checks ----------
   const topo = inp.topology ? shapeFor(inp.topology) : null;
-  const fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], classMats.length ? { cls, mats: classMats } : undefined, springs);
+  let fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], classMats.length ? { cls, mats: classMats } : undefined, springs);
   let H = buildHierarchy(fine, plan.shifts, nu);
   const fs = Float64Array.from(f);
   for (let i = 0; i < fs.length; i++) if (!fine.free[i]) fs[i] = 0;
@@ -1461,12 +1748,23 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
   /** the loads, less what a region moved a set distance pulls on the rest (the moved dofs then join the answer) */
+  /** tightening the bolts: their prestress (and the friction it makes) is all that loads the parts */
+  let preloadOnly = false;
   const rhs = (): Float64Array => {
-    if (!uSet) return fs;
+    if (preloadOnly) {
+      const out = new Float64Array(3 * nn);
+      for (let i = 0; i < out.length; i++) if (fine.free[i]) out[i] = (fB ? fB[i] : 0) + (fT ? fT[i] : 0);
+      return out;
+    }
+    if (!uSet && !fT && !fB) return fs;
+    const out = Float64Array.from(fs);
+    // what touching faces carry (friction along sliding faces), and the tightened bolts' prestress
+    if (fT) for (let i = 0; i < out.length; i++) if (fine.free[i]) out[i] += fT[i];
+    if (fB) for (let i = 0; i < out.length; i++) if (fine.free[i]) out[i] += fB[i];
+    if (!uSet) return out;
     const g = new Float64Array(3 * nn);
     applyK(fine, uSet, g, false);
-    const out = new Float64Array(3 * nn);
-    for (let i = 0; i < out.length; i++) out[i] = fine.free[i] ? fs[i] - g[i] : 0;
+    for (let i = 0; i < out.length; i++) out[i] = fine.free[i] ? out[i] - g[i] : 0;
     return out;
   };
   const solveOnce = (stage: string, x0?: Float64Array, to = tol) =>
@@ -1484,36 +1782,166 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const freePins = reverses ? [] : pinSprings.filter((p) => !inp.supports[p.sup].pin!.tight);
   if (reverses && pinSprings.some((p) => !inp.supports[p.sup].pin!.tight)) warnings.push("The loads reverse, so each pin is taken as fitting its bore all round (a pin with clearance bears on one side, then the other).");
   const rough = Math.max(tol, 1e-4);
-  let { u, stats } = solveOnce("Solving", undefined, freePins.length ? rough : tol);
+  const settles = freePins.length > 0 || touchOn;
+  // ---------- tightening the bolts, before the loads ----------
+  // The bolts alone load the parts: solve, set each bolt's prestress to give the tension wanted (the answer scales
+  // with it), let the faces it clamps settle, and again until both hold still. The loads then go on with the
+  // prestress kept, as a tightened bolt keeps its stretch, so its tension changes with what the joint does.
+  let uPre: Float64Array | undefined;
+  let boltRounds = 0;
+  if (bolts.length) {
+    preloadOnly = true;
+    boltLoads();
+    let settledB = false;
+    for (; boltRounds < BOLT_ROUNDS; boltRounds++) {
+      // closer than the rough rounds of the contacts: the tension is read off this answer
+      const s = solveOnce(`Tightening the bolts${boltRounds ? ` (round ${boltRounds + 1})` : ""}`, uPre, Math.max(tol, 1e-5));
+      uPre = s.u;
+      let change = 0;
+      let few = true;
+      if (touchOn) {
+        const { S, E } = touchFields(uPre);
+        const st = touchStates(touch!, S, E);
+        few = st.changed <= Math.max(2, 0.05 * touch!.cells.length);
+        if (st.changed || st.moved > 0.02) {
+          change += st.changed + (st.moved > 0.02 ? 1 : 0);
+          applyTouch();
+          fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], { cls, mats: classMats }, springs);
+          H = withFine(H, fine, nu);
+        }
+      }
+      let wrong = 0;
+      bolts.forEach((b, i) => {
+        if (b.p === 0) return;
+        const N = boltForce(i, uPre!);
+        if (!(N > 1e-6 * b.target)) {
+          warnings.push(`preload: ${b.label} pulls on nothing that resists it, so it is left untightened; check its head bears on a part and its thread goes into one.`);
+          b.p = 0;
+          wrong++;
+          return;
+        }
+        const r = b.target / N;
+        if (Math.abs(r - 1) > 2e-3) {
+          b.p *= r;
+          wrong++;
+        }
+      });
+      if (!change && !wrong) {
+        settledB = true;
+        break;
+      }
+      boltLoads();
+      // a few cells still switching at the edge of a clamped patch, with the bolts where they should be, is settled
+      if (!wrong && few && boltRounds > 1) {
+        settledB = true;
+        break;
+      }
+    }
+    if (!settledB) warnings.push(`Tightening the bolts had not quite settled after ${BOLT_ROUNDS} rounds; their tensions may be a little off what was asked.`);
+    preloadOnly = false;
+  }
+  let { u, stats } = solveOnce("Solving", uPre, settles ? rough : tol);
   let pinRounds = 1;
-  if (freePins.length && stats.iterations > 0) {
+  let touchSettled = true;
+  if (settles && stats.iterations > 0) {
+    // Pins that bear on one side, and touching faces that press, part or slide: switch each by the last solve and
+    // solve again (roughly) until nothing switches, then once more to the full accuracy. The first solve has every
+    // touching face stuck, as glued; a part a contact lets go entirely moves far more than that.
     let iterations = stats.iterations;
     let settled = false;
-    for (; pinRounds < PIN_ROUNDS; pinRounds++) {
-      let changed = 0;
+    const umax = (v: Float64Array) => {
+      let m = 0;
+      for (let n = 0; n < nn; n++) m = Math.max(m, Math.hypot(v[3 * n], v[3 * n + 1], v[3 * n + 2]));
+      return m;
+    };
+    const u0 = umax(u);
+    let uLast = u0;
+    const rounds = touchOn ? TOUCH_ROUNDS : PIN_ROUNDS;
+    for (; pinRounds < rounds; pinRounds++) {
+      let pinChange = 0;
       for (const p of freePins) {
         const n = p.node;
         const ur = u[3 * n] * p.rho[0] + u[3 * n + 1] * p.rho[1] + u[3 * n + 2] * p.rho[2];
         const on = p.side * ur > 0;
         if (on !== p.on) {
           p.on = on;
-          changed++;
+          pinChange++;
         }
       }
-      if (!changed) {
+      let touchChange = 0;
+      let creeping = false;
+      if (touchOn) {
+        const { S, E } = touchFields(u);
+        const um = umax(u);
+        if (um > 200 * u0 && um > 1e-4 * diag) touchChange += holdLoose(touch!, S, E, um);
+        const st = touchStates(touch!, S, E);
+        // a few cells still switching at the edge of a contact while nothing else moves is settled enough: where two
+        // parts bend alike the faces carry next to nothing either way, and the edge creeps a cell or two each round
+        creeping = pinRounds > 2 && st.changed <= Math.max(2, 0.05 * touch!.cells.length) && Math.abs(um - uLast) <= 1e-3 * um;
+        uLast = um;
+        touchChange += st.changed + (st.moved > 0.02 ? 1 : 0);
+      }
+      if (!pinChange && !touchChange) {
         settled = true;
         break;
       }
-      // the springs changed: the coarse grids and smoothers follow them
-      assembleSprings();
-      H = buildHierarchy(fine, plan.shifts, nu);
-      ({ u, stats } = solveOnce(`Solving where the pins bear (round ${pinRounds + 1})`, u, rough));
+      if (pinChange) assembleSprings();
+      if (touchChange) {
+        applyTouch();
+        fine = makeLevel(nx, ny, nz, hv, nu, dense, bc, [0, 0, 0], { cls, mats: classMats }, springs);
+      }
+      // the springs changed: the coarse grids and smoothers follow them; contacts change only the fine grid's elements
+      H = pinChange ? buildHierarchy(fine, plan.shifts, nu) : withFine(H, fine, nu);
+      // the last few switches go into the final solve
+      if (creeping && !pinChange) {
+        settled = true;
+        break;
+      }
+      ({ u, stats } = solveOnce(touchOn ? `Solving where the parts touch (round ${pinRounds + 1})` : `Solving where the pins bear (round ${pinRounds + 1})`, u, rough));
       iterations += stats.iterations;
     }
-    if (!settled) warnings.push(`Where the pins bear on their bores had not quite settled after ${PIN_ROUNDS} rounds; the stress next to them may be a little off.`);
+    if (!settled) {
+      if (touchOn) touchSettled = false;
+      warnings.push(
+        touchOn
+          ? `Where the parts touch (what presses, parts and slides) had not quite settled after ${rounds} rounds; the stress next to the contacts may be a little off.`
+          : `Where the pins bear on their bores had not quite settled after ${PIN_ROUNDS} rounds; the stress next to them may be a little off.`,
+      );
+    }
     ({ u, stats } = solveOnce("Solving", u));
     stats = { ...stats, iterations: iterations + stats.iterations };
   }
+  /** what each contact carries */
+  const touching: TouchResult[] | undefined = touch?.pairs.length
+    ? (() => {
+        const { S, E } = touchOn ? touchFields(u) : { S: new Float64Array(0), E: new Float64Array(0) };
+        const centre = (e: number): V3 => [origin[0] + ((e % nx) + 0.5) * hx, origin[1] + ((Math.floor(e / nx) % ny) + 0.5) * hy, origin[2] + (Math.floor(e / (nx * ny)) + 0.5) * hz];
+        // a pair found for a bolt that does not touch (a spacer between them) is not a contact
+        const all = touchResults(touch, S, E, touchOn ? touchForces(u) : new Float64Array(0), centre, pinRounds, touchSettled).filter((t) => t.cells > 0 || !t.auto);
+        return all.length ? all : undefined;
+      })()
+    : undefined;
+  /** what each tightened bolt was tightened to and carries under the loads */
+  const boltResults: BoltResult[] | undefined = bolts.length
+    ? bolts.map((b, i) => {
+        const force = b.p === 0 ? 0 : boltForce(i, u);
+        return {
+          part: b.label,
+          size: b.size,
+          ...(b.grade ? { grade: b.grade } : {}),
+          preload: b.p === 0 ? 0 : b.target,
+          why: b.why,
+          force,
+          area: b.area,
+          stress: force / b.area,
+          proof: b.proof,
+          grip: b.length,
+          into: inp.parts[b.into].name,
+          soft: b.soft,
+          clamps: b.clamps.filter((c) => c !== b.into).map((c) => inp.parts[c].name),
+        };
+      })
+    : undefined;
   if (uSet) for (let i = 0; i < u.length; i++) if (uSet[i]) u[i] = uSet[i];
   if (stats.residual > UNRELIABLE_RESIDUAL) warnings.push(`The solver did not converge (relative residual ${stats.residual.toExponential(1)} after ${stats.iterations} iterations), so these numbers are unreliable. Check that supports hold every part, or try another resolution.`);
   else if (!stats.converged) warnings.push(`The solver stopped at a relative residual of ${stats.residual.toExponential(1)} after ${stats.iterations} iterations; results may be off by a few percent.`);
@@ -1610,6 +2038,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // reactions: full K·u at held dofs
   const Ku = new Float64Array(3 * nn);
   applyK(fine, u, Ku, false);
+  // the friction sliding faces carry pushes on the nodes too
+  if (fT) for (let i = 0; i < Ku.length; i++) Ku[i] -= fT[i];
+  // and the tightened bolts' prestress, which pulls on the nodes inside them
+  if (fB) for (let i = 0; i < Ku.length; i++) Ku[i] -= fB[i];
   const reaction: V3 = [0, 0, 0];
   /** the force springs push back on the body with */
   const springPush: V3 = [0, 0, 0];
@@ -1676,13 +2108,16 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   });
   for (let n = 0; n < nn; n++) for (let d = 0; d < 3; d++) if (bc[3 * n + d] && fine.free[3 * n + d] === 0 && Ku[3 * n + d] !== 0) reaction[d] += Ku[3 * n + d] - f[3 * n + d];
   for (let d = 0; d < 3; d++) reaction[d] += springPush[d];
-  const appliedMag = Math.hypot(...applied) || 1;
+  // the bolts' tension loads the parts too (inside them, so it adds nothing to the balance but what the solve leaves)
+  const appliedMag = Math.hypot(...applied) + bolts.reduce((t, b) => t + (b.p !== 0 ? b.target : 0), 0) || 1;
   const equilibrium = Math.hypot(applied[0] + reaction[0], applied[1] + reaction[1], applied[2] + reaction[2]) / appliedMag;
 
   // ---------- stress recovery ----------
   const nodeS = new Float64Array(6 * nn);
   const nodeE = new Float64Array(6 * nn);
   const nodeW = new Float64Array(nn);
+  /** strain weights: as nodeW, without the layer cells of sliding or parted contacts (their strain is the slide or the gap) */
+  const nodeWE = touchOn ? new Float64Array(nn) : null;
   const nodeMat = new Int16Array(nn).fill(-1);
   const nodeMatW = new Float32Array(nn);
   /** the part that has the most of each node, and the share of the solid's strength there (a printed part's infill is weaker) */
@@ -1721,6 +2156,16 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
         sg[6 * g + r] = Ee * s;
       }
     }
+    // a contact layer cell: the friction it carries along sliding faces, and no strain of its own while it slides or is apart
+    const lc = layerIx ? layerIx[e] : -1;
+    if (lc >= 0 && frictionStress(touch!, lc, sg0)) for (let g = 0; g < 8; g++) for (let r = 0; r < 6; r++) sg[6 * g + r] += sg0[r];
+    // a tightened bolt's free length: the tension it was stretched to
+    const bi = boltOf ? boltOf[e] : -1;
+    if (bi >= 0) {
+      boltStress(bolts[bi], sgB);
+      for (let g = 0; g < 8; g++) for (let r = 0; r < 6; r++) sg[6 * g + r] += sgB[r];
+    }
+    const loose = lc >= 0 && touch!.state[lc] !== STICK;
     if (cellList && cellStress && cellN < cellList.length) {
       cellList[cellN] = e;
       for (let r = 0; r < 6; r++) {
@@ -1742,9 +2187,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
           t += x * eg[6 * g + r];
         }
         nodeS[6 * n + r] += w * s;
-        nodeE[6 * n + r] += w * t;
+        if (!loose) nodeE[6 * n + r] += w * t;
       }
       nodeW[n] += w;
+      if (nodeWE && !loose) nodeWE[n] += w;
       nodeStr[n] += w * sPrint[e];
       if (w > nodeMatW[n]) {
         nodeMatW[n] = w;
@@ -1821,9 +2267,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     const w = nodeW[n];
     if (!(w > 0)) continue;
     const o = 6 * n;
+    const wE = nodeWE ? nodeWE[n] || 1 : w;
     for (let r = 0; r < 6; r++) {
       nodeS[o + r] /= w;
-      nodeE[o + r] /= w;
+      nodeE[o + r] /= wE;
     }
     const str = Math.min(1, nodeStr[n] / w);
     strN[n] = str;
@@ -1911,6 +2358,10 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     iFtA = -1,
     iLife = -1;
   let dMax = 0;
+  // a tightened bolt is judged by its tension against its proof load (it is meant to be stretched near it, and its
+  // thread yields a little where it starts, as real ones do), not by the peak stress in its voxels
+  const tightPart = bolts.length ? new Uint8Array(inp.parts.length) : null;
+  for (const b of bolts) if (b.p !== 0) tightPart![b.part] = 1;
   for (let n = 0; n < nn; n++) {
     if (!(nodeW[n] > 0)) continue;
     const d = Math.hypot(u[3 * n], u[3 * n + 1], u[3 * n + 2]);
@@ -1918,6 +2369,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       dMax = d;
       iD = n;
     }
+    if (tightPart && nodePart[n] >= 0 && tightPart[nodePart[n]]) continue;
     if (iS < 0 || vm[n] > vm[iS]) iS = n;
     if (iE < 0 || Math.abs(strainN[n]) > Math.abs(strainN[iE])) iE = n;
     if (iF < 0 || sfN[n] < sfN[iF]) iF = n;
@@ -2311,6 +2763,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ...(heat ? { thermal: { ...heat.result, refTemp } } : nodeT ? { thermal: uniformThermal(nodeT, refTemp) } : {}),
     ...(buckling ? { buckling } : {}),
     ...(fatigue ? { fatigue, staticSafety } : {}),
+    ...(touching ? { touching } : {}),
+    ...(boltResults ? { bolts: boltResults } : {}),
   };
 
   // ----- helpers that need the closure -----

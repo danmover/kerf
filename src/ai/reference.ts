@@ -287,6 +287,7 @@ let name = expr                                              // derived values: 
 interface name { field = expr, ... }                          // named contract between parts (screw size, boss size); read as name.field
 component name = lib.kind(args) { props and flags }           // standard parts from the library, and purchasable catalog parts
 part name { props, body/add/cut/intersect shapes, modifiers, for/if/let }   // custom solid
+mate name = against(face(a, -Z), face(b, +Z))                 // how two parts meet: the first moves to meet the second (see Mates); after both parts
 frame name { profile: "2020", box: (w, d, h) or path: [...] }   // structural members along lines (2020 extrusion, steel box, tube, angle), trimmed where they meet, with a cut list (see Frames and weldments)
 require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
 brief { ... }                                                 // the design brief, once, near the top (see below)
@@ -443,6 +444,17 @@ Component fields are world-space after placement (motor.holes is a list of world
 
 ${lib}
 
+## Mates
+Place a part by how it meets another instead of working out its at: and rotate:. Mates come after the parts they join, and the part can be drawn roughly where it goes:
+part lid { at: (0, 0, 60) body box(80, 50, 4) }
+mate seat = against(face(lid, -Z), face(box, +Z))        // the lid's bottom face on the box's top face
+mate front = flush(face(lid, -Y), face(box, -Y))         // front faces level
+mate hinge = pin(axis(lid, d: 3), axis(box, d: 3))       // in line with the box's 3 mm hinge holes, centred along them
+mate stop = angle(face(lid, +Z), face(box, +Z), min: 0deg, max: 110deg)   // free to open between these
+What a mate holds by: face(part, -Z) (the flat face facing that way, the one farthest out that way; near: (x, y, z) takes the face nearest a point instead), axis(part, d: 5) (the axis of a round face: a hole, shaft, boss or countersink; d: its diameter, near: a point by it and along: its direction tell them apart; axis(part, at: (x, y, z), dir: Z) is a line fixed to the part), point(part, (x, y, z)), plane(part, at: (x, y, z), normal: +Z) (a centre plane or datum the part has no face on). Every point is where the part is drawn. Parts and components can be mated; mate one instance of a pattern on its own.
+Kinds: against (two flat faces touching, facing each other; gap: leaves a space), flush (level, facing the same way; offset:), concentric (two axes in line: it can still turn and slide), pin (in line and centred along each other: it can still turn; offset:), parallel, perpendicular, angle (two faces or two axes, an angle or min:/max:), distance (faces, axes or points, mm or min:/max:), tangent (a flat face on a round one, or two round ones), coincident (two points, a point on a face or an axis, two faces in one plane or two axes in line), rigid(a, b) (fastened together: a moves with b). Joints by their usual names: revolute (= pin: only turns), slider (two axes in line and kept from turning: only slides, e.g. slider(axis(carriage, d: 8), axis(rail, d: 8)); give travel with distance(..., min:, max:)), cylindrical (= concentric), planar (two faces in one plane: slides on it and turns about its normal; offset:), ball (two points together: turns every way).
+The first part named moves to meet the second, which stays where it is drawn unless its own mates move it; parts are solved from the ones nothing moves, and parts that move each other are solved together. Each part moves as little as it can, so whatever its mates leave free (a hinge's turn, a carriage's slide) stays as drawn: draw a lid open to show it open, and the user can drag it in the 3D view. A mate that cannot hold with the mates before it is left out and reported with how far off it is (fix or remove one of the two); a part held at a min:/max: is noted. Each part's mates, and what it can still do in words, are in the design's mates. Fields of a mated component (motor.holes, a shaft's axis) read by the design stay where it is drawn, so place a component that other parts are cut from with at: and mate those parts to it. Mates place parts for the checks, drawings and exports; spin:, swings: and links: still drive the mechanism.
+
 ## Frames and weldments
 frame stand {
   profile: "2020"               // "2020" or "2040" V-slot (bought, cut square, joined with corner brackets: call place_fasteners after), or a welded section: "box 40x40x3" (width x height x wall), "tube 26.9x2.6" (outside diameter x wall), "angle 30x30x3", "flat 40x5", "bar 20x20", "rod 12"
@@ -491,7 +503,7 @@ decision wall_thickness "Wall thickness" {
 An option's { param: value } list names parameters only; switching to that option writes those values into the params. Options without values are structural (switching them needs a design change). The chosen option's values should match the params; the panel shows any difference as "adjusted".
 
 ## Analysis blocks
-A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch) and adds strength and stiffness checks.
+A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch, unless touching: makes them contacts) and adds strength and stiffness checks.
 analysis "Shelf load" {
   parts: [bracket, gusset]                  // optional: defaults to the parts that face() names
   fix: face(bracket, -Y)                    // held in every direction (screwed or glued to the wall)
@@ -500,6 +512,8 @@ analysis "Shelf load" {
   fix: pin(zone(at: pivot, d: 6, axis: Y, length: 8))   // a pin through a bore: holds it across and along the pin, turns freely, bears only where pressed (tight: true holds all round)
   fix: spring(face(foot, -Z), 800)          // an elastic support: rubber feet or a soft mount, 800 N/mm in all (axis: Z for one way; per_area: 1.5 for a pad)
   fix: displace(face(hook, +X), 1.5mm, dir: -Z)   // a set displacement instead of a force: push a snap hook or clip this far; the result gives the force it takes
+  touching: touch(bracket, gusset, mu: 0.3) // optional: touching parts as contacts instead of glued (they press, part and slide); "all" for every pair that touches
+  preload: bolt(screw_1, torque: 2Nm)       // optional: screws and bolts tightened before the loads go on (bolt(screw_1, 3kN) to a tension; "all" for every one analysed)
   load: force(face(bracket, +Z), (0, 0, -shelf_kg * 9.81N))   // total force spread over the region
   load: bearing(zone(at: axle, d: 22, axis: Y, length: 7), 300N, dir: -Z)   // a shaft or bearing pushing on a bore: cosine-spread over the side it presses (prefer it to force() on bores)
   load: pressure(face(lid, +Z), 0.02MPa)
@@ -512,6 +526,8 @@ analysis "Shelf load" {
   max_deflection: 0.5mm                     // optional stiffness limit
   resolution: "standard"                    // "draft" ~8k elements, "standard" ~30k (default), "fine" ~110k, or a cell size like 0.6mm
 }
+Touching parts are glued where they touch unless touching: says otherwise. touch(a, b, mu: 0.3) makes a pair a contact: it bears when pressed, comes apart when pulled (lift: false stops that) and slides once friction lets go (mu: 0 slides freely, "rough" never slides). touching: "all" does that for every pair that touches except screws, nuts and inserts (they stay glued); touch(a, b, mu: "glued") keeps one pair glued under it, and touch("all", mu: 0.2) sets the friction for all. The result gives each pair's share pressed, apart and sliding, the force across and along the faces and the peak contact pressure, and fails when the loads pull a part off or slide it away with nothing else holding it. Use it where the joint's behaviour matters (a lid resting on a box, a part clamped between others, a block pushed sideways); it takes several solves, so leave it out where glued is close enough. It does not go with modes:, drop:, buckling, fatigue or topology:.
+Screws and bolts are glued in like the rest unless preload: tightens them. bolt(screw_1) tightens one as it usually is (75 % of its proof load into a nut, standoff or metal; the usual hand torque into plastic, wood or an insert), bolt(screw_1, torque: 2Nm) by the torque it is done up to, bolt(screw_1, 3kN) to a tension, and preload: "all" (or bolt("all", torque: 1Nm)) every screw and bolt analysed. Each one's head bears on the part under it, its shank stands free in its hole and its thread holds in the nut, insert or standoff it reaches, or else in the part it goes into; the parts it clamps become contacts (μ 0.3, or what touching: says). The result gives each bolt's tension, before and under the loads, its stress and the share of its proof load it uses, and fails when a bolt is stretched past its proof load or the loads open or slide the joint with nothing else holding it. Use it for a bolted joint that is pulled apart or pushed sideways (a flange, a bracket screwed to a wall, a clamp); a joint only pressed together needs no preload. It takes several solves, and does not go with modes:, drop:, buckling, fatigue or topology:.
 fix: and load: may repeat or take lists. Units: N, kN, lbf, kgf (weight of a kilogram: 5kgf = 49 N; kg is a mass in grams, so never kg × 9.81N), Nm, Nmm, MPa, kPa, bar, psi, GPa, and speeds in kmh or mph. Inside an analysis block these functions exist:
 ${analysisFns}
 Look at a result with capture_view results: ("stress", "safety", "disp", "strain", "temp", "current" or "life"); add section: to cut it open, and the cut face shows the field inside the parts (whether stress or heat runs through a section or stays near the surface).

@@ -39,6 +39,8 @@ import { sketchFns } from "../sketch/fns";
 import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
+import { MATE_FNS, MateRefV, MateV, evalFaces, type FaceLookup } from "./mates";
+import { bodyBox, mateFits, moveDir, movePoint, moveXforms, pickAxis, pickPlane, solveMates, isStill, type BodyMove, type FaceCatalogue, type MateBody, type MateGeom, type MateSpec } from "../core/mates";
 import { studyVariable } from "../analysis/studyLang";
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
@@ -57,6 +59,8 @@ export interface EvalOptions {
   parsed?: { program: Program; diagnostics: Diagnostic[] };
   /** STEP files imported into the project (defaults to the table set with setEvalImports) */
   imports?: ImportTable;
+  /** each built solid's flat and round faces, by geometry hash, for mates (defaults to the table set with setEvalFaces) */
+  faces?: FaceLookup;
 }
 
 class EvalError extends Error {
@@ -248,6 +252,7 @@ export function evaluate(src: string, opts: EvalOptions = {}): Model {
   const parsed = opts.parsed ?? parse(src);
   const ev = new Evaluator(src, opts);
   ev.run(parsed.program);
+  ev.finishMates();
   const model = ev.toModel(parsed.diagnostics);
   model.evalMs = performance.now() - t0;
   return model;
@@ -282,6 +287,11 @@ class Evaluator {
   geoQueries: GeoQuery[] = [];
   drawings: DrawingSpec[] = [];
   frames: FrameInfo[] = [];
+  /** mates in the order written, each with what it holds by where the parts are drawn (or waiting for faces) */
+  mates: { spec: MateSpec | null; info: NonNullable<Model["mates"]>["list"][number] }[] = [];
+  /** solids whose faces mates need and the kernel has not listed yet */
+  mateQueries = new Set<string>();
+  mateResult: Model["mates"] | undefined;
   /** frame members by name, to the frame they belong to (references to a member depend on its frame) */
   memberOf = new Map<string, string>();
   callSpan: Span = { start: 0, end: 0 };
@@ -368,7 +378,7 @@ class Evaluator {
         this.stmt(s);
       } catch (e) {
         if (e instanceof EvalError) {
-          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "frame" ? `In frame "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : s.k === "app" ? `In app "${s.label}": ` : "";
+          const where = s.k === "part" ? `In part "${s.name}": ` : s.k === "component" ? `In component "${s.name}": ` : s.k === "drawing" ? `In drawing "${s.name}": ` : s.k === "frame" ? `In frame "${s.name}": ` : s.k === "mate" && s.name ? `In mate "${s.name}": ` : s.k === "analysis" ? `In analysis "${s.label}": ` : s.k === "app" ? `In app "${s.label}": ` : "";
           this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
         } else if (e instanceof Error) {
           const span = s.k === "component" ? s.call.span : s.span;
@@ -462,6 +472,9 @@ class Evaluator {
         return;
       case "frame":
         this.frame(s);
+        return;
+      case "mate":
+        this.mate(s);
         return;
       case "decision":
         this.decision(s);
@@ -1350,6 +1363,7 @@ class Evaluator {
           label: (typeof props.label === "string" && (!sd.suffix || imported) ? (imported && def.solids.length > 1 ? `${props.label}: ${imported.ref.meta.bodies[sdIdx].name}` : props.label) : sd.label) + (multi ? ` #${idx + 1}` : ""),
           kind: "component",
           libKind: key,
+          placement: onBoard ? "board" : def.placement,
           group,
           color: ((!sd.suffix || imported) && color) || sd.color,
           material: (typeof props.material === "string" && (!sd.suffix || imported) ? props.material : undefined) ?? sd.material,
@@ -3009,6 +3023,110 @@ class Evaluator {
     return { ok: truthy(v), detail: show(v) };
   }
 
+  // ---------------- mates ----------------
+
+  mate(s: Extract<Stmt, { k: "mate" }>) {
+    const name = s.name ?? `mate ${this.mates.length + 1}`;
+    if (s.name) {
+      if (this.mates.some((m) => m.info.name === s.name)) throw new EvalError(`There is already a mate called "${s.name}"`, s.nameSpan ?? s.span);
+      this.blocks.push({ name: s.name, kind: "mate", span: s.span, locked: false });
+    }
+    const saved = this.callOverride;
+    this.callOverride = MATE_FNS;
+    let v: Value;
+    try {
+      v = this.expr(s.call, null);
+    } finally {
+      this.callOverride = saved;
+    }
+    if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), or a joint: revolute(), slider(), cylindrical(), planar() or ball()", s.call.span);
+    for (const r of [v.a, v.b]) this.current?.add(r.ref.body);
+    const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: v.a.label ?? v.a.ref.body, b: v.b.label ?? v.b.ref.body, bodies: [v.a.ref.body, v.b.ref.body], span: s.span, status: "waiting" };
+    const ga = this.mateGeom(v.a, s.call.span);
+    const gb = this.mateGeom(v.b, s.call.span);
+    if (!ga || !gb) {
+      this.mates.push({ spec: null, info });
+      return;
+    }
+    const fit = mateFits(v.kind, ga, gb, v.value);
+    if (fit) throw new EvalError(fit, s.call.span);
+    const spec: MateSpec = { name, kind: v.kind, a: { body: v.a.ref.body, geom: ga, label: v.a.label ?? v.a.ref.body }, b: { body: v.b.ref.body, geom: gb, label: v.b.label ?? v.b.ref.body } };
+    if (v.value !== undefined) spec.value = v.value;
+    if (v.min !== undefined) spec.min = v.min;
+    if (v.max !== undefined) spec.max = v.max;
+    info.status = "ok";
+    this.mates.push({ spec, info });
+  }
+
+  /** What a mate holds by, where the parts are drawn; null while a solid's faces are not listed yet. */
+  mateGeom(r: MateRefV, span: Span): MateGeom | null {
+    const ref = r.ref;
+    const solids = this.parts.filter((p) => p.name === ref.body);
+    if (!solids.length) throw new EvalError(`${ref.body} is not a part or component defined above this mate (mates come after the parts they join)`, span);
+    switch (ref.t) {
+      case "body":
+        return { t: "body" };
+      case "point":
+        return { t: "point", p: ref.p };
+      case "plane":
+        return { t: "plane", p: ref.at, n: ref.normal };
+      case "line":
+        return { t: "axis", p: ref.at, d: ref.dir };
+    }
+    const lookup = this.opts.faces ?? evalFaces();
+    const placed: { cat: FaceCatalogue; xf: Xform[] }[] = [];
+    let waiting = false;
+    for (const p of solids) {
+      // listed whether or not the faces are known yet: the engine asks for any it does not have exactly
+      this.mateQueries.add(p.hash);
+      const cat = lookup(p.hash, p.name);
+      if (cat) placed.push({ cat, xf: p.xf });
+      else waiting = true;
+    }
+    if (waiting) return null;
+    const g = ref.t === "face" ? pickPlane(ref.body, placed, ref.dir, ref.near) : pickAxis(ref.body, placed, { near: ref.near, d: ref.d, along: ref.along });
+    if (typeof g === "string") throw new EvalError(`${r.label}: ${g}`, span);
+    return g;
+  }
+
+  /** Solve the mates and move the parts they place (after the whole design is read). */
+  finishMates() {
+    if (!this.mates.length) return;
+    const specs = this.mates.flatMap((m) => (m.spec ? [m.spec] : []));
+    const names = new Set(specs.flatMap((s) => [s.a.body, s.b.body]));
+    const lookup = this.opts.faces ?? evalFaces();
+    const bodies: MateBody[] = [...names].map((name) => {
+      const solids = this.parts.filter((p) => p.name === name).flatMap((p) => {
+        const cat = lookup(p.hash, p.name);
+        return cat ? [{ cat, xf: p.xf }] : [];
+      });
+      const box = bodyBox(solids);
+      if (box) {
+        const [lo, hi] = box;
+        return { name, c: [(lo[0] + hi[0]) / 2, (lo[1] + hi[1]) / 2, (lo[2] + hi[2]) / 2] as V3, size: Math.max(1, Math.hypot(hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2]) / 2) };
+      }
+      // only points, planes and lines name it: turn it about the middle of those
+      const pts = specs.flatMap((s) => [s.a, s.b]).filter((r) => r.body === name && r.geom.t !== "body").map((r) => (r.geom as { p: V3 }).p);
+      const c: V3 = pts.length ? [0, 1, 2].map((k) => pts.reduce((t, p) => t + p[k], 0) / pts.length) as V3 : [0, 0, 0];
+      return { name, c, size: 50 };
+    });
+    const sol = solveMates(bodies, specs);
+    const byName = new Map(sol.outcomes.map((o) => [o.name, o]));
+    for (const m of this.mates) {
+      if (!m.spec) continue;
+      const o = byName.get(m.info.name);
+      if (!o) continue;
+      m.info.status = o.status;
+      if (o.message) m.info.message = o.message;
+      if (o.status === "conflict") this.diags.push({ message: o.message ?? `${m.info.name} cannot hold`, start: m.info.span.start, end: m.info.span.end, severity: "error" });
+    }
+    const moves = new Map([...sol.moves].filter(([, mv]) => !isStill(mv)));
+    if (moves.size) moveParts(this.parts, moves);
+    // a mated part depends on what it is mated to
+    for (const s of specs) this.deps.get(s.a.body)?.add(s.b.body);
+    this.mateResult = { list: this.mates.map((m) => m.info), specs, bodies, moves: [...sol.moves], free: sol.free };
+  }
+
   // ---------------- analyses ----------------
 
   analysis(s: Extract<Stmt, { k: "analysis" }>) {
@@ -3172,6 +3290,8 @@ class Evaluator {
       scenarios: this.scenarios,
       apps: this.apps.length ? this.apps : undefined,
       ...(this.frames.length ? { frames: this.frames } : {}),
+      ...(this.mateResult ? { mates: this.mateResult } : {}),
+      ...(this.mateQueries.size ? { mateQueries: [...this.mateQueries] } : {}),
     };
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
@@ -3364,3 +3484,32 @@ function collectScope(s: Scope): string[] {
 
 export { suggest };
 export type { V2 };
+
+/**
+ * Move mated parts from where they are drawn: their placement, and the world positions taken from it (gears,
+ * bearings, springs, fasteners and the axes they turn about). A motion moved with its part is moved for every part
+ * that turns with it or rides on it.
+ */
+export function moveParts(parts: EvalPart[], moves: Map<string, BodyMove>) {
+  const remap = new Map<Motion, Motion>();
+  for (const p of parts) {
+    const mv = moves.get(p.name);
+    if (!mv) continue;
+    p.xf = [...p.xf, ...moveXforms(mv)];
+    const pt = (q: V3) => movePoint(mv, q);
+    const dir = (d: V3) => vnorm(moveDir(mv, d));
+    if (p.gear) p.gear = { ...p.gear, center: pt(p.gear.center), axis: dir(p.gear.axis) };
+    if (p.bearing) p.bearing = { ...p.bearing, center: pt(p.bearing.center), axis: dir(p.bearing.axis) };
+    if (p.spring) p.spring = { ...p.spring, center: pt(p.spring.center), axis: dir(p.spring.axis) };
+    if (p.fastener) p.fastener = { ...p.fastener, headTop: pt(p.fastener.headTop), outward: dir(p.fastener.outward) };
+    if (p.motion && !remap.has(p.motion)) remap.set(p.motion, { ...p.motion, origin: pt(p.motion.origin), axis: dir(p.motion.axis) });
+  }
+  if (!remap.size) return;
+  const fix = (m: Motion | undefined): Motion | undefined => {
+    if (!m) return m;
+    const r = remap.get(m) ?? m;
+    const parent = fix(r.parent);
+    return parent !== r.parent ? { ...r, parent } : r;
+  };
+  for (const p of parts) p.motion = fix(p.motion);
+}

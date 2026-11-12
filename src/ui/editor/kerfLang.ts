@@ -23,6 +23,7 @@ import { CONSTRAINTS } from "../../sketch/evaluate";
 import { SKETCH_FNS } from "../../sketch/fns";
 import { ANALYSIS_FNS, DRIVETRAIN_PROPS, STRUCTURAL_PROPS, UCI_PROPS } from "../../analysis/lang";
 import { AIRFLOW_PROPS } from "../../analysis/aeroLang";
+import { MATE_FNS } from "../../lang/mates";
 import { currentTheme } from "../../app/theme";
 import "../../styles/syntax.css";
 
@@ -33,7 +34,7 @@ const BRIEF_ENTRIES = new Set(["use", "given", "reference", "assume"]);
 const LINE_KEYWORDS = new Set(["drawing", "frame"]);
 const BRIEF_FLAGS = new Set(["assumed", "confirmed"]);
 const OPS_KW = new Set(["body", "add", "cut", "intersect"]);
-const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MODELLING_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS)]);
+const BUILTIN_FNS = new Set([...Object.keys(SHAPE_FNS), ...Object.keys(MODELLING_FNS), ...Object.keys(SKETCH_FNS), ...Object.keys(MATH_FNS), ...Object.keys(modifierDocs), ...GEO_FNS, "step", ...Object.keys(ANALYSIS_FNS), ...Object.keys(MATE_FNS)]);
 /** Words that start a statement inside a sketch block. */
 const SKETCH_GEOMETRY = ["line", "circle", "arc", "point", "construction"];
 const SKETCH_WORDS = new Set([...SKETCH_GEOMETRY, ...Object.keys(CONSTRAINTS), "on", "dist", "dx", "dy"]);
@@ -83,6 +84,8 @@ const parser: StreamParser<St> = {
       if (STATEMENTS.has(w)) return "keyword";
       if (BRIEF_ENTRIES.has(w) && !stream.string.slice(0, stream.start).trim() && stream.peek() === " ") return "keyword";
       if (LINE_KEYWORDS.has(w) && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/, false)) return "keyword";
+      // mate name = against(...) and mate against(...): a statement only at the start of a line
+      if (w === "mate" && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*[(=]/, false)) return "keyword";
       if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";
       if (first && state.depth === state.sketchDepth && SKETCH_WORDS.has(w) && /^\s+[A-Za-z_(]/.test(stream.string.slice(stream.pos))) return "operatorKeyword";
       if (OPS_KW.has(w)) return "operatorKeyword";
@@ -216,7 +219,10 @@ export function kerfCompletions(getModel: () => Model | null) {
       .filter(([k]) => k !== "note")
       .map(([k, d]) => ({ label: k, type: "function", info: d, detail: "drawing", apply: k + "(" })),
   ];
+  // mates: face(), axis(), point() and plane() share names with sketch and analysis functions, listed once
+  for (const f of Object.values(MATE_FNS)) if (!fnCompletions.some((c) => c.label === f.name)) fnCompletions.push({ label: f.name, type: "function", info: f.doc, detail: "mate", apply: f.name + "(" });
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
+  kw.push({ label: "mate", type: "keyword", detail: "how two parts meet", info: "mate name = against(face(lid, -Z), face(box, +Z)): places the first part by how its faces, holes and points meet the second's (against, flush, concentric, pin, distance, angle, parallel, perpendicular, tangent, coincident, rigid); what the mates leave free can be dragged" });
   kw.push({ label: "frame", type: "keyword", detail: "structural frame", info: 'frame name { profile: "2020", box: (w, d, h) } or path: [(x, y, z), ...]: 2020 extrusion or steel sections along lines, trimmed where they meet, with a cut list' });
   const profiles: Completion[] = ["2020", "2040", "box 40x40x3", "box 50x25x2.5", "tube 26.9x2.6", "angle 30x30x3", "flat 40x5", "bar 20x20", "rod 12"].map((p) => ({ label: `"${p}"`, type: "text", detail: /^\d/.test(p) ? "V-slot extrusion" : "section" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));

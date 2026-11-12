@@ -15,6 +15,7 @@ import type { DrawingSpec } from "../drawing/spec";
 import type { SheetInfo } from "../lang/sheet";
 import type { ChainInfo } from "../machine/chains";
 import type { AeroTube } from "../lang/aero";
+import type { BodyFreedom, BodyMove, MateBody, MateKind, MateSpec } from "./mates";
 
 export interface Motion {
   origin: V3;
@@ -200,6 +201,8 @@ export interface EvalPart {
   label: string;
   kind: "part" | "component";
   libKind?: string;
+  /** how a component's at:, axis:, facing: and rotate: place it (on a board: by the board) */
+  placement?: "axis" | "facing" | "free" | "board";
   group: string;
   color: string;
   material: string;
@@ -461,6 +464,18 @@ export interface Model {
   apps?: AppSpec[];
   /** frames of structural members (frame blocks), with their cut lists */
   frames?: FrameInfo[];
+  /** how parts meet (mate statements), solved: what each holds, how each mated part moved and what it can still do */
+  mates?: {
+    list: { name: string; kind: MateKind; a: string; b: string; bodies: [string, string]; span: Span; status: "ok" | "conflict" | "limit" | "waiting"; message?: string }[];
+    /** what each mate holds by, where the parts are drawn (for dragging) */
+    specs: MateSpec[];
+    bodies: MateBody[];
+    /** each mated part's move from where it is drawn */
+    moves: [string, BodyMove][];
+    free: BodyFreedom[];
+  };
+  /** geometry hashes of the solids mates pick faces from (the engine has the kernel list any it has not, then evaluates again) */
+  mateQueries?: string[];
 }
 
 /** One member of a frame: the part or component it became, and how its piece is cut. */

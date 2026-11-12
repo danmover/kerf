@@ -711,6 +711,18 @@ export function buildHierarchy(fine: Level, shifts: [number, number, number][], 
   return { levels: out, coarse, smooth };
 }
 
+/**
+ * The hierarchy with a new fine level over the same cells, supports and springs, whose elements differ only in their
+ * element matrices (contacts that slide or part): the coarser grids, re-discretised from the same stiffness, are
+ * kept, and only the fine level's smoother is redone. With no coarser grid the direct solve is redone too.
+ */
+export function withFine(H: Hierarchy, fine: Level, nu: number): Hierarchy {
+  if (H.levels.length === 1) return buildHierarchy(fine, [], nu, H.smooth);
+  computeDiag(fine);
+  fine.omega = 4 / (3 * Math.max(estimateLambda(fine) * 1.1, 1e-12));
+  return { levels: [fine, ...H.levels.slice(1)], coarse: H.coarse, smooth: H.smooth };
+}
+
 /** Each active element's stiffness from its cell in L.dense (after L.dense has changed; the same cells active). */
 function restiff(L: Level) {
   const NX = L.NX,
