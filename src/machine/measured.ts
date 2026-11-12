@@ -17,6 +17,11 @@ export const MEASURED: Record<string, Record<string, { spec: string; doc: string
     rpm_free: { spec: "rpm_free", doc: "output speed running free at its rated voltage (rpm)" },
     t_stall: { spec: "t_stall", doc: "stall torque at the output at its rated voltage (N·mm)" },
   },
+  // a StepStick's settings, read off the real board: the current limit its trimpot is set to and its mode pins
+  stepper_driver: {
+    current: { spec: "i_set", doc: "the current limit its trimpot is set to, per phase (A): measure VREF and use the board's formula" },
+    microsteps: { spec: "microsteps_set", doc: "microsteps per full step its mode pins choose (1, 2, 4, 8, 16, 32 ...)", toSpec: (v) => Math.round(v) },
+  },
   battery: {
     r_int: { spec: "r_int_mohm", doc: "the whole pack's internal resistance, with its leads (Ohm)", toSpec: (v, s) => (v * 1000) / (typeof s.cells === "number" && s.cells > 0 ? s.cells : 1) },
     capacity: { spec: "capacity_mah", doc: "capacity (mAh)" },

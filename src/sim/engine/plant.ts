@@ -15,6 +15,8 @@ import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, EscFan, Lsm6
 import { BRIDGE_OHMS, CoilLoad, Ina3221, PwmFan, Sdp8xx, Tmag5273, stepCoilString, type ShuntTap } from "./fielddevs";
 import { BusServo, ServoBus } from "./busServo";
 import { servoBuses } from "../../machine/busServos";
+import { Steppers } from "./steppers";
+import { Sensing } from "./sensors";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
@@ -229,6 +231,9 @@ export class Plant implements PlantPort, PlantView {
   hxs: HxSlot[] = [];
   coils: CoilSlot[] = [];
   blowers: BlowerSlot[] = [];
+  /** steppers on StepStick drivers, and distance and temperature sensors */
+  steppers = new Steppers(this);
+  sensing = new Sensing(this);
   /** current monitors, field sensors and pressure sensors on the I2C bus, for the run's results */
   shuntMonitors: { comp: string; dev: Ina3221; part: CatalogPart }[] = [];
   fieldSensors: { comp: string; dev: Tmag5273 }[] = [];
@@ -383,8 +388,12 @@ export class Plant implements PlantPort, PlantView {
         case "bldc":
           // spun by its ESC (the ESC's slot finds it through the phase wires)
           break;
-        case "stepper":
         case "stepper_driver":
+          this.steppers.driver(mc, part);
+          break;
+        case "stepper":
+          this.steppers.motor(mc, part, ambient);
+          break;
         case "hotend":
         case "heated_bed":
           this.unsupported.push(`${mc.name} (${part.name})`);
@@ -510,6 +519,7 @@ export class Plant implements PlantPort, PlantView {
     }
     hal.plant = this;
     this.updateRails();
+    this.steppers.bind();
     if (this.mcuSupply === "USB") this.assumptions.push(`Nothing in the wiring powers ${mcu}, so it runs from its USB port: 5 V, with its 500 mA polyfuse`);
   }
 
@@ -601,6 +611,7 @@ export class Plant implements PlantPort, PlantView {
   }
 
   private sensor(mc: MachineComponent, part: CatalogPart, opts: PlantOptions) {
+    if (this.sensing.attach(mc, part, opts.rng)) return;
     const iface = String(part.specs.iface ?? "");
     if (iface === "i2c") {
       const sda = this.mcuPinFor(mc.name, "SDA");
@@ -993,7 +1004,7 @@ export class Plant implements PlantPort, PlantView {
 
   motor(comp: string) {
     const s = this.motors.find((x) => x.comp === comp);
-    return s ? { omega: s.m.omega, angle: s.m.angle, current: s.m.current, torque: s.m.torque } : undefined;
+    return s ? { omega: s.m.omega, angle: s.m.angle, current: s.m.current, torque: s.m.torque } : this.steppers.view(comp);
   }
 
   actuator(comp: string) {
@@ -1214,6 +1225,7 @@ export class Plant implements PlantPort, PlantView {
       if (mv) s.s.follow(us, mv.pos, mv.load, powered);
       else s.s.step(us, this.world.servoLoad?.(s.comp) ?? 0, powered, dt);
     }
+    this.steppers.step(t0, t1, dt, t, ambient, cooling);
     this.stepLeds(t, dt);
     // driver overheating: past its continuous rating for long, it shuts down
     for (const c of this.chans) {
@@ -1496,6 +1508,7 @@ export class Plant implements PlantPort, PlantView {
     for (const s of this.servos) add(s.vcc, s.s.current);
     for (const l of this.leds) add(l.vcc, l.current);
     for (const b of this.blowers) add(b.vin, b.f.current);
+    this.steppers.draw(add);
     if (this.mcuSupply === "VIN") add(this.netOf(this.mcu, "VIN"), this.logicLoad);
     for (const g of this.regOrder) {
       g.r.load = g.vout ? this.staticDraw(g.vout) + (d.get(g.vout.id) ?? 0) : 0;
@@ -1576,6 +1589,8 @@ export class Plant implements PlantPort, PlantView {
     }
     if (this.mcuSupply === "USB") out["usb.amps"] = this.usb.current;
     out["logic.volts"] = this.mcuV;
+    this.steppers.channels(out);
+    this.sensing.channels(out);
   }
 }
 
@@ -1603,6 +1618,7 @@ export function fieldResults(plant: Plant): Record<string, number | boolean | st
     r[`${g.comp}.reads`] = g.dev.reads;
     r[`${g.comp}.pressure`] = g.dev.last;
   }
+  Object.assign(r, plant.steppers.results(), plant.sensing.results());
   return r;
 }
 

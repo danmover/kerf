@@ -7,6 +7,9 @@ import type { Model } from "../core/model";
 import { catalogPart } from "../machine/catalog";
 import type { ScenarioDef } from "./scenario";
 import { boardFlavors, flavorOf, FLAVOR_NAME, type PrinterFlavor } from "../machine/firmware/printer";
+import { buildNetlist } from "../machine/erc";
+import { measuredPart } from "../machine/measured";
+import { drivenSteppers, driverMicrosteps, fullSteps } from "../machine/stepstick";
 
 export interface SimTemplate {
   id: string;
@@ -64,6 +67,14 @@ function printer(m: Model, label: string, world: string, expects: string[]): str
 }
 
 const motors = (m: Model) => (m.machine?.components ?? []).filter((c) => catalogPart(c.catalogId)?.kind === "gearmotor").map((c) => c.name);
+/** steppers on StepStick drivers, in the bench firmware's order (its j command), with the steps a turn takes */
+const steppers = (m: Model) =>
+  (m.machine ? drivenSteppers(buildNetlist(m.machine)) : []).map((s, i) => ({ i, name: s.motor.comp, first: s.motor.index === 0, turn: fullSteps(s.motor.part) * driverMicrosteps(measuredPart(s.driver.mc) ?? s.driver.part).micro }));
+/** the bench console jogs each stepper one turn, a few seconds apart, after the start-up */
+const jogs = (m: Model) => {
+  const st = steppers(m);
+  return st.length ? [`console: [${st.map((s) => `sim.type("j ${s.i} ${s.turn}", at: ${2 + 3 * s.i}s)`).join(", ")}]`] : [];
+};
 const hasBattery = (m: Model) => (m.machine?.components ?? []).some((c) => catalogPart(c.catalogId)?.kind === "battery");
 /** a mains supply or plug-in adapter */
 const hasSupply = (m: Model) => (m.machine?.components ?? []).some((c) => catalogPart(c.catalogId)?.kind === "psu");
@@ -79,9 +90,9 @@ function freeLabel(m: Model, base: string): string {
   for (let i = 2; ; i++) if (!taken.has(`${base} ${i}`)) return `${base} ${i}`;
 }
 
-function bench(m: Model, label: string, world: string, duration: number, expects: string[]): string {
+function bench(m: Model, label: string, world: string, duration: number, expects: string[], lines: string[] = []): string {
   const fw = firmwareOf(m)!;
-  return [`scenario "${freeLabel(m, label)}" {`, `  world: ${world}`, `  firmware: ${fw.name}`, `  duration: ${fmtS(duration)}`, ...expects.map((e) => `  ${e}`), "}"].join("\n");
+  return [`scenario "${freeLabel(m, label)}" {`, `  world: ${world}`, `  firmware: ${fw.name}`, `  duration: ${fmtS(duration)}`, ...lines.map((l) => `  ${l}`), ...expects.map((e) => `  ${e}`), "}"].join("\n");
 }
 
 // ---------- fault tests ----------
@@ -206,16 +217,26 @@ export const SIM_TEMPLATES: SimTemplate[] = [
     id: "power_up",
     hidden: isPrinter,
     title: "Power-up on the bench",
-    blurb: "Power it from its own battery or supply with the motors free: it stays powered, the firmware starts, every motor turns, nothing is mis-wired, RAM and loop time have room.",
+    blurb: "Power it from its own battery or supply with the motors free: it stays powered, the firmware starts, every motor turns (each stepper a turn from the console, keeping every step), nothing is mis-wired, RAM and loop time have room.",
     unavailable: needsFirmware,
     source: (m) =>
-      bench(m, "Power-up on the bench", "sim.bench(load: 0)", Math.max(60, Math.ceil((startDelay(m) + 60) / 60) * 60), [
-        'expect "Stays powered": browned_out == false',
-        'expect "No firmware mistakes": faults == 0',
-        ...motors(m).map((n) => `expect "${n} turns" soft: abs(${n}.turns) > 1`),
-        'expect "RAM to spare" soft: ram_use < 75%',
-        'expect "loop() keeps up" soft: loop_time < 20ms',
-      ]),
+      bench(
+        m,
+        "Power-up on the bench",
+        "sim.bench(load: 0)",
+        Math.max(60, Math.ceil((startDelay(m) + 60) / 60) * 60),
+        [
+          'expect "Stays powered": browned_out == false',
+          'expect "No firmware mistakes": faults == 0',
+          ...motors(m).map((n) => `expect "${n} turns" soft: abs(${n}.turns) > 1`),
+          ...steppers(m)
+            .filter((s) => s.first)
+            .flatMap((s) => [`expect "${s.name} turns a turn" soft: abs(${s.name}.turns) > 0.95`, `expect "${s.name} keeps every step": ${s.name}.lost_steps == 0`]),
+          'expect "RAM to spare" soft: ram_use < 75%',
+          'expect "loop() keeps up" soft: loop_time < 20ms',
+        ],
+        jogs(m),
+      ),
   },
   {
     id: "runtime",

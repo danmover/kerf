@@ -447,7 +447,7 @@ const MEASURED_FN = new Fn(
     if (!Object.keys(out).length) ctx.error("sim.measured() needs at least one value, like sim.measured(i_free: 0.31A)");
     return new SimSpec("measured", out, "measured values");
   },
-  "Values measured on the real part, for a component's measured: property, e.g. measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm). The simulation uses them in place of the catalog's; the checks keep the maker's ratings. Gearmotors: i_free, i_stall, rpm_free, t_stall (at rated voltage). Batteries: r_int (whole pack, Ohm or mOhm), capacity (mAh). The Calibrate panel in the Simulation tab fits them from a bench test.",
+  "Values measured on the real part, for a component's measured: property, e.g. measured: sim.measured(i_free: 0.31A, i_stall: 8.6A, rpm_free: 29rpm). The simulation uses them in place of the catalog's; the checks keep the maker's ratings. Gearmotors: i_free, i_stall, rpm_free, t_stall (at rated voltage). Batteries: r_int (whole pack, Ohm or mOhm), capacity (mAh). Stepper drivers: current (the limit its trimpot is set to, A a phase), microsteps (what its mode pins choose, e.g. 16). The Calibrate panel in the Simulation tab fits them from a bench test.",
 );
 
 const SIM_ENTRIES: [string, Fn][] = [...Object.entries(SIM_FNS), ["config", CONFIG_FN], ["measured", MEASURED_FN], ["mechanism", MECHANISM_FN], ["floor", FLOOR_FN], ...MECH_FNS];

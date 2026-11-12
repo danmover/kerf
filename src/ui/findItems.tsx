@@ -110,7 +110,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   sim: {
     title: "Simulate",
     detail: "Run the firmware and the physics: moves, loads, power and faults",
-    keywords: "simulation physics firmware run scenario test virtual prototype",
+    keywords: "simulation physics firmware run scenario test virtual prototype stepper steppers stepper motor lost steps missed steps skipped steps stall pull-out torque step rate acceleration ramp stepper driver a4988 drv8825 tmc2209 stepstick driver overheating thermal shutdown distance sensor range finder ir ranger sharp lidar tf-luna temperature sensor thermistor ntc tmp36 mcp9808",
     ask: "Add a simulation scenario for this design: what it should do in use and how we would know it worked, then run it and tell me what you find.",
     askTitle: "Add a simulation",
   },
