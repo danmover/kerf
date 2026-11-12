@@ -201,7 +201,7 @@ part block {
 
   it("explains a missing import and lists the ones there are", () => {
     const m = evaluate(`design "x"\ncomponent b = step("other") { at: (0, 0, 0) }`, { imports: table });
-    expect(m.diagnostics[0].message).toMatch(/No STEP file named "other".*"devboard"/);
+    expect(m.diagnostics[0].message).toMatch(/No file named "other" is imported.*"devboard"/);
   });
 
   it("still lets a design use the word step for its own names", () => {

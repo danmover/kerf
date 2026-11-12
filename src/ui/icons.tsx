@@ -557,6 +557,23 @@ export const Icon = {
       <path d="M12 5v14M6 13l6 6 6-6" />
     </I>
   ),
+  /** an end mill cutting along a path: CNC toolpaths */
+  EndMill: (p: P) => (
+    <I {...p}>
+      <path d="M10 2.5h4v4.5h-4z" />
+      <path d="M9.5 7h5v8.2L12 17l-2.5-1.8z" />
+      <path d="m9.5 10.2 5-2.2M9.5 13.4l5-2.2" />
+      <path d="M3 21h5l1.2-2h5.6l1.2 2H21" />
+    </I>
+  ),
+  LaserCut: (p: P) => (
+    <I {...p}>
+      <path d="M9 2.5h6V6l-1.6 2.6h-2.8L9 6z" />
+      <path d="M12 9.6v5.2" strokeDasharray="1.6 1.3" />
+      <path d="M3 18.2h6.6M14.4 18.2H21M3 21h18" />
+      <circle cx="12" cy="17.4" r="1.5" fill="currentColor" stroke="none" />
+    </I>
+  ),
   Film: (p: P) => (
     <I {...p}>
       <rect x="3" y="7" width="18" height="13" rx="2" />

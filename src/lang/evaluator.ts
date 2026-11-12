@@ -1026,7 +1026,7 @@ class Evaluator {
   component(s: Extract<Stmt, { k: "component" }>) {
     const callee = this.expr(s.call.callee, null);
     if (!(callee instanceof LibFn) && !(callee instanceof ImportFn)) {
-      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), or from an imported STEP file with step("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
+      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), or from an imported file (STEP, STL, OBJ or 3MF) with step("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
     }
     const key = callee instanceof ImportFn ? "step" : callee.libKey;
     const pos: Value[] = [];

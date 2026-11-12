@@ -1,4 +1,4 @@
-// What Kerf knows about an imported STEP file once the kernel has read it.
+// What Kerf knows about an imported file (STEP, or an STL, OBJ or 3MF mesh) once the kernel has read it.
 // The kernel produces this when a file is imported; it is stored with the
 // project so a design can be evaluated (sizes, holes, body names) before the
 // kernel has finished loading the geometry again.
@@ -8,7 +8,19 @@ import type { V3 } from "./recipe";
 /** Bump when the analysis changes, so stored results are recomputed. */
 export const IMPORT_META_VERSION = 1;
 
-/** Largest STEP file Kerf reads. Bigger files exhaust the browser's memory for OpenCASCADE. */
+/** File names Kerf imports: STEP files, and meshes it turns into solids. */
+export const STEP_FILE = /\.(step|stp|p21)$/i;
+export const MESH_FILE = /\.(stl|obj|3mf)$/i;
+export const IMPORT_FILE = /\.(step|stp|p21|stl|obj|3mf)$/i;
+
+/** What a file is, by its name: "STEP", "STL", "OBJ" or "3MF", or null for a file Kerf does not import. */
+export function importKind(file: string): "STEP" | "STL" | "OBJ" | "3MF" | null {
+  if (STEP_FILE.test(file)) return "STEP";
+  const m = MESH_FILE.exec(file);
+  return m ? (m[1].toUpperCase() as "STL" | "OBJ" | "3MF") : null;
+}
+
+/** Largest file Kerf imports. Bigger ones exhaust the browser's memory for OpenCASCADE. */
 export const MAX_STEP_BYTES = 60 * 1024 * 1024;
 
 /** More bodies than this are merged into one so the viewer and checks stay responsive. */

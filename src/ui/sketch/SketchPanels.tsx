@@ -20,6 +20,7 @@ import { Segmented } from "../common";
 import { editSketch, exitSketch, createSketch, makePattern, setSelection, setTool, useSketch, type PatternUi, type SketchTool } from "./session";
 import { SketchOverlay, faceSketch } from "./SketchOverlay";
 import { T } from "./glyphs";
+import { insertDxfIntoSketch, pickDxf } from "../../app/dxf";
 import "./sketch.css";
 
 /** Everything sketch-related in the viewport. Mounted by the viewport once its scene exists. */
@@ -164,6 +165,9 @@ function ToolPalette() {
       {TOOLS.filter((t) => shown(t) && !MODIFY.includes(t.id)).map(button)}
       <div className="sep" />
       {TOOLS.filter((t) => shown(t) && MODIFY.includes(t.id)).map(button)}
+      <button className="icon-btn" onClick={() => pickDxf((f) => void insertDxfIntoSketch(f))} data-tip="Insert a DXF drawing (I): its lines, arcs, circles and curves, joined and fixed where they were drawn" aria-label="Insert a DXF drawing">
+        <T.Insert />
+      </button>
       <div className="sep" />
       <button className={`icon-btn ${construction ? "active warnish" : ""}`} onClick={() => useSketch.setState({ construction: !construction })} data-tip="Draw construction geometry (G)" aria-label="Construction geometry" aria-pressed={construction}>
         <T.Construction />

@@ -1,24 +1,41 @@
-// Importing STEP files into the open project: read and analyse the file,
-// store it, and place it in the design as a step() component that can be
+// Importing files into the open project: STEP files, and STL, OBJ and 3MF
+// meshes that the kernel repairs and turns into solids. Each is read and
+// analysed, stored, and placed in the design as a step() component that can be
 // undone like any other edit.
 
 import { useDesign, meshes } from "../core/engine";
 import { analyseFile, forgetBytes, importBytes, importUsers, primeBytes, useImports } from "../core/imports";
 import type { Model } from "../core/model";
-import { MAX_STEP_BYTES, mountingHoles, type ImportMeta, type ProjectImport } from "../kernel/imports";
+import { IMPORT_FILE, MAX_STEP_BYTES, STEP_FILE, importKind, mountingHoles, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { applyXforms, type V3 } from "../kernel/recipe";
 import { cleanName } from "../kernel/stepText";
 import { fmtNum } from "../lang/values";
 import { getBlob, putBlob, sha256Hex } from "../persist/blobs";
 import { download, safeFileName } from "../persist/files";
 import { useChatDraft } from "../ui/chatDraft";
+import { DXF_ACCEPT, importDxfFiles, isDxfFile } from "./dxf";
 import { commitSource, setProjectImports, useProject } from "./project";
 import { confirmDialog, dismissToast, errorText, toast } from "./ui";
 
-export const STEP_EXTENSIONS = /\.(step|stp|p21)$/i;
-export const isStepFile = (f: File) => STEP_EXTENSIONS.test(f.name);
+export const STEP_EXTENSIONS = STEP_FILE;
+export const isStepFile = (f: File) => STEP_FILE.test(f.name);
+/** A file Kerf imports as a part to design around: STEP, or a mesh it turns into a solid. */
+export const isImportFile = (f: File) => IMPORT_FILE.test(f.name);
+/** What the file pickers offer. */
+export const IMPORT_ACCEPT = ".step,.stp,.p21,.stl,.obj,.3mf";
+/** What the Import button and the 3D view take: those, and DXF drawings, which become sketches. */
+export const ANY_IMPORT_ACCEPT = `${IMPORT_ACCEPT},${DXF_ACCEPT}`;
+/** A file the Import button or the 3D view takes. */
+export const isAnyImportFile = (f: File) => isImportFile(f) || isDxfFile(f);
 
-const stem = (file: string) => file.replace(STEP_EXTENSIONS, "") || file;
+const stem = (file: string) => file.replace(IMPORT_FILE, "") || file;
+
+/** "a STEP file", "an STL mesh": how the placed component's comment and the messages name the file. */
+function fileWords(file: string): string {
+  const kind = importKind(file);
+  if (!kind || kind === "STEP") return "a STEP file";
+  return kind === "3MF" ? "a 3MF file" : `an ${kind} mesh`;
+}
 
 /** A short, unique name for step("…"): the file name without its extension. */
 function uniqueName(file: string, taken: string[]): string {
@@ -75,9 +92,9 @@ function placement(meta: ImportMeta, model: Model | null): V3 {
   return [r1(box[1][0] + 20 + w / 2), r1((box[0][1] + box[1][1]) / 2), 0];
 }
 
-export function importStatement(ident: string, name: string, at: V3): string {
+export function importStatement(ident: string, name: string, at: V3, file = "part.step"): string {
   const q = JSON.stringify(name);
-  return `\n// Imported from a STEP file: measure it, align to its holes and keep clear of it.\ncomponent ${ident} = step(${q}) {\n  at: (${at.map((v) => fmtNum(v, 1)).join(", ")})\n}\n`;
+  return `\n// Imported from ${fileWords(file)}: measure it, align to its holes and keep clear of it.\ncomponent ${ident} = step(${q}) {\n  at: (${at.map((v) => fmtNum(v, 1)).join(", ")})\n}\n`;
 }
 
 /** Add a statement placing the import, as one undoable change. Returns the component's name. */
@@ -86,7 +103,7 @@ export function placeImport(name: string): string | null {
   if (!imp?.meta) return null;
   const { source, model } = useDesign.getState();
   const ident = componentName(name, model);
-  const next = source.replace(/\s*$/, "\n") + importStatement(ident, name, placement(imp.meta, model));
+  const next = source.replace(/\s*$/, "\n") + importStatement(ident, name, placement(imp.meta, model), imp.file);
   commitSource(next, "you", `Placed ${name}`);
   return ident;
 }
@@ -100,9 +117,9 @@ function summary(meta: ImportMeta): string {
   return bits.join(", ");
 }
 
-/** Read a STEP file and check it before anything is stored. */
+/** Read a file and check it before anything is stored. */
 async function readFileBytes(file: File): Promise<Uint8Array> {
-  if (file.size > MAX_STEP_BYTES) throw new Error(`${file.name} is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports STEP files up to ${MAX_STEP_BYTES / 1024 / 1024} MB.`);
+  if (file.size > MAX_STEP_BYTES) throw new Error(`${file.name} is ${(file.size / 1e6).toFixed(1)} MB. Kerf imports files up to ${MAX_STEP_BYTES / 1024 / 1024} MB.`);
   if (!file.size) throw new Error(`${file.name} is empty.`);
   return new Uint8Array(await file.arrayBuffer());
 }
@@ -111,19 +128,20 @@ let busy = 0;
 export const importBusy = () => busy > 0;
 
 /**
- * Import STEP files into the open project. Each file is read by the kernel,
- * stored with the project, and (unless `place` is false) placed beside the design.
+ * Import STEP files and meshes into the open project. Each file is read by the
+ * kernel, stored with the project, and (unless `place` is false) placed beside the design.
  */
 export async function importStepFiles(files: File[], opts: { place?: boolean } = {}) {
   const cur = useProject.getState().current;
   if (!cur) return;
-  const steps = files.filter(isStepFile);
+  const steps = files.filter(isImportFile);
   if (!steps.length) {
-    toast({ kind: "warn", title: "Not a STEP file", detail: "Kerf imports parts as STEP files (.step or .stp). Most CAD tools and part suppliers offer them." });
+    toast({ kind: "warn", title: "Not a file Kerf can import", detail: "Kerf imports parts as STEP files (.step or .stp), which most CAD tools and part suppliers offer, and meshes (.stl, .obj or .3mf), which it turns into solids. DXF drawings (.dxf) come in as sketches." });
     return;
   }
   for (const file of steps) {
-    const progress = toast({ kind: "info", title: `Reading ${cleanName(file.name, 60)}…`, detail: "OpenCASCADE is loading the solids and looking for holes." }, 0);
+    const mesh = importKind(file.name) !== "STEP";
+    const progress = toast({ kind: "info", title: `Reading ${cleanName(file.name, 60)}…`, detail: mesh ? "Kerf is repairing the mesh, turning it into a solid and looking for holes." : "OpenCASCADE is loading the solids and looking for holes." }, 0);
     busy++;
     let hash = "";
     try {
@@ -161,12 +179,20 @@ export async function importStepFiles(files: File[], opts: { place?: boolean } =
   }
 }
 
+/** Import whatever was dropped or picked: DXF drawings as sketches, STEP files and meshes as parts. */
+export async function importAnyFiles(files: File[], opts: { place?: boolean; open?: boolean } = {}) {
+  const dxfs = files.filter(isDxfFile);
+  const rest = files.filter((f) => !isDxfFile(f));
+  if (dxfs.length) await importDxfFiles(dxfs, { open: opts.open });
+  if (rest.length || !dxfs.length) await importStepFiles(rest, { place: opts.place });
+}
+
 /** Swap in a new version of a file: designs keep their step("name") and pick up the new geometry. */
 export async function replaceImport(name: string, file: File) {
   const list = useImports.getState().list;
   const old = list.find((i) => i.name === name);
   if (!old) return;
-  if (!isStepFile(file)) return toast({ kind: "warn", title: "Not a STEP file", detail: "Choose a .step or .stp file." });
+  if (!isImportFile(file)) return toast({ kind: "warn", title: "Not a file Kerf can import", detail: "Choose a STEP file (.step or .stp) or a mesh (.stl, .obj or .3mf)." });
   const progress = toast({ kind: "info", title: `Reading ${cleanName(file.name, 60)}…` }, 0);
   busy++;
   let hash = "";
@@ -206,7 +232,7 @@ export async function removeImport(name: string) {
     for (const sp of [...spans].sort((a, b) => b.start - a.start)) {
       // take the comment line written above an imported component with it
       const before = next.slice(0, sp.start);
-      const comment = /\n\n?\/\/ Imported from a STEP file[^\n]*\n$/.exec(before);
+      const comment = /\n\n?\/\/ Imported from (?:a STEP file|an? (?:STL|OBJ) mesh|a 3MF file)[^\n]*\n$/.exec(before);
       const from = comment ? sp.start - comment[0].length + (comment[0].startsWith("\n") ? 1 : 0) : sp.start;
       const to = next[sp.end] === "\n" ? sp.end + 1 : sp.end;
       next = next.slice(0, from) + next.slice(to);
@@ -223,5 +249,8 @@ export async function downloadImport(name: string) {
   if (!imp) return;
   const data = importBytes(imp.hash) ?? (await getBlob(imp.hash));
   if (!data) return toast({ kind: "error", title: "This browser does not have the file", detail: "Use Replace to import it again." });
-  download(data as BlobPart, safeFileName(stem(imp.file), "step"), "model/step");
+  const kind = importKind(imp.file) ?? "STEP";
+  const ext = kind === "STEP" ? "step" : kind.toLowerCase();
+  const mime = { STEP: "model/step", STL: "model/stl", OBJ: "model/obj", "3MF": "model/3mf" }[kind];
+  download(data as BlobPart, safeFileName(stem(imp.file), ext), mime);
 }

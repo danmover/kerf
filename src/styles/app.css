@@ -2680,6 +2680,459 @@ a:hover {
   color: var(--fail);
 }
 
+/* CNC toolpaths panel */
+.cam-panel {
+  right: 12px;
+  top: 56px;
+  width: 318px;
+  /* clear of the timeline bar along the bottom */
+  max-height: calc(100% - 136px);
+  overflow-y: auto;
+  font-size: 12px;
+  display: grid;
+  gap: 6px;
+}
+.cam-panel .mt-head {
+  margin-bottom: 0;
+}
+.cam-panel .mt-num {
+  grid-template-columns: 82px 1fr auto;
+}
+.cam-panel .input.bad {
+  border-color: var(--fail);
+}
+.cam-more {
+  justify-self: start;
+  gap: 4px;
+}
+.cam-fold {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 4px;
+  border: none;
+  border-radius: 6px;
+  background: none;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 11px;
+  font-family: var(--mono);
+  letter-spacing: 0.04em;
+  text-align: left;
+  cursor: pointer;
+  min-width: 0;
+}
+.cam-fold .grow {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cam-fold:hover {
+  color: var(--text);
+  background: rgb(var(--line-rgb) / 0.35);
+}
+.cam-nums-row {
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+}
+.cam-small {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+  flex: 1;
+  font-size: 10.5px;
+}
+.cam-small .input {
+  height: 28px;
+  min-width: 0;
+  width: 100%;
+  padding-left: 6px;
+  padding-right: 2px;
+}
+.cam-panel .cam-machine .select {
+  grid-column: auto;
+}
+.cam-machine .cam-small {
+  flex: none;
+  width: 98px;
+}
+.cam-bar {
+  left: 128px;
+  right: 14px;
+  bottom: 12px;
+  margin: 0 auto;
+  max-width: 860px;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+}
+.cam-track {
+  position: relative;
+  display: grid;
+  gap: 3px;
+  min-width: 120px;
+}
+.cam-segs {
+  display: flex;
+  height: 4px;
+  border-radius: 2px;
+  overflow: hidden;
+  gap: 2px;
+  opacity: 0.85;
+}
+.cam-segs > span {
+  flex-basis: 0;
+  min-width: 2px;
+}
+.cam-track .slider {
+  width: 100%;
+}
+.cam-now {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 11px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.cam-bar .cam-clock {
+  min-width: 84px;
+  font-size: 11.5px;
+}
+.cam-note {
+  padding: 6px 9px;
+  border-radius: 7px;
+  background: rgb(var(--line-rgb) / 0.35);
+  font-size: 11.5px;
+  line-height: 1.4;
+  color: var(--text-2);
+}
+.cam-note.warn {
+  color: var(--warn);
+}
+.cam-note.fail {
+  color: var(--fail);
+}
+.cam-result {
+  display: grid;
+  gap: 6px;
+  border-bottom: 1px solid var(--line);
+  padding-bottom: 8px;
+  transition: opacity 0.2s;
+}
+.cam-result.stale {
+  opacity: 0.6;
+}
+.cam-sum {
+  font-size: 12.5px;
+}
+.cam-ops {
+  display: grid;
+  gap: 2px;
+}
+.cam-op {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 6px;
+  border-radius: 6px;
+  background: none;
+  border: none;
+  color: var(--text-2);
+  font: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+.cam-op:hover {
+  background: rgb(var(--line-rgb) / 0.4);
+  color: var(--text);
+}
+.cam-swatch {
+  width: 10px;
+  height: 10px;
+  border-radius: 3px;
+  flex: none;
+}
+.cam-scrub {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+.cam-clock {
+  text-align: right;
+  white-space: nowrap;
+}
+
+/* sheet cutting: a workspace under the top bar, the sheet beside its panel and the timeline under it */
+.sheet-work {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 45;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 340px;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: var(--bg-0);
+}
+.sheet-stage {
+  position: relative;
+  grid-column: 1;
+  grid-row: 1;
+  overflow: hidden;
+  background-color: var(--bg-0);
+  background-image: radial-gradient(rgb(var(--text-rgb) / 0.07) 1px, transparent 1.2px);
+  background-size: 14px 14px;
+  cursor: grab;
+  touch-action: none;
+}
+.sheet-stage:active {
+  cursor: grabbing;
+}
+.sheet-stage.empty {
+  display: grid;
+  place-items: center;
+  cursor: default;
+}
+.sheet-stage svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+  user-select: none;
+}
+.sheet-sheet {
+  filter: drop-shadow(0 6px 18px rgb(0 0 0 / 0.45));
+}
+.sheet-margin {
+  stroke: rgb(255 255 255 / 0.2);
+  stroke-width: 1;
+  stroke-dasharray: 2 5;
+}
+.sheet-label {
+  font-family: var(--sans);
+  font-weight: 600;
+  pointer-events: none;
+}
+.sheet-part.hi path {
+  stroke: var(--accent-2);
+  stroke-width: 2.4;
+  stroke-dasharray: none;
+}
+.sheet-travel {
+  stroke: rgb(var(--accent-2-rgb) / 0.55);
+  stroke-width: 1;
+  stroke-dasharray: 3 4;
+}
+.sheet-lead {
+  stroke: var(--accent-2);
+  stroke-width: 1.4;
+}
+.sheet-pierce {
+  stroke: var(--accent-2);
+  stroke-width: 5;
+  stroke-linecap: round;
+}
+.sheet-order {
+  fill: var(--text);
+  font-family: var(--mono);
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: var(--bg-0);
+  stroke-width: 3px;
+  stroke-linejoin: round;
+  pointer-events: none;
+}
+.sheet-move {
+  stroke: var(--accent-2);
+  stroke-width: 1.4;
+  stroke-dasharray: 3 3;
+}
+.sheet-head.on .sheet-glow {
+  animation: sheet-flicker 0.12s infinite alternate;
+  transform-box: fill-box;
+  transform-origin: center;
+}
+@keyframes sheet-flicker {
+  from {
+    opacity: 0.8;
+    transform: scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1.08);
+  }
+}
+.sheet-info {
+  position: absolute;
+  left: 14px;
+  top: 12px;
+  display: grid;
+  gap: 2px;
+  font-size: 12.5px;
+  pointer-events: none;
+}
+.sheet-info .mono {
+  font-size: 11px;
+}
+.sheet-hint {
+  position: absolute;
+  left: 14px;
+  bottom: 10px;
+  font-size: 11px;
+  pointer-events: none;
+}
+.sheet-thumbs {
+  position: absolute;
+  top: 10px;
+  right: 12px;
+  left: 220px;
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.sheet-thumb {
+  position: relative;
+  flex: none;
+  width: 64px;
+  height: 46px;
+  padding: 3px;
+  border-radius: 7px;
+  border: 1px solid var(--line-2);
+  background: rgb(var(--bg-1-rgb) / 0.85);
+  cursor: pointer;
+}
+.sheet-thumb svg {
+  position: static;
+  width: 100%;
+  height: 100%;
+}
+.sheet-thumb span {
+  position: absolute;
+  right: 4px;
+  bottom: 2px;
+  font-size: 10px;
+  color: var(--text);
+  text-shadow: 0 0 3px #000;
+}
+.sheet-thumb:hover {
+  border-color: var(--line-3);
+}
+.sheet-thumb.on {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 1px var(--accent);
+}
+.cam-panel.sheet-panel {
+  grid-column: 2;
+  grid-row: 1 / span 2;
+  width: auto;
+  max-height: none;
+  min-height: 0;
+  align-content: start;
+  padding: 12px 14px;
+  border-left: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.sheet-items {
+  display: grid;
+  gap: 1px;
+  max-height: 260px;
+  overflow-y: auto;
+  border-radius: 7px;
+  background: rgb(var(--line-rgb) / 0.22);
+  padding: 3px;
+}
+.sheet-item {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 2px 4px 2px 7px;
+  border-radius: 5px;
+  min-width: 0;
+}
+.sheet-item.hi {
+  background: rgb(var(--line-rgb) / 0.55);
+}
+.sheet-item.off .sheet-item-name {
+  color: var(--text-3);
+}
+.sheet-item-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  min-width: 0;
+}
+.sheet-warn {
+  color: var(--warn);
+  flex: none;
+}
+.sheet-qty {
+  width: 54px;
+  height: 24px;
+  padding: 0 4px 0 6px;
+  flex: none;
+}
+.sheet-of {
+  min-width: 30px;
+  font-size: 10.5px;
+}
+.sheet-save {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  border-top: 1px solid var(--line);
+  padding-top: 10px;
+  margin-top: 4px;
+}
+.sheet-save > .dim {
+  flex-basis: 100%;
+  font-size: 11px;
+}
+.cam-bar.sheet-bar {
+  grid-column: 1;
+  grid-row: 2;
+  max-width: none;
+  margin: 0;
+  min-height: 50px;
+  border-top: 1px solid var(--line);
+  background: var(--bg-1);
+}
+.sheet-nav {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  font-size: 11.5px;
+}
+@media (max-width: 760px) {
+  .sheet-work {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1fr) auto minmax(0, 0.9fr);
+  }
+  .cam-panel.sheet-panel {
+    grid-column: 1;
+    grid-row: 3;
+    border-left: none;
+    border-top: 1px solid var(--line);
+    overflow-y: auto;
+  }
+  .sheet-thumbs {
+    left: 14px;
+    top: 52px;
+    justify-content: flex-start;
+  }
+}
+
 /* frames' cut list, under the parts list */
 .frame-cuts {
   border-top: 1px solid var(--line);

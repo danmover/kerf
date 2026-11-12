@@ -109,7 +109,7 @@ function explode(shape: unknown): { raw: unknown; kind: ImportBody["kind"] }[] {
   for (; fx.More(); fx.Next()) loose.push(fx.Current());
   del(fx);
   if (loose.length) {
-    const builder = new o.BRep_Builder();
+    const builder = new o.TopoDS_Builder();
     const comp = new o.TopoDS_Compound();
     builder.MakeCompound(comp);
     for (const f of loose) builder.Add(comp, f);
@@ -123,7 +123,7 @@ function mergeExtra(list: { raw: unknown; kind: ImportBody["kind"] }[]) {
   if (list.length <= MAX_BODIES) return list;
   const o = oc();
   const keep = list.slice(0, MAX_BODIES - 1);
-  const builder = new o.BRep_Builder();
+  const builder = new o.TopoDS_Builder();
   const comp = new o.TopoDS_Compound();
   builder.MakeCompound(comp);
   for (const b of list.slice(MAX_BODIES - 1)) builder.Add(comp, b.raw);

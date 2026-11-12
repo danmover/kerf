@@ -14,6 +14,7 @@ import type { EvalSketch, SkConstraint } from "../../sketch/types";
 import { MAX_POLYGON_SIDES, activeSketch, editSketch, exitSketch, flash, makePattern, patternSpec, setSelection, setTool, useSketch, type LiveSolve, type SketchTool } from "./session";
 import { chainFrom, copyable, extendAt, extensionAt, mirrorStatement, offsetFor, offsetStatement, patternMoves, pieceAt, reflectAcross, trimAt } from "../../sketch/modify";
 import { projectEdges } from "../../sketch/project";
+import { insertDxfIntoSketch, pickDxf } from "../../app/dxf";
 import { sampleEllipse, splinePolyline } from "../../sketch/curves";
 import { kernel } from "../../kernel/client";
 import { applyXforms } from "../../kernel/recipe";
@@ -95,6 +96,15 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
       faceSketch(ctl, sk);
     }
   }, [sk, ctl]);
+  // geometry that came in from a file may lie outside the view
+  const faceCount = s.face;
+  const faced = useRef(faceCount);
+  useEffect(() => {
+    if (faced.current === faceCount) return;
+    faced.current = faceCount;
+    const cur = activeSketch();
+    if (cur) faceSketch(ctl, cur);
+  }, [faceCount, ctl]);
 
   useEffect(() => {
     ctl.setSketchMode(!!s.active);
@@ -1021,6 +1031,10 @@ export function SketchOverlay({ ctl }: { ctl: SceneController }) {
     const tools: Record<string, typeof s.tool> = { l: "line", r: "rect", c: "circle", a: "arc", s: "spline", o: "slot", h: "polygon", p: "point", d: "dimension", v: "select", t: "trim", e: "extend", f: "offset", m: "mirror", k: "pattern", j: "project" };
     if (tools[key]) {
       setTool(tools[key]);
+      return true;
+    }
+    if (key === "i") {
+      pickDxf((f) => void insertDxfIntoSketch(f));
       return true;
     }
     if (key === "g") {

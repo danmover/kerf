@@ -3,7 +3,7 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { applyXf, bboxOf, buildPartFull, importFaceColors, meshShape, solidVolume, type MeshData } from "./build";
+import { applyXf, bboxOf, buildPartFull, importFaceColors, importFaceted, meshShape, solidVolume, type MeshData } from "./build";
 import { applyXforms, hasDetail, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
 import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
 import { inspectPart as inspectForReview, solidPieces, type PartInspection } from "./inspect";
@@ -28,6 +28,8 @@ interface CacheEntry {
   pieces?: PartInspection["pieces"] | null;
   /** colours of each face, for imported bodies that carry them */
   faceColors: string[] | null;
+  /** a body of an imported mesh: its facets are shown smooth */
+  faceted: boolean;
   used: number;
   features: Map<string, FeatureTools>;
   /** cosmetic steps that could not be built */
@@ -111,13 +113,13 @@ export class KernelCore {
     } catch {
       volume = 0;
     }
-    return { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), used: ++this.tick, features, warnings };
+    return { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), faceted: importFaceted(item.recipe), used: ++this.tick, features, warnings };
   }
 
   mesh(hash: string, quality: "preview" | "final"): MeshData {
     const e = (quality === "final" ? this.detailCache.get(hash) : undefined) ?? this.get(hash);
     if (!e) throw new Error("not built");
-    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors, e.volume);
+    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors, e.volume, e.faceted);
     return e.meshes[quality]!;
   }
 
