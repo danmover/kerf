@@ -43,6 +43,7 @@ function control(c: ControlSpec): string {
       if (c.value !== c.min) o.push(`value: ${num(c.value)}`);
       if (c.unit) o.push(`unit: ${q(c.unit)}`);
       if (c.live) o.push("live: true");
+      if (c.state) o.push(`state: ${q(c.state)}`);
       return `slider(${q(c.label)}, ${q(c.send)}, ${o.join(", ")}${key})`;
     }
     case "toggle":

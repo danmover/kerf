@@ -51,7 +51,7 @@ export interface SignalItem {
 
 export type ControlSpec =
   | { kind: "button"; label: string; send: string; confirm?: string; tone?: "accent" | "danger" | "plain"; key?: string }
-  | { kind: "slider"; label: string; send: string; min: number; max: number; step: number; value: number; unit?: string; live: boolean; key?: string }
+  | { kind: "slider"; label: string; send: string; min: number; max: number; step: number; value: number; unit?: string; live: boolean; key?: string; state?: string }
   | { kind: "toggle"; label: string; on: string; off: string; state?: string; key?: string }
   | { kind: "field"; label: string; send: string; placeholder?: string; key?: string }
   | { kind: "choice"; label: string; options: string[]; send: string; key?: string };

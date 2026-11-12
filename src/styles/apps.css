@@ -600,6 +600,8 @@
   min-height: 0;
   border: 0;
   background: transparent;
+  /* the same scheme as the sandbox page, or the browser paints the frame opaque white under a dark page */
+  color-scheme: normal;
 }
 .ka-custom .ka-body,
 .ka-model .ka-body,

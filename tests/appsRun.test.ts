@@ -68,6 +68,16 @@ describe("the app builder's edits", () => {
     expect(m.apps!.map((a) => a.name)).toEqual(['Bench "two"']);
   });
 
+  it("keeps a slider's state: through the builder's edits", () => {
+    let src = SRC.replace("console(),", 'console(),\n    controls("Run", [slider("Fan", "fan {}", max: 100, unit: "%", state: "fan")]),');
+    let m = evaluate(src);
+    expect(m.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    src = resizePanel(src, appOf(m), 3, 3, 2);
+    m = evaluate(src);
+    const p = appOf(m).panels[3];
+    expect(p.kind === "controls" && p.controls[0]).toMatchObject({ kind: "slider", state: "fan", unit: "%" });
+  });
+
   it("writes a starter app that the language reads", () => {
     const m0 = evaluate(read("src/demos/sand-tunneller.kerf"));
     const src = appendApp(read("src/demos/sand-tunneller.kerf"), starterApp(m0, "Control room", ["fw.state", "front.rpm", "front.amps", "bat.volts"]));

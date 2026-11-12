@@ -598,9 +598,27 @@ class ControlsView extends PanelView {
             void this.send(fillSend(c.send, Number(r.value)));
           }
         };
-        r.onchange = () => void this.send(fillSend(c.send, Number(r.value)));
+        let held = false;
+        r.onpointerdown = () => (held = true);
+        r.onpointerup = r.onblur = () => (held = false);
+        r.onchange = () => {
+          held = false;
+          void this.send(fillSend(c.send, Number(r.value)));
+        };
         row.append(l, r, v);
-        this.inputs.push({ c, els: [r] });
+        this.inputs.push({
+          c,
+          els: [r],
+          // follows what the machine reports, except while it is being moved
+          update: c.state
+            ? () => {
+                const x = this.ctx.store.eval(c.state!);
+                if (held || typeof x !== "number" || !Number.isFinite(x) || Number(r.value) === x) return;
+                r.value = String(x);
+                v.textContent = `${fmt(Number(r.value))}${c.unit ? ` ${c.unit}` : ""}`;
+              }
+            : undefined,
+        });
         return row;
       }
       case "toggle": {
@@ -844,7 +862,7 @@ send:function(c){var now=Date.now();if(now-sentAt>1000){sentAt=now;sent=0;}if(++
 function size(){var d=Math.min(3,window.devicePixelRatio||1),w=innerWidth,h=innerHeight;if(cv.width!==Math.round(w*d)||cv.height!==Math.round(h*d)){cv.width=Math.round(w*d);cv.height=Math.round(h*d);}ctx.setTransform(d,0,0,d,0,0);g.w=w;g.h=h;}
 function fail(e){err.textContent=String(e&&e.message||e);}
 var last=0;
-function frame(now){requestAnimationFrame(frame);if(!draw)return;size();g.dt=last?(now-last)/1000:0;last=now;g.t=t;try{draw(g);err.textContent='';}catch(e){fail(e);}}
+function frame(now){requestAnimationFrame(frame);if(!draw)return;size();g.dt=last?Math.min(0.1,(now-last)/1000):0;last=now;g.t=t;try{draw(g);err.textContent='';}catch(e){fail(e);}}
 addEventListener('message',function(ev){var m=ev.data;if(!m||typeof m!=='object')return;
 if(m.kind==='init'){for(var k in m.theme)theme[k]=m.theme[k];try{var f=new Function('g','"use strict";'+m.code+'\n;return {draw:typeof draw==="function"?draw:null,setup:typeof setup==="function"?setup:null};');var r=f(g);draw=r.draw;setup=r.setup;if(setup)setup(g);}catch(e){fail(e);}if(!started){started=true;requestAnimationFrame(frame);}}
 else if(m.kind==='data'){t=m.t;for(var n in m.v){vals[n]=m.v[n];if(typeof m.v[n]==='number')put(n,m.t,m.v[n]);}}

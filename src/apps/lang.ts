@@ -268,7 +268,7 @@ export const APP_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   def(
     "slider",
-    ["label", "send", "min", "max", "step", "value", "unit", "live", "key"],
+    ["label", "send", "min", "max", "step", "value", "unit", "live", "state", "key"],
     (a) => {
       const min = a.num("min", 0);
       const max = a.num("max", 100);
@@ -276,9 +276,9 @@ export const APP_FNS: Record<string, Fn> = Object.fromEntries([
       const step = a.num("step", (max - min) / 100 >= 1 ? 1 : Number(((max - min) / 100).toPrecision(1)));
       if (!(step > 0)) a.ctx.error("slider(): step must be above 0");
       const value = a.num("value", min);
-      return wrap(CONTROL, { kind: "slider", label: a.str("label"), send: a.str("send"), min, max, step, value, unit: optStr(a, "unit"), live: a.bool("live"), key: controlKey(a) } satisfies ControlSpec, "slider");
+      return wrap(CONTROL, { kind: "slider", label: a.str("label"), send: a.str("send"), min, max, step, value, unit: optStr(a, "unit"), live: a.bool("live"), state: optExpr(a, "state"), key: controlKey(a) } satisfies ControlSpec, "slider");
     },
-    'slider("Fan", "fan {}", min: 0, max: 100, unit: "%") → sends the value in place of {} when let go (live: true sends while it moves).',
+    'slider("Fan", "fan {}", min: 0, max: 100, unit: "%", state: "fan") → sends the value in place of {} when let go (live: true sends while it moves); state: follows what the machine reports while it is not being moved.',
   ),
   def(
     "toggle",

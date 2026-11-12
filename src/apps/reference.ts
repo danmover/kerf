@@ -30,7 +30,7 @@ app "Maglev control room" {
     chart("Height", ["z", "zref"], unit: "µm", w: 4),
     bars("Coils", ["iLift", "i1", "i2", "i3", "i4"], min: -2000, max: 2000, unit: "mA"),
     lamps("Status", [lamp("Floating", "mode == 2", color: "green", off: "landed"), lamp("Fault", "fault != \\"\\"", color: "red")]),
-    controls("Run", [button("Launch", "launch", tone: "accent", key: "l"), button("Land", "land", key: " "), slider("Fan", "fan {}", max: 100, unit: "%"), toggle("Logging", "log on", "log off")]),
+    controls("Run", [button("Launch", "launch", tone: "accent", key: "l"), button("Land", "land", key: " "), slider("Fan", "fan {}", max: 100, unit: "%", state: "fan"), toggle("Logging", "log on", "log off")]),
     model("Live", moves: [slide(model_body, Z, "z / 1000")]),
     console(commands: ["status", "help"]),
   ]
