@@ -21,6 +21,7 @@ import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
 import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
+import { showConfiguration } from "../app/configs";
 import { openFilmMaker } from "../film/store";
 import { openFrameDialog } from "./FrameDialog";
 import { openCam } from "../cam/job";
@@ -269,6 +270,7 @@ export function findItems(ctx: FindContext): FindItem[] {
     push(
       ask("ask:mould", "Make", "Make a mould", "A two-part printed mould made from the part with mould(): keys, bolts, pour hole and vents", "mould mold casting cast resin silicone urethane polyurethane", "Make a two-part mould for the part I want to cast (ask me which if it isn't clear) with mould(): registration keys, clamping bolts, a pour hole and vents, split where it releases cleanly, and check it opens.", <Icon.Factory size={14} />),
       ask("ask:rounds", "Make", "Fillets that change, full rounds and uneven chamfers", "fillet([1, 4]) grows along an edge, full_round() rounds a rib or rim right over, between() rounds where two sets of faces meet, chamfer((3, 1), on:) or angle: cuts an uneven bevel", "variable radius fillet varying fillet changing radius taper fillet full round fillet round over bullnose rib top rounded rim face fillet between faces blend asymmetric chamfer unequal chamfer distance angle chamfer two distance chamfer setback", "Look at the parts' edges and rib tops: round rib tops, rims and handles right over with full_round(), make fillets grow where a load or flow needs it with a list of radii, blend face sets with between(), and use uneven chamfers where one face needs a longer lead-in.", <Icon.Fillet size={14} />),
+      ask("ask:configs", "Model", "Make sizes or variants of the design", "Keep S, M and L (or left and right, 2 or 4 bays) in one file as configurations, each checked and exported", "configurations configuration variants variant sizes size range family table family of parts design table small medium large versions options models S M L left hand right hand", "Turn this design into a family of configurations: pick the parameters that make the variants worth having (sizes, counts, hands), add a configs block with a row for each and a note on what each is for, show the main one, then check every configuration reads cleanly and fix any that fails.", <Icon.Layers size={14} />),
       ask("ask:split", "Make", "Split a part to fit the printer", "Cut a part too big for the bed into pieces with split:, lined up on dowel pins placed where it is solid", "split cut into pieces too big for the bed too large build volume print in pieces sections segments halves join dowel pins alignment pins glue together split body split part multi-body bodies", "Find the parts too big for their printer's bed and make each in pieces with split: (the fewest that fit, joined on dowel pins), choosing cuts where the part is solid and plain, then check every piece fits and every joint has its pins.", <Icon.Factory size={14} />),
       ask("ask:enclosure", "Make", "Make an enclosure", "Two printed shells with a lip and groove, screw posts, vents and openings for the connectors", "enclosure case box housing shell lid lip groove tongue joint parting line vents honeycomb fan grille", "Make a printed enclosure for the electronics in this design (ask me which board if it isn't clear): two shells split where it assembles easily, joined with lip_groove(), screw_boss posts with inserts, vents() where parts get warm, openings for every connector, and check every board mounts and fits.", <Icon.Cube size={14} />),
       ask("ask:sheet", "Make", "Make it from sheet metal", "Bent parts with sheet(): bend radii, reliefs, flat patterns and a laser DXF", "sheet metal bend fold brake laser flat pattern dxf aluminium steel chassis", "Rebuild the parts that suit it as bent sheet metal with sheet(): real bend radii and reliefs, flat patterns with bend tables and a DXF for laser cutting, and check every bend and flange.", <Icon.Layers size={14} />),
@@ -397,6 +399,12 @@ export function findItems(ctx: FindContext): FindItem[] {
       const g = EXPORT_GROUPS.find((x) => x.id === f.group)?.label ?? "";
       push({ id: `export:${f.id}`, group: "Export", title: `Export ${f.label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}`, detail: `${f.detail} · ${f.ext}`, keywords: `export download save file ${f.ext.replace(".", "")} ${g}`, icon: <I size={14} />, run: () => void runExport(f.id) });
     }
+
+    // ── the design's configurations ──
+    const configs = model?.configs;
+    for (const r of configs?.rows ?? [])
+      push({ id: `config:${r.label}`, group: "Model", title: `Show configuration “${r.label}”`, detail: r.note ?? (r.sets.map((s) => `${s.param} ${s.text}`).join(", ") || "No values of its own"), keywords: `configuration variant size ${configs!.title} ${r.label}`, icon: <Icon.Layers size={14} />, tag: r.label === configs!.active ? "on" : undefined, run: () => showConfiguration(r.label) });
+    if (configs?.active !== undefined) push({ id: "config:none", group: "Model", title: "Show the parameters as written", detail: "No configuration: every parameter's own value", keywords: "configuration variant as written default no configuration", icon: <Icon.Layers size={14} />, run: () => showConfiguration(null) });
 
     // ── the design's parts ──
     const seen = new Set<string>();

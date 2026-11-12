@@ -131,7 +131,27 @@ export type Stmt =
     }
   | { k: "analysis"; label: string; items: Item[]; span: Span; labelSpan: Span }
   // a control room or live view for the machine: panels that read its signals, controls that send it commands
-  | { k: "app"; label: string; items: Item[]; span: Span; labelSpan: Span };
+  | { k: "app"; label: string; items: Item[]; span: Span; labelSpan: Span }
+  /** configurations: variants of the design in one file (S/M/L), each a row of parameter values; show: picks one */
+  | {
+      k: "configs";
+      title: string;
+      props: { name: string; value: Expr; span: Span }[];
+      rows: ConfigRowNode[];
+      span: Span;
+      /** offset just after the opening brace */
+      bodyStart: number;
+    };
+
+/** One configuration: `config "Large" { width: 80, wall: 3 } "for the big drill set"`. */
+export interface ConfigRowNode {
+  label: string;
+  note?: string;
+  sets: { param: string; value: Expr; span: Span }[];
+  span: Span;
+  /** offset just after the row's opening brace, where new values go */
+  setsStart: number;
+}
 
 /** Geometry declared in a sketch: points, lines, circles, arcs, splines and ellipses. */
 export type SketchEntityKind = "point" | "line" | "circle" | "arc" | "spline" | "ellipse";

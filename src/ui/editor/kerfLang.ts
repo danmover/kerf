@@ -85,6 +85,8 @@ const parser: StreamParser<St> = {
       if (STATEMENTS.has(w)) return "keyword";
       if (BRIEF_ENTRIES.has(w) && !stream.string.slice(0, stream.start).trim() && stream.peek() === " ") return "keyword";
       if (LINE_KEYWORDS.has(w) && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/, false)) return "keyword";
+      // configs "Sizes" { and its config "Large" { rows: only at the start of a line, before a quoted label (or configs {)
+      if ((w === "configs" || w === "config") && !stream.string.slice(0, stream.start).trim() && stream.match(w === "configs" ? /^\s*("(?:[^"\\]|\\.)*"\s*)?\{/ : /^\s+"(?:[^"\\]|\\.)*"\s*\{/, false)) return "keyword";
       // mate name = against(...) and mate against(...): a statement only at the start of a line
       if (w === "mate" && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*[(=]/, false)) return "keyword";
       if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";

@@ -344,7 +344,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
   const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h), mesh: meshOf, sweepLater: true });
-  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines };
+  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines, src, refresh: () => setTimeout(refreshReport, 0) };
   reportBase = { report: base, ctx };
   const report = composeReport(base, ctx);
   set({

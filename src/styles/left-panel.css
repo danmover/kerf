@@ -748,6 +748,96 @@
   opacity: 0.85;
   flex: none;
 }
+/* configurations: a chip per variant above the parameters, and a tag on values a configuration sets */
+.lp-configs {
+  margin-bottom: 6px;
+}
+.lp-config-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+  padding: 4px 12px 2px;
+}
+.lp-config-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  padding: 0 9px;
+  border-radius: 11px;
+  border: 1px solid var(--line-2);
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 11.5px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.lp-config-chip:hover {
+  color: var(--text);
+  border-color: var(--accent-2);
+}
+.lp-config-chip.on {
+  color: var(--accent-2);
+  border-color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.lp-config-chip.ghost {
+  border-style: dashed;
+  color: var(--text-3);
+}
+.lp-config-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  flex: none;
+}
+.lp-config-dot.pass {
+  background: var(--pass);
+}
+.lp-config-dot.warn {
+  background: var(--warn);
+}
+.lp-config-dot.fail {
+  background: var(--fail);
+}
+.lp-config-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 4px 12px 0;
+}
+.lp-config-act {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  color: var(--text-3);
+  background: none;
+  border: none;
+  padding: 2px 0;
+  cursor: pointer;
+}
+.lp-config-act:hover:not(:disabled) {
+  color: var(--accent-2);
+}
+.lp-config-name {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+.lp-config-name .input {
+  height: 22px;
+  width: 130px;
+  font-size: 11.5px;
+}
+.lp-pconfig {
+  flex: none;
+  padding: 0 5px;
+  border-radius: 4px;
+  font-size: 10px;
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
 .lp-pimpact {
   display: inline-flex;
   align-items: center;

@@ -308,8 +308,37 @@ export interface EvalParam {
   desc?: string;
   locked: boolean;
   span: Span;
+  /** where the value is written: the parameter's own, or the configuration row that sets it (edits go there) */
   valueSpan: Span;
   usedBy: string[];
+  /** the configuration whose row gives this value (the design is read as it) */
+  config?: string;
+  /** with config: the value the parameter's own line gives (what every configuration that leaves it gets) */
+  asWritten?: number | string | boolean;
+}
+
+/** One configuration: a variant of the design, as the parameter values it changes. */
+export interface ConfigRow {
+  label: string;
+  note?: string;
+  sets: { param: string; value: number | string | boolean; text: string; span: Span; valueSpan: Span }[];
+  span: Span;
+  /** offset just after the row's opening brace, where new values go */
+  setsStart: number;
+}
+
+/** configs { }: the design's variants in one file. */
+export interface ConfigTable {
+  title: string;
+  rows: ConfigRow[];
+  /** show: the configuration the file is read as (none: the parameters as written) */
+  shown?: string;
+  showSpan?: { span: Span; valueSpan: Span };
+  /** the configuration this reading used: show:, or the one asked for (exports and checks read each in turn) */
+  active?: string;
+  span: Span;
+  /** offset just after the block's opening brace */
+  bodyStart: number;
 }
 
 export type ReqStatus = "pass" | "fail" | "pending" | "error";
@@ -493,6 +522,8 @@ export interface Model {
   };
   /** geometry hashes of the solids mates pick faces from (the engine has the kernel list any it has not, then evaluates again) */
   mateQueries?: string[];
+  /** configurations: variants of the design in one file */
+  configs?: ConfigTable;
   /** parts made in pieces (split:): where they were cut and how the pieces join */
   splits?: SplitRecord[];
   /** split parts waiting for their cuts and pins, worked out from the part as built (the engine does, then evaluates again) */

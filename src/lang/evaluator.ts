@@ -19,7 +19,7 @@ import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import { materialDensity } from "../library/standards";
 import { materialRecord, pricePerKg } from "../library/materialDb";
-import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion, SplitRecord } from "../core/model";
+import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion, SplitRecord } from "../core/model";
 import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
@@ -64,7 +64,12 @@ export interface EvalOptions {
   faces?: FaceLookup;
   /** the cuts and pins of split parts, worked out from each part as built (defaults to the table set with setEvalSplits) */
   splits?: SplitLookup;
+  /** read the design as this configuration (a configs row's label) instead of the one show: names */
+  config?: string;
 }
+
+/** Most configurations one design keeps. */
+const MAX_CONFIGS = 50;
 
 class EvalError extends Error {
   constructor(
@@ -302,6 +307,9 @@ class Evaluator {
   splitQueries: SplitQuery[] = [];
   splits: SplitRecord[] = [];
   splitWhole = new Map<string, EvalPart>();
+  /** configs { }: the table, and the values of the row the design is read as */
+  configTable: ConfigTable | undefined;
+  configValues = new Map<string, ConfigRow["sets"][number] & { row: string }>();
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -381,6 +389,7 @@ class Evaluator {
   }
 
   run(program: Program) {
+    this.prepareConfigs(program);
     for (const s of program.stmts) {
       this.current = new Set();
       this.stmtGeo = [];
@@ -400,6 +409,92 @@ class Evaluator {
       if (id) this.deps.set(id, this.current);
       this.current = null;
     }
+    this.finishConfigs();
+  }
+
+  /**
+   * configs { }: read first, so the row the design is read as (opts.config, else show:) gives its parameters their
+   * values. The values are constants: numbers, text or true/false.
+   */
+  prepareConfigs(program: Program) {
+    const stmts = program.stmts.filter((s): s is Extract<Stmt, { k: "configs" }> => s.k === "configs");
+    if (!stmts.length) {
+      if (this.opts.config !== undefined) this.diags.push({ message: `There is no configuration "${this.opts.config}": the design has no configs block`, start: 0, end: 1, severity: "error" });
+      return;
+    }
+    for (const extra of stmts.slice(1)) this.diags.push({ message: "A design has one configs block: put every configuration in the first one", start: extra.span.start, end: extra.span.start + 7, severity: "error" });
+    const s = stmts[0];
+    const table: ConfigTable = { title: s.title, rows: [], span: s.span, bodyStart: s.bodyStart };
+    const report = (e: unknown, where: string) => {
+      if (!(e instanceof EvalError)) throw e;
+      this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+    };
+    for (const p of s.props) {
+      if (p.name !== "show") {
+        this.diags.push({ message: `Unknown configs field "${p.name}". Use show: "Label" to say which configuration the design is read as.`, start: p.span.start, end: p.span.end, severity: "warning" });
+        continue;
+      }
+      try {
+        const v = this.expr(p.value, null);
+        if (typeof v !== "string") throw new EvalError('show: names a configuration in quotes, like show: "Large"', p.value.span);
+        table.shown = v;
+        table.showSpan = { span: p.span, valueSpan: p.value.span };
+      } catch (e) {
+        report(e, "In configs: ");
+      }
+    }
+    for (const r of s.rows) {
+      if (!r.label.trim()) {
+        this.diags.push({ message: "A configuration needs a name, like config \"Large\" { width: 80 }", start: r.span.start, end: r.span.end, severity: "error" });
+        continue;
+      }
+      if (table.rows.some((x) => x.label === r.label)) {
+        this.diags.push({ message: `Configuration "${r.label}" appears twice`, start: r.span.start, end: r.span.end, severity: "warning" });
+        continue;
+      }
+      const sets: ConfigRow["sets"] = [];
+      for (const st of r.sets) {
+        try {
+          const v = this.expr(st.value, null);
+          if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") throw new EvalError(`the value for ${st.param} must be a number, text or true/false (a configuration's values are written out, not worked out from other names)`, st.value.span);
+          if (sets.some((x) => x.param === st.param)) throw new EvalError(`${st.param} is set twice`, st.span);
+          sets.push({ param: st.param, value: v, text: this.src.slice(st.value.span.start, st.value.span.end), span: st.span, valueSpan: st.value.span });
+        } catch (e) {
+          // the values are read before anything is defined, so a name in one is never found
+          const name = e instanceof EvalError ? /^"([^"]+)" is not defined/.exec(e.message)?.[1] : undefined;
+          report(name ? new EvalError(`the value for ${st.param} must be written out, like ${st.param}: 80 (a configuration's values cannot be worked out from ${name} or other names)`, st.value.span) : e, `In configuration "${r.label}": `);
+        }
+      }
+      table.rows.push({ label: r.label, ...(r.note !== undefined ? { note: r.note } : {}), sets, span: r.span, setsStart: r.setsStart });
+    }
+    if (table.rows.length > MAX_CONFIGS) {
+      const extra = table.rows[MAX_CONFIGS];
+      this.diags.push({ message: `A design is limited to ${MAX_CONFIGS} configurations; the rest are left out`, start: extra.span.start, end: extra.span.end, severity: "warning" });
+      table.rows.length = MAX_CONFIGS;
+    }
+    const want = this.opts.config ?? table.shown;
+    if (want !== undefined) {
+      const row = table.rows.find((x) => x.label === want);
+      if (row) {
+        table.active = row.label;
+        for (const st of row.sets) this.configValues.set(st.param, { ...st, row: row.label });
+      } else if (this.opts.config !== undefined) this.diags.push({ message: `There is no configuration "${want}" (the configurations are ${table.rows.map((x) => `"${x.label}"`).join(", ") || "none yet"})`, start: s.span.start, end: s.span.start + 7, severity: "error" });
+      else if (table.showSpan) this.diags.push({ message: `show: "${want}" is not one of the configurations (${table.rows.map((x) => `"${x.label}"`).join(", ") || "none yet"}), so the parameters are read as written`, start: table.showSpan.valueSpan.start, end: table.showSpan.valueSpan.end, severity: "warning" });
+    }
+    this.configTable = table;
+  }
+
+  /** Every name a configuration sets should be a parameter of the design. */
+  finishConfigs() {
+    const t = this.configTable;
+    if (!t) return;
+    const names = new Set(this.params.map((p) => p.name));
+    for (const r of t.rows)
+      for (const st of r.sets)
+        if (!names.has(st.param)) {
+          const near = this.params.map((p) => p.name).find((n) => n.toLowerCase() === st.param.toLowerCase());
+          this.diags.push({ message: `Configuration "${r.label}" sets ${st.param}, which is not a parameter of the design${near ? ` (did you mean ${near}?)` : ""}. Declare it with param ${st.param} = …`, start: st.span.start, end: st.span.end, severity: "warning" });
+        }
   }
 
   stmtId(s: Stmt): string | undefined {
@@ -425,28 +520,38 @@ class Evaluator {
       case "param": {
         this.blocks.push({ name: s.name, kind: "param", span: s.span, locked: s.locked });
         let v = this.expr(s.value, null);
+        const own = v;
         const ov = this.opts.overrides?.[s.name];
+        // the configuration the design is read as gives the value, and owns its edits
+        let row = ov === undefined ? this.configValues.get(s.name) : undefined;
+        if (row && typeof row.value !== typeof v) {
+          this.diags.push({ message: `Configuration "${row.row}" sets ${s.name} to ${typeName(row.value)}, but ${s.name} is ${typeName(v)}; the parameter's own value is used`, start: row.valueSpan.start, end: row.valueSpan.end, severity: "error" });
+          row = undefined;
+        }
         if (ov !== undefined) v = ov;
+        else if (row) v = row.value;
         if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") {
           throw new EvalError(`Parameter "${s.name}" must be a number, text or true/false (got ${typeName(v)}). Use let for vectors and lists.`, s.valueSpan);
         }
+        const valueSpan = row ? row.valueSpan : s.valueSpan;
         const min = s.min ? this.num(this.expr(s.min, null), s.min.span) : undefined;
         const max = s.max ? this.num(this.expr(s.max, null), s.max.span) : undefined;
         if (typeof v === "number" && ((min !== undefined && v < min - 1e-9) || (max !== undefined && v > max + 1e-9))) {
-          this.diags.push({ message: `Parameter "${s.name}" = ${fmtNum(v)} is outside its range ${fmtNum(min ?? -Infinity)}..${fmtNum(max ?? Infinity)}`, start: s.valueSpan.start, end: s.valueSpan.end, severity: "warning" });
+          this.diags.push({ message: `Parameter "${s.name}" = ${fmtNum(v)}${row ? ` (configuration "${row.row}")` : ""} is outside its range ${fmtNum(min ?? -Infinity)}..${fmtNum(max ?? Infinity)}`, start: valueSpan.start, end: valueSpan.end, severity: "warning" });
         }
         this.define(s.name, "param", v, s.nameSpan);
         this.params.push({
           name: s.name,
           value: v,
-          text: this.src.slice(s.valueSpan.start, s.valueSpan.end),
+          text: row ? row.text : this.src.slice(s.valueSpan.start, s.valueSpan.end),
           min,
           max,
           desc: s.desc,
           locked: s.locked,
           span: s.span,
-          valueSpan: s.valueSpan,
+          valueSpan,
           usedBy: [],
+          ...(row && (typeof own === "number" || typeof own === "string" || typeof own === "boolean") ? { config: row.row, asWritten: own } : {}),
         });
         return;
       }
@@ -489,6 +594,9 @@ class Evaluator {
         return;
       case "decision":
         this.decision(s);
+        return;
+      case "configs":
+        // read before everything else (prepareConfigs)
         return;
       case "scenario":
         this.scenario(s);
@@ -3534,6 +3642,7 @@ class Evaluator {
       ...(this.frames.length ? { frames: this.frames } : {}),
       ...(this.mateResult ? { mates: this.mateResult } : {}),
       ...(this.mateQueries.size ? { mateQueries: [...this.mateQueries] } : {}),
+      ...(this.configTable ? { configs: this.configTable } : {}),
       ...(this.splits.length ? { splits: this.splits } : {}),
       ...(this.splitQueries.length ? { splitQueries: this.splitQueries } : {}),
     };

@@ -293,6 +293,7 @@ frame name { profile: "2020", box: (w, d, h) or path: [...] }   // structural me
 require "Label" [hard|soft] [for use_id, ...]: condition      // checked every rebuild; hard by default; for links it to brief uses
 brief { ... }                                                 // the design brief, once, near the top (see below)
 decision name "Title" { ask, chose, by, why, option ... }      // a recorded design choice and its alternatives (below)
+configs "Sizes" { show: "M", config "M" { width: 60 } ... }    // variants of the design in one file, as the parameter values each changes (see Configurations)
 wire a.PIN -> b.PIN { gauge: 22 }  /  net NAME: a.PIN, b.PIN   // wiring between catalog parts (see Machines)
 firmware name { board: ctrl, ... }                             // generated firmware for a controller
 test "Label": "procedure"                                      // a physical test the build must pass
@@ -511,6 +512,16 @@ decision wall_thickness "Wall thickness" {
   option "2.4 mm" { wall: 2.4mm } "Stiffer and heavier."
 }
 An option's { param: value } list names parameters only; switching to that option writes those values into the params. Options without values are structural (switching them needs a design change). The chosen option's values should match the params; the panel shows any difference as "adjusted".
+
+## Configurations
+Variants of one design kept in one file (a family: S, M and L; left and right hand; 2 or 4 bays), each a row of the parameter values it changes. Use them when the user wants several versions to make, not one choice (that is a decision).
+configs "Sizes" {
+  show: "Medium"                                     // the one the design is read as now; leave it out to read the params as written
+  config "Small" { width: 40, depth: 30 }
+  config "Medium" { width: 60, depth: 45 } "The one most people buy"
+  config "Large" { width: 80, depth: 60, wall: 3 } "For the big drill set"
+}
+One configs block per design, at the top level, after the params. A row's values are written out (numbers with units, text, true/false), never worked out from other names; the geometry follows from the params as usual, so derived sizes go in let, not in the rows. A param a row leaves keeps its own value, shared by every row that leaves it. While a configuration is shown, edits to the values it sets (set_params, the params panel, a decision's option) change its row, not the param line. Switch by changing show:. The checks read every other configuration too and report any that does not build, fails a requirement or goes outside a param's range (config:<label> items); fix those in the row or the design. File → Export → every configuration writes each one's parts and parts list, with the family table.
 
 ## Analysis blocks
 A structural analysis says how parts are held and what loads them. After every build the app solves a finite-element model of the named parts (bonded where they touch, unless touching: makes them contacts) and adds strength and stiffness checks.

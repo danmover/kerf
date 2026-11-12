@@ -5,6 +5,7 @@ import { detailKernel, kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
 import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
+import { configVerdict, familyTableCsv, readConfig, type ConfigVerdict } from "../core/configs";
 import { buildDirection, buildPack, orientForPrint } from "../machine/pack";
 import { boardSpecs } from "../machine/boards";
 import { boardProblems, gerberZip, routeBoards } from "../machine/boardPack";
@@ -288,6 +289,72 @@ export async function export3mfPlate(selectionOnly = false) {
       ? { kind: "warn", title: "Print plate exported, but it is bigger than the bed", detail: `${copies.length} parts need ${Math.round(extentX)} × ${Math.round(extentY)} mm. Split them across plates in your slicer.` }
       : { kind: "success", title: "Print plate exported", detail: `${copies.length} part${copies.length === 1 ? "" : "s"}, each turned to print on a flat face, on a ${bed[0]} × ${bed[1]} mm bed in their colours. Opens in PrusaSlicer, Bambu Studio, Cura and Orca.` },
   );
+}
+
+/** Final meshes for parts of another reading of the design (a configuration): the ones built already, the rest built now. */
+async function meshesFor(parts: EvalPart[]): Promise<Map<string, MeshData>> {
+  const out = new Map<string, MeshData>();
+  const need: EvalPart[] = [];
+  for (const p of parts) {
+    const have = meshes.get(p.hash)?.final;
+    if (have) out.set(p.hash, have);
+    else if (!need.some((q) => q.hash === p.hash)) need.push(p);
+  }
+  if (!need.length) return out;
+  const job = kernel.build(
+    need.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
+    "final",
+    (r) => out.set(r.hash, r.mesh),
+    () => undefined,
+  );
+  await job.done;
+  return out;
+}
+
+const configBusy = { on: false };
+
+/**
+ * Every configuration at once: a folder each with an STL per part to make (named with how many) and its parts list,
+ * and the family table (configurations.csv) with how each reads against the requirements.
+ */
+export async function exportConfigurations() {
+  const { model, source } = useDesign.getState();
+  const table = model?.configs;
+  if (!model || !table?.rows.length) return toast({ kind: "warn", title: "No configurations to export", detail: 'Add a configs block (configs { config "Large" { width: 80 } }) or save the current values as one in the Parameters tab.' });
+  if (configBusy.on) return;
+  configBusy.on = true;
+  const t = toast({ kind: "info", title: "Exporting every configuration…", detail: `Reading and building ${table.rows.length} configurations.` }, 0);
+  try {
+    const files: { name: string; data: Uint8Array | string }[] = [];
+    const results = new Map<string, ConfigVerdict>();
+    const broken: string[] = [];
+    let stls = 0;
+    for (const row of table.rows) {
+      const m = row.label === table.active ? model : readConfig(source, row.label);
+      const verdict = configVerdict(m, row.label);
+      results.set(row.label, verdict);
+      const folder = safeFileName(row.label, "x").replace(/\.x$/, "");
+      if (verdict.errors.length) {
+        broken.push(row.label);
+        files.push({ name: `${folder}/DOES NOT BUILD.txt`, data: `Read as ${row.label}, the design stops at:\n\n${verdict.errors.join("\n")}\n` });
+        continue;
+      }
+      const made = m.parts.filter((p) => madePart(p) && !p.hidden);
+      const built = await meshesFor(made);
+      const unique = uniqueMade(made.flatMap((part) => (built.has(part.hash) ? [{ part, mesh: built.get(part.hash)! }] : [])));
+      for (const u of unique) files.push({ name: `${folder}/${u.part.name}${u.qty > 1 ? ` x${u.qty}` : ""}.stl`, data: new Uint8Array(writeStl([{ mesh: u.mesh, xf: [] }], `Kerf: ${u.part.label} (${row.label})`)) });
+      stls += unique.length;
+      files.push({ name: `${folder}/parts list.csv`, data: bomCsv(m) });
+    }
+    files.push({ name: "configurations.csv", data: familyTableCsv(model, results) });
+    download(await zipFiles(files), safeFileName(`${baseName()} configurations`, "zip"), "application/zip");
+    toast({ kind: broken.length ? "warn" : "success", title: "Configurations exported", detail: `${table.rows.length} configurations, ${stls} STL files and the family table (configurations.csv).${broken.length ? ` ${broken.join(", ")} did not build: see its folder.` : ""}` }, broken.length ? 9000 : undefined);
+  } catch (e) {
+    toast({ kind: "error", title: "Could not export the configurations", detail: errorText(e) }, 9000);
+  } finally {
+    configBusy.on = false;
+    dismissToast(t);
+  }
 }
 
 /** One STL per made part, in the part's own coordinates, named with how many to print. */

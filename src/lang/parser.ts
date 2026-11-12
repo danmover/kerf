@@ -1,7 +1,7 @@
 // Recursive-descent parser for the Kerf design language.
 // Recovers at statement boundaries so the editor can show several errors.
 
-import type { Arg, BriefItem, BriefProp, DecisionOptionNode, Expr, Item, Program, SketchEntityKind, ScenarioItem, SketchItem, Span, Stmt } from "./ast";
+import type { Arg, BriefItem, BriefProp, ConfigRowNode, DecisionOptionNode, Expr, Item, Program, SketchEntityKind, ScenarioItem, SketchItem, Span, Stmt } from "./ast";
 import { lex, LexError, type Token } from "./lexer";
 
 export interface Diagnostic {
@@ -125,7 +125,7 @@ class Parser {
     }
     while (!this.is("eof")) {
       const tk = this.peek();
-      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.machineStmtAhead()) && this.atLineStart()) return;
+      if (depth <= 0 && ((tk.kind === "kw" && TOP_LEVEL.has(tk.value)) || this.atDrawing() || this.atFrame() || this.atMate() || this.atConfigs() || this.machineStmtAhead()) && this.atLineStart()) return;
       if (tk.kind === "op" && tk.value === "{") depth++;
       if (tk.kind === "op" && tk.value === "}") depth--;
       this.i++;
@@ -148,6 +148,11 @@ class Parser {
   /** `frame <name> {` starts a frame of structural members; elsewhere "frame" is an ordinary name. */
   atFrame() {
     return this.is("ident", "frame") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
+  }
+
+  /** `configs "Sizes" {` (or `configs {`) starts the design's configurations; elsewhere "configs" is an ordinary name. */
+  atConfigs() {
+    return this.is("ident", "configs") && ((this.is("str", undefined, 1) && this.is("op", "{", 2)) || this.is("op", "{", 1));
   }
 
   /** `mate against(...)` or `mate name = against(...)`: how two parts meet; elsewhere "mate" is an ordinary name. */
@@ -301,6 +306,11 @@ class Parser {
       const items = this.block();
       return { k: "frame", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
+    if (this.atConfigs()) {
+      const start = tk.start;
+      this.next();
+      return this.configs(start);
+    }
     if (this.atMate()) {
       const start = tk.start;
       this.next();
@@ -319,7 +329,7 @@ class Parser {
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, frame, mate, configs, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );
@@ -620,6 +630,50 @@ class Parser {
     }
     this.expect("op", "}");
     return { k: "decision", name: nameTk.value, title, props, options, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end }, bodyStart: open.end };
+  }
+
+  /**
+   * configs "Sizes" {
+   *   show: "Medium"
+   *   config "Small" { width: 40, depth: 30 } "What it is for"
+   * }
+   */
+  configs(start: number): Stmt {
+    const title = this.is("str") ? this.next().value : "Configurations";
+    const open = this.expect("op", "{");
+    const props: { name: string; value: Expr; span: Span }[] = [];
+    const rows: ConfigRowNode[] = [];
+    while (!this.isOp("}")) {
+      if (this.is("eof")) throw new ParseError('Unclosed configs block: missing "}"', open.start, open.end);
+      const tk = this.peek();
+      if (tk.kind === "ident" && tk.value === "config" && this.is("str", undefined, 1)) {
+        this.next();
+        const label = this.next().value;
+        const brace = this.expect("op", "{", '"{" and the parameter values, like config "Large" { width: 80 }');
+        const sets: { param: string; value: Expr; span: Span }[] = [];
+        while (!this.isOp("}")) {
+          if (this.is("eof")) throw new ParseError("Unclosed configuration values: missing \"}\"", tk.start, tk.end);
+          const key = this.expect("ident", undefined, "a parameter name");
+          if (!this.eat("op", "=")) this.expect("op", ":", '":" or "="');
+          const value = this.expr();
+          sets.push({ param: key.value, value, span: { start: key.start, end: this.prevEnd() } });
+          while (this.eat("op", ",") || this.eat("op", ";"));
+        }
+        this.expect("op", "}");
+        const note = this.is("str") ? this.next().value : undefined;
+        rows.push({ label, ...(note !== undefined ? { note } : {}), sets, span: { start: tk.start, end: this.prevEnd() }, setsStart: brace.end });
+      } else if ((tk.kind === "ident" || tk.kind === "kw") && this.isOp(":", 1)) {
+        this.next();
+        this.next();
+        const value = this.expr();
+        props.push({ name: tk.value, value, span: { start: tk.start, end: this.prevEnd() } });
+      } else {
+        throw new ParseError(`Unexpected "${tk.value || "end of file"}" inside configs. Use show: "Label" or config "Label" { param: value } "what it is for".`, tk.start, Math.max(tk.end, tk.start + 1));
+      }
+      while (this.eat("op", ",") || this.eat("op", ";"));
+    }
+    this.expect("op", "}");
+    return { k: "configs", title, props, rows, span: { start, end: this.prevEnd() }, bodyStart: open.end };
   }
 
   block(): Item[] {
