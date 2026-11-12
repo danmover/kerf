@@ -49,7 +49,7 @@ import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
 import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, PliesSpec, PreloadSpec, RandomSpec, RegionSpec, Resolution, SineSpec, SupportSpec, ThermalSpec, TopologySpec, TouchingSpec, TouchSpec, V3, Within } from "./spec";
-import { describeRegion } from "./spec";
+import { PLIES_KIND, describeRegion } from "./spec";
 import { grms, PSD_PRESETS } from "./fe/vibration";
 import { layupText, parseLayup, plyMaterial, PLY_MATERIALS } from "./fe/laminate";
 import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
@@ -126,7 +126,7 @@ const BLOCK = "load block";
 const SINE = "sine sweep";
 const PSD = "random spectrum";
 const TOUCH = "touching pair";
-const PLIES = "ply stack";
+const PLIES = PLIES_KIND;
 const BOLT = "tightened bolt";
 
 function def(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {

@@ -699,11 +699,20 @@ function mould(c: Ctx, rules: Rules): ProcessFinding[] {
 
 /** What the laminate over the part's outer surface weighs: the part is modelled as its outer surface, hollow inside. */
 function layup(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFinding {
-  const { wall, density } = rules.layup!;
+  const { wall, density, plies } = rules.layup!;
   let area = 0;
   for (let s = 0; s < c.samples.length; s++) area += c.sampleArea[s];
   const grams = (area * wall * density) / 1000;
   stats.nominalWall = wall;
+  // its own plies: the ply book, ply by ply from the outer surface in
+  if (plies)
+    return {
+      rule: "layup",
+      status: "info",
+      title: `Laminate about ${fmt(grams, 0)} g, ${plies.count} plies`,
+      detail: `Ply book, from the outer surface in: ${plies.lines.join("; ")}${plies.zones.length ? `; then, inside the stack where they lie, ${plies.zones.join("; ")}` : ""}. The ${fmt(wall)} mm stack weighs ${fmt(plies.arealMass, 0)} g/m², about ${fmt(grams, 0)} g over ${fmt(area / 100, 0)} cm² of surface, before ${plies.zones.length ? "the zones' plies, " : ""}metal inserts, filler and paint.`,
+      value: grams,
+    };
   return {
     rule: "layup",
     status: "info",

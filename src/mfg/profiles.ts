@@ -9,8 +9,10 @@ import { materialRecord } from "../library/materialDb";
 import { FDM_DEFAULTS, INFILL_PATTERNS } from "./infill";
 import { CUTTER_SOURCES, cutterFit, fdmNeeds, flowRatio, frameFit, isMetal, materialInfo, millClass, mouldPressure, suggestMaterials } from "./materials";
 import type { ProcessId, ProcessSpec, Rules, SettingValue, Tool } from "./types";
+import type { PliesSpec, RegionSpec } from "../analysis/spec";
+import { plyBook, plyStacks } from "./plies";
 
-export type SettingKind = "number" | "bool" | "dir" | "dirs" | "size" | "choice" | "tools";
+export type SettingKind = "number" | "bool" | "dir" | "dirs" | "size" | "choice" | "tools" | "plies";
 
 export interface SettingDef {
   key: string;
@@ -256,6 +258,7 @@ export const PROCESSES: Record<ProcessId, ProcessDef> = {
       { key: "slides", kind: "dirs", def: [], doc: "extra mould pieces and the way each pulls out, for faces neither half reaches (the core between a frame's rear stays, between fork legs)" },
       { key: "cores", kind: "bool", def: false, doc: "split cores that come apart inside the part, for small pockets no mould half or slide reaches (each adds tool cost; false makes them failures)" },
       { key: "wall", kind: "number", def: 1.2, doc: "nominal laminate thickness, mm (about ten 0.12 mm plies); the factory builds it up at joints, the bottom bracket and the head tube" },
+      { key: "plies", kind: "plies", def: null, doc: 'the ply schedule, laid from the outer surface in: plies("[0/±45/90]s", "carbon") or a list of them, with zone: ones for the reinforcement at joints, bearing seats and bolts; it sets the wall and the weight, makes the ply book, and every analysis of the part uses it' },
       { key: "mould", kind: "size", def: [1500, 1000, 400], doc: "largest mould the shop's press or oven takes (x, y, z), mm", machine: true },
     ],
   },
@@ -395,6 +398,9 @@ export function sanitizeSettings(id: ProcessId, raw: unknown): Record<string, Se
     else if (sd.kind === "tools" && Array.isArray(v)) {
       const list = v.filter((t): t is Tool => Array.isArray(t) && t.length === 2 && t.every((x) => typeof x === "number" && Number.isFinite(x) && x > 0));
       if (list.length) out[sd.key] = sortTools(list);
+    } else if (sd.kind === "plies") {
+      const list = plyStacks(v);
+      if (list.length) out[sd.key] = list;
     }
   }
   return out;
@@ -574,11 +580,13 @@ export function resolveRules(spec: ProcessSpec, material: string): Rules {
     }
     case "carbon_layup": {
       const pull = dir(s.pull, Z);
+      // its own plies, when it gives them, make the wall and its weight
+      const book = plyBook(plyStacks(s.plies));
       return {
         ...base,
         // the part is the laminate's outer surface: walls are the plies, not the solid
         reach: { dirs: [pull, neg(pull), ...dirs(s.slides, [])], severity: s.cores === true ? "info" : "fail", what: "mould", relief: s.cores === true ? "split cores" : "mould slides or split cores" },
-        layup: { wall: num(s.wall, 1.2), density: materialRecord(material)?.density ?? 1.55 },
+        layup: book ? { wall: book.wall, density: book.density, plies: book } : { wall: num(s.wall, 1.2), density: materialRecord(material)?.density ?? 1.55 },
         holes: { minD: 3, why: "holes in carbon are drilled after curing, and bolted ones need a bonded metal insert" },
         envelope: { size: size(s.mould, [1500, 1000, 400]), frame: null, what: "largest mould the shop presses" },
       };
@@ -660,7 +668,36 @@ function settingSource(kind: SettingKind, v: SettingValue): string {
   if (kind === "dirs") return "[" + (v as V3[]).map(axisName).join(", ") + "]";
   if (kind === "choice") return JSON.stringify(v);
   if (kind === "tools") return "[" + (v as Tool[]).map(([d, r]) => `(${fmt(d, 3)}, ${fmt(r, 3)})`).join(", ") + "]";
+  if (kind === "plies") return "[" + plyStacks(v).map(pliesSource).join(", ") + "]";
   return "(" + (v as V3).map((x) => fmt(x, 3)).join(", ") + ")";
+}
+
+/** Kerf source for a zone of plies: zone(at: (0, 0, 40), r: 30), face(frame, -Z) */
+function regionSource(r: RegionSpec): string {
+  const v = (x: V3) => `(${x.map((k) => fmt(k, 3)).join(", ")})`;
+  const within = "within" in r && r.within ? `, within: ${regionSource(r.within)}` : "";
+  switch (r.t) {
+    case "face":
+      return `face(${r.part}, ${axisName(r.dir)})`;
+    case "sphere":
+      return `zone(at: ${v(r.at)}, r: ${fmt(r.r, 3)}${within})`;
+    case "box":
+      return `zone(at: ${v(r.at)}, size: ${v(r.size)}${within})`;
+    case "cyl":
+      return `zone(at: ${v(r.at)}, d: ${fmt(r.d, 3)}, axis: ${axisName(r.axis)}, length: ${fmt(r.length, 3)}${within})`;
+    default:
+      return `zone(at: (0, 0, 0), r: 1)`;
+  }
+}
+
+/** Kerf source for a stack of plies: plies("[0/±45/90]s", "carbon", zone: zone(at: (0, 0, 0), r: 45), name: "bottom bracket") */
+function pliesSource(p: PliesSpec): string {
+  const args = [JSON.stringify(p.code), JSON.stringify(p.material)];
+  if (p.t !== undefined) args.push(`t: ${fmt(p.t, 3)}`);
+  if (p.zone) args.push(`zone: ${regionSource(p.zone)}`);
+  const auto = `${p.code} `;
+  if (p.label && !p.label.startsWith(auto)) args.push(`name: ${JSON.stringify(p.label)}`);
+  return `plies(${args.join(", ")})`;
 }
 
 /** Kerf source for a process: mfg.cnc_mill(tool_d: 2, setups: [Z, -Z, X]) */

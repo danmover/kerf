@@ -23,6 +23,8 @@ import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPre
 import type { ShellPart, ShellPlies } from "./fe/shells";
 import { PLY_MATERIALS } from "./fe/laminate";
 import { resolvedSettings } from "../mfg/profiles";
+import { plyBook, plyStacks } from "../mfg/plies";
+import type { PliesSpec } from "./spec";
 import type { BoltWant } from "./fe/bolts";
 import { GRADES, gradeFrom, headDims, type HeadType } from "../library/fasteners";
 import { threadSpec } from "../library/standards";
@@ -318,6 +320,19 @@ export function partPrint(spec: StructuralSpec, p: EvalPart, m: MechMaterial, me
 }
 
 const numberOr = (v: unknown, d: number) => (typeof v === "number" && v > 0 ? v : d);
+/** A carbon layup's laminate thickness: its plies' when its process gives them, otherwise its wall:. */
+const laminateT = (p: EvalPart) => plyBook(plyStacks(resolvedSettings(p.process!).plies))?.wall ?? numberOr(resolvedSettings(p.process!).wall, 1.2);
+const plyList = (l: PliesSpec) => l.angles.map((angle) => ({ angle, m: PLY_MATERIALS[l.material], t: l.t ?? PLY_MATERIALS[l.material].t }));
+/** Stacks laid from the outside in (the zones' plies inside them, where they lie), as a shell's laminate. */
+function shellPlies(stacks: PliesSpec[], fibre: StructuralSpec["fibre"]): ShellPlies {
+  const base = stacks.filter((l) => !l.zone);
+  return {
+    plies: base.flatMap(plyList),
+    patches: stacks.filter((l) => l.zone).map((l) => ({ region: l.zone!, plies: plyList(l), label: l.label })),
+    label: base.map((l) => `${l.code} of ${PLY_MATERIALS[l.material].label}${l.t ? ` (${fmtNum(l.t, 3)} mm plies)` : ""}`).join(", then "),
+    fibre: fibre ?? "auto",
+  };
+}
 
 /** What an analysis asks for that thin-wall shells do not solve, in words. */
 function shellsCannot(spec: StructuralSpec): string {
@@ -359,7 +374,7 @@ export function structuralInput(
   // when everything analysed is one, unless asked for solids or for what shells cannot follow (the same list as beams)
   const shellOf = (p: EvalPart): ShellPart | undefined =>
     p.process?.id === "carbon_layup"
-      ? { kind: "laminate", t: numberOr(resolvedSettings(p.process).wall, 1.2) }
+      ? { kind: "laminate", t: laminateT(p) }
       : p.sheet
         ? { kind: "sheet", t: p.sheet.t }
         : spec.elements === "shells"
@@ -387,20 +402,21 @@ export function structuralInput(
       if (sh?.kind === "sheet") return { error: `${p.label} is sheet metal, so it has no plies: leave part: ${p.name} out of ${named[0]?.label ?? "the plies"}.` };
       const base = mine.filter((l) => !l.zone);
       if (!base.length) return { error: `${mine[0].label} lays plies inside a stack, and ${p.label} has none: give its stack too, like layup: [plies("[0/±45/90]s"), plies("[0/90]", zone: …)].` };
-      const ply = (l: (typeof mine)[number]) => l.angles.map((angle) => ({ angle, m: PLY_MATERIALS[l.material], t: l.t ?? PLY_MATERIALS[l.material].t }));
-      plied.set(p.name, {
-        plies: base.flatMap(ply),
-        patches: mine.filter((l) => l.zone).map((l) => ({ region: l.zone!, plies: ply(l), label: l.label })),
-        label: base.map((l) => `${l.code} of ${PLY_MATERIALS[l.material].label}${l.t ? ` (${fmtNum(l.t, 3)} mm plies)` : ""}`).join(", then "),
-        fibre: spec.fibre ?? "auto",
-      });
+      plied.set(p.name, shellPlies(mine, spec.fibre));
     }
     if (!plied.size) return { error: "layup: has plies for none of the analysed parts: they are for carbon layups (process: mfg.carbon_layup), or the part each names with part:." };
   }
+  // a carbon layup's own plies, from its process (mfg.carbon_layup(plies: ...)), unless the analysis gives it others
+  if (shells)
+    for (const p of parts) {
+      if (plied.has(p.name) || p.process?.id !== "carbon_layup") continue;
+      const own = plyStacks(resolvedSettings(p.process).plies);
+      if (own.some((l) => !l.zone)) plied.set(p.name, shellPlies(own, spec.fibre));
+    }
   // a carbon layup solved as solid looks far stiffer and stronger than its laminate: say so, and how to see it as one
   const solidLayups = shells ? [] : parts.filter((p) => p.process?.id === "carbon_layup");
   const layupWarning = solidLayups.length
-    ? `${solidLayups.map((p) => p.label).join(", ")} ${solidLayups.length > 1 ? "are carbon layups" : "is a carbon layup"}, solved here as if solid carbon, which looks far stiffer and stronger than its ${fmtNum(numberOr(resolvedSettings(solidLayups[0].process!).wall, 1.2))} mm laminate: ${
+    ? `${solidLayups.map((p) => p.label).join(", ")} ${solidLayups.length > 1 ? "are carbon layups" : "is a carbon layup"}, solved here as if solid carbon, which looks far stiffer and stronger than its ${fmtNum(laminateT(solidLayups[0]))} mm laminate: ${
         spec.elements === "solid" ? "leave elements: out to analyse it as a laminate shell" : !beamsCan ? `${shellsCannot(spec)} needs solid elements, so check its strength in an analysis without it` : "analyse it on its own (or with other layups and sheet parts) to see it as a laminate shell"
       }.`
     : undefined;

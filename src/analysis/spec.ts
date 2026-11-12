@@ -428,6 +428,9 @@ export interface StructuralSpec {
 }
 
 /** plies("[0/±45/90]s", "carbon"): a stack of composite plies, from the outside in. */
+/** What a plies() value is (its object's kind), wherever it is given: an analysis's layup: or a carbon layup's process. */
+export const PLIES_KIND = "ply stack";
+
 export interface PliesSpec {
   /** each ply's angle from 0°, degrees, counterclockwise seen from outside; the first is the outer ply */
   angles: number[];

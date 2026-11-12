@@ -46,8 +46,12 @@ import { studyVariable } from "../analysis/studyLang";
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
+import { plyBook, plyStacks } from "../mfg/plies";
 import { DIM_STYLES, DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, WELD_KINDS, defaultSpec, parseScale, type DimStyleName, type DrawingSpec, type SheetSize, type ViewKind, type WeldKind } from "../drawing/spec";
 import { GDT_KINDS, type GdtKind } from "../drawing/gdt";
+
+/** Functions a part's process: can call besides the usual ones: a carbon layup's plies and the zones they reinforce. */
+const PROCESS_CALLS: Record<string, Fn> = { plies: ANALYSIS_FNS.plies, zone: ANALYSIS_FNS.zone };
 
 export interface EvalOptions {
   /** param name -> replacement number (used by the feasibility solver) */
@@ -2095,6 +2099,13 @@ class Evaluator {
           });
     // a sheet() body is cut and bent unless the part says how it is made
     if (!process && state.sheet && state.props.process !== false) process = { id: "sheet_metal", settings: { t: state.sheet.t } };
+    // a layup's plies make its wall: a wall: that says otherwise is not used
+    const laid = process?.id === "carbon_layup" ? plyBook(plyStacks(process.settings.plies)) : null;
+    const wallSet = process?.settings.wall;
+    if (laid && typeof wallSet === "number" && Math.abs(laid.wall - wallSet) > 0.005) {
+      const at = processSpan ?? s.span;
+      this.diags.push({ message: `In part "${s.name}": wall: ${fmtNum(wallSet, 3)} is not used: its plies make a ${fmtNum(laid.wall, 3)} mm wall. Leave wall: out.`, start: at.start, end: at.end, severity: "warning", rule: `${s.name} layup wall` });
+    }
     const material = partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process);
     const limit = allowableStrain(material);
     for (const c of state.strain) {
@@ -2580,7 +2591,14 @@ class Evaluator {
         case "prop": {
           if (st.cosmetic) throw new EvalError("Properties belong outside the cosmetic { } block", it.span);
           if (!PART_PROPS.includes(it.name)) throw new EvalError(`Unknown part property "${it.name}". Use: ${PART_PROPS.join(", ")}`, it.span);
-          st.props[it.name] = this.expr(it.value, scope);
+          const saved = this.callOverride;
+          // a carbon layup's ply schedule is written in its process: mfg.carbon_layup(plies: [plies(...), plies(..., zone: zone(...))])
+          if (it.name === "process") this.callOverride = { ...saved, ...PROCESS_CALLS };
+          try {
+            st.props[it.name] = this.expr(it.value, scope);
+          } finally {
+            this.callOverride = saved;
+          }
           st.propSpans[it.name] = it.span;
           break;
         }
