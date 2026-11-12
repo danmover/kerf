@@ -322,6 +322,7 @@ function Legend({ result, field, target, scale, trueScale, label, stale }: { res
       )}
       <div className="res-meta mono">
         {label} · {result.heatOnly ? (result.thermal?.transient ? `after ${duration(result.thermal.transient.time)}` : "settled temperatures") : scale <= 0 ? "undeformed" : trueScale ? "true-scale shape" : `shape ×${fmtNum(scale, scale < 10 ? 1 : 0)}`}
+        {result.vibration && (result.vibration.kind === "sine" ? ` · shaking at ${fmtNum(result.vibration.at ?? 0, (result.vibration.at ?? 0) < 100 ? 1 : 0)} Hz, each spot at its peak` : " · 3σ of the random shaking")}
         {section.on && result.interior && " · the cut face shows inside"}
       </div>
     </>

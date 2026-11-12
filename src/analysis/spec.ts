@@ -105,6 +105,34 @@ export interface ModalSpec {
   damping: number;
   /** printer moves: acceleration in mm/s² that sets the frame ringing after each move */
   ringing?: number;
+  /** a sine sweep answered from the modes */
+  shake?: SineSpec;
+  /** random shaking of the supports answered from the modes */
+  random?: RandomSpec;
+  /** how long it is shaken, s: its stresses are judged for that many cycles (unset: running for good, 10⁷) */
+  duration?: number;
+  /** the shaking's fatigue: the surface (unset: from how each part is made) and the chance it lasts (default 50 %) */
+  finish?: Finish;
+  reliability?: number;
+}
+
+/**
+ * A sine sweep: the supports shaken back and forth at accel g along dir at every frequency from lo to hi Hz in turn,
+ * or, with no accel, the loads going up and down at every frequency.
+ */
+export interface SineSpec {
+  lo: number;
+  hi: number;
+  accel?: number;
+  dir?: V3;
+  label: string;
+}
+
+/** Random shaking of the supports along dir: a base acceleration spectrum, (Hz, g²/Hz) joined straight on log-log axes. */
+export interface RandomSpec {
+  points: [number, number][];
+  dir: V3;
+  label: string;
 }
 
 /** A floor: stiff ones by their elastic modulus, soft ones by how much they give per area. */

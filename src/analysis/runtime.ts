@@ -389,7 +389,8 @@ export function structuralInput(
     // with heat, a bought component of an unknown material is its own insides (copper, board and plastic), not a plastic
     const component = p.kind === "component";
     // with fatigue, the same material machined and cast has two S-N curves
-    const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : undefined;
+    const shaken = !!(spec.modal?.shake || spec.modal?.random);
+    const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : shaken ? (spec.modal!.finish ?? partFinish(p)) : undefined;
     // a screw or bolt of a known grade is as strong as that grade says (an 8.8 bolt is not mild steel)
     const grade = !spec.material && p.fastener ? gradeFrom(p.fastener.grade) : undefined;
     const key = (temps ? `${name}|${component}` : name) + (finish ? `|${finish}` : "") + (grade ? `|${grade}` : "");
@@ -462,6 +463,15 @@ export function structuralInput(
     maxDeflection: spec.maxDeflection,
     masses: spec.masses,
     modes: spec.modal?.modes,
+    ...(spec.modal?.shake || spec.modal?.random
+      ? {
+          ...(spec.modal.shake ? { shake: { lo: spec.modal.shake.lo, hi: spec.modal.shake.hi, ...(spec.modal.shake.accel !== undefined ? { accel: spec.modal.shake.accel, dir: spec.modal.shake.dir } : {}) } } : {}),
+          ...(spec.modal.random ? { random: { points: spec.modal.random.points, dir: spec.modal.random.dir } } : {}),
+          damping: spec.modal.damping,
+          ...(spec.modal.duration !== undefined ? { duration: spec.modal.duration } : {}),
+          shakeLife: { finishes, reliability: spec.modal.reliability ?? 0.5 },
+        }
+      : {}),
     drop: spec.drop,
     ...(th
       ? {
@@ -703,7 +713,7 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const { status, note } = strengthVerdict(spec, r);
   out.push(...dynamicItems(spec, r, base, { status, note }));
   // modal and drop analyses report through their own items; a static strength line only when there are loads
-  if (spec.drop || (spec.modal && !spec.loads.length && !spec.accel)) {
+  if (spec.drop || (spec.modal && (spec.modal.shake || spec.modal.random || (!spec.loads.length && !spec.accel)))) {
     if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
     return out;
   }

@@ -565,6 +565,20 @@ analysis "Frame shake" {
   damping: 0.02                                // fraction of critical damping (default 0.02)
 }
 A mode that moves 5 % or more of the mass fails when a running speed or band covers it (±10 %) and warns within a factor of √2; ringing over 0.02 mm warns. The result names where each mode moves most: stiffen there (a brace, gusset, deeper section) or move the speed.
+Shaking (how hard it answers, not just where it resonates) is answered from those modes: shake: is a sine sweep, random: random vibration from a spectrum. Both shake the supports, so they take no load:, gravity or accel: (a sine with no acceleration makes the analysis's loads go up and down instead):
+analysis "Shaker table" {
+  parts: [bracket, board]
+  fix: face(bracket, -Z)
+  carries: mass(face(board, +Z), 80g)
+  shake: sine(10Hz, 500Hz, 2g, Z)             // the supports shaken at 2 g (peak) along Z at every frequency in turn; sine(20Hz, 200Hz) with load: makes the loads go up and down
+  damping: 0.02                                // fraction of critical damping (2 %: bolted and printed parts, 5 %: rubber mounts)
+}
+analysis "Truck ride" {
+  fix: face(case, -Z)
+  random: psd("truck", Z)                      // "truck" (ASTM D4169, 0.52 g rms), "navmat" (NAVMAT P-9492, 6.06 g rms) or psd([(20Hz, 0.01), (80Hz, 0.04), (350Hz, 0.04), (2000Hz, 0.007)], Z) in g²/Hz
+  duration: 2h                                 // how long it is shaken (default: for good, 10⁷ cycles); finish: and reliability: set its S-N curve
+}
+modes: defaults to 12 here. A sweep shows the stresses and movement at the worst frequency (each spot at its own peak) with the response across the band; random shows 3σ stresses (RMS in the result) and Steinberg's three-band fatigue life. The safety factor is against the fatigue strength for the cycles shaken (default target 1.5); a life shorter than duration: fails. A warning says when the modes found reach too little of the band or move under 80 % of the mass: ask for more modes:.
 Drops, knocks and tip-overs are held only by the floor they land on (no fix:, load:, gravity or excite:):
 analysis "Desk drop" {
   parts: [case, lid]

@@ -7,7 +7,7 @@ import type { AnalysisSpec } from "../analysis/spec";
 import { electricMaterial } from "../analysis/electricMaterials";
 
 export interface AnalysisKind {
-  id: "strength" | "fatigue" | "drop" | "vibration" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
+  id: "strength" | "fatigue" | "drop" | "vibration" | "shaking" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
@@ -57,8 +57,17 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "Natural frequencies and whether a motor or the road will make it ring",
     keywords: "modal resonance natural frequency vibrate shake rattle hum stiffness",
     icon: "Graph",
-    is: (a) => a.kind === "structural" && !!a.modal,
+    is: (a) => a.kind === "structural" && !!a.modal && !a.modal.shake && !a.modal.random,
     ask: "Set up a vibration analysis for this design: find its natural frequencies, compare them with what will shake it in use (motors, fans, the road), then run it and tell me if anything will resonate and how to fix it.",
+  },
+  {
+    id: "shaking",
+    label: "Shaking",
+    detail: "A sine sweep or random vibration (a shaker table, a truck ride, an engine): how far it shakes, the stress and how long it lasts",
+    keywords: "sine sweep harmonic response frequency response shaker table shake test random vibration psd grms navmat truck transport ride vibration fatigue steinberg",
+    icon: "Graph",
+    is: (a) => a.kind === "structural" && !!(a.modal?.shake || a.modal?.random),
+    ask: "Set up a shaking analysis for this design from how it will be used: a sine sweep for a motor, engine or shaker test (the band and how hard), or random vibration for transport or a vehicle (a standard spectrum like the truck or NAVMAT one, and how long), with what it carries; then run it and tell me how far it shakes, the worst stress, how long it lasts and how to make it shake less.",
   },
   {
     id: "heat",
