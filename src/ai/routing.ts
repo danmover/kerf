@@ -39,6 +39,8 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   "inspect_part",
   "get_sketch",
   "view_drawing",
+  // runs the app's twin headless; changes nothing
+  "try_app",
   "process_guide",
   "compare_processes",
   "plan_manufacturing",

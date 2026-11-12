@@ -15,6 +15,7 @@ import { Icon } from "../ui/icons";
 import { fmtNum } from "../lang/values";
 import { ErrorBoundary } from "../ui/ErrorBoundary";
 import { DrawingSwitch, DrawingView } from "../ui/drawing/DrawingView";
+import { AppView } from "../ui/apps/AppView";
 import { PhoneWorkspace } from "./PhoneWorkspace";
 import { gridFor, useWindowSize, useWorkspaceLayout, type WorkspaceLayout } from "../app/layout";
 import { LeftRail } from "../ui/LeftRail";
@@ -80,6 +81,11 @@ export function Workspace() {
               </ErrorBoundary>
               <ErrorBoundary label="Drawings">
                 <DrawingView />
+              </ErrorBoundary>
+              <ErrorBoundary label="App">
+                <AppView />
+              </ErrorBoundary>
+              <ErrorBoundary label="Drawings">
                 <DrawingSwitch />
               </ErrorBoundary>
             </div>

@@ -28,6 +28,9 @@ import { ANALYSIS_KINDS, kindsFor } from "./analysisKinds";
 import { openAnalysis } from "./AnalysisPanel";
 import { CATEGORY_LABEL } from "./ChecksPanel";
 import { DOCK_TABS } from "./Dock";
+import { openApp } from "../apps/session";
+import { AppGlyph, newAppInDesign } from "./apps/actions";
+import { BUILD_APP_ASK } from "./apps/AppsPanel";
 import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
@@ -88,6 +91,13 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
     keywords: "simulation physics firmware run scenario test virtual prototype",
     ask: "Add a simulation scenario for this design: what it should do in use and how we would know it worked, then run it and tell me what you find.",
     askTitle: "Add a simulation",
+  },
+  apps: {
+    title: "Apps: live views and controls",
+    detail: "Your own programs for the machine: live numbers, charts, controls, a console and the design in 3D, on its simulated twin or the real one over USB; save one as a program of its own",
+    keywords: "app apps control room dashboard hmi gui interface telemetry live data serial monitor plotter usb twin digital twin standalone program software desktop exe gauges readouts",
+    ask: BUILD_APP_ASK,
+    askTitle: "Build a control app",
   },
   make: { detail: "How each part is made: process, machine limits, cost and time", keywords: "manufacturing manufacture dfm process cost print cnc quote factory production" },
   bom: { detail: "Quantities, make or buy, prices and where to buy", keywords: "bom bill of materials buy shopping order cost price suppliers" },
@@ -177,6 +187,11 @@ export function findItems(ctx: FindContext): FindItem[] {
           run: () => (t.id === "code" ? (v.dockTab === "code" && v.dockOpen ? undefined : toggleCode()) : useView.setState({ dockTab: t.id, dockOpen: true })),
         });
     }
+    // ── apps: the design's own, and a new one ──
+    for (const a of model?.apps ?? [])
+      push({ id: `app:${a.name}`, group: "Machines", title: a.name, detail: a.about ?? `An app with ${a.panels.length} panel${a.panels.length === 1 ? "" : "s"}`, keywords: "app control room live view dashboard run twin usb telemetry", icon: <AppGlyph size={14} />, tag: "here", run: () => openApp(a.name) });
+    if (model?.machine || model?.apps?.length)
+      push({ id: "app:new", group: "Machines", title: "New app", detail: "A starter control app from the machine's firmware and simulation, to build on", keywords: "app control room dashboard new create make gui hmi live view", icon: <AppGlyph size={14} />, run: newAppInDesign });
     for (const t of LEFT_TABS) {
       const f = TAB_FIND[t.id];
       push({ id: `left:${t.id}`, group: "Panels", title: f?.title ?? cap(t.label), detail: f?.detail, keywords: f?.keywords, icon: t.icon, pane: "model", run: () => useView.setState({ leftTab: t.id }) });

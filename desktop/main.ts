@@ -164,12 +164,12 @@ app.on("web-contents-created", (_e, wc) => {
 function lockDown() {
   const allowed = new Set(["media", "clipboard-sanitized-write", "fullscreen", "pointerLock"]);
   session.defaultSession.setPermissionRequestHandler((wc, permission, done, details) => {
-    // the microphone, for voice input; never the camera
-    if (permission === "media") return done(isOurs(wc.getURL()) && !(details as { mediaTypes?: string[] }).mediaTypes?.includes("video"));
+    // the microphone for voice input, and the camera for an app's camera panel: Kerf's own page only
+    if (permission === "media") return done(isOurs(wc.getURL()));
     done(allowed.has(permission) && isOurs(wc.getURL()));
   });
   session.defaultSession.setPermissionCheckHandler((wc, permission) => !!wc && isOurs(wc.getURL()) && (allowed.has(permission) || permission === "media" || permission === "serial"));
-  // a USB serial port for the Calibrate panel's bench test: the one the person picks
+  // a USB serial port for the Calibrate panel's bench test and the apps' USB link: the one the person picks
   session.defaultSession.on("select-serial-port", (e, ports, wc, pick) => {
     e.preventDefault();
     if (!isOurs(wc.getURL()) || !ports.length) return pick("");

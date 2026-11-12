@@ -141,6 +141,11 @@ class Parser {
     return this.is("ident", "drawing") && this.is("ident", undefined, 1) && this.is("op", "{", 2);
   }
 
+  /** app "Control room" { ... } */
+  atApp() {
+    return this.is("ident", "app") && this.is("str", undefined, 1);
+  }
+
   /** wire a.X -> b.Y, net NAME: ..., firmware NAME { }, test "label": ... */
   machineStmtAhead(): boolean {
     const tk = this.peek();
@@ -273,10 +278,17 @@ class Parser {
       const items = this.block();
       return { k: "drawing", name: nameTk.value, items, span: { start, end: this.prevEnd() }, nameSpan: { start: nameTk.start, end: nameTk.end } };
     }
+    if (this.atApp()) {
+      const start = tk.start;
+      this.next();
+      const labelTk = this.expect("str", undefined, 'an app name in quotes, like app "Control room" { ... }');
+      const items = this.block();
+      return { k: "app", label: labelTk.value, items, span: { start, end: this.prevEnd() }, labelSpan: { start: labelTk.start, end: labelTk.end } };
+    }
     if (this.machineStmtAhead()) return this.machineStmt();
     if (tk.kind !== "kw" || !TOP_LEVEL.has(tk.value)) {
       throw new ParseError(
-        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, wire, net, firmware, test, buy, scenario) but found "${tk.value}"`,
+        `Expected a top-level statement (brief, param, let, component, interface, part, sketch, require, decision, analysis, drawing, wire, net, firmware, test, buy, scenario, app) but found "${tk.value}"`,
         tk.start,
         Math.max(tk.end, tk.start + 1),
       );

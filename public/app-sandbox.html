@@ -1,0 +1,19 @@
+<!doctype html><html><head><meta charset="utf-8"><meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval'; style-src 'unsafe-inline'; img-src data: blob:">
+<style>html,body{margin:0;height:100%;overflow:hidden;background:transparent}canvas{display:block;width:100%;height:100%}#err{position:absolute;inset:auto 6px 6px 6px;font:11px/1.4 ui-monospace,monospace;color:#ff8a95;white-space:pre-wrap}</style></head>
+<body><canvas id="c"></canvas><div id="err"></div><script>(function(){
+var cv=document.getElementById('c'),err=document.getElementById('err'),ctx=cv.getContext('2d');
+var draw=null,setup=null,vals={},hist={},theme={},t=0,started=false,state={},sent=0,sentAt=0;
+function put(n,tt,v){var h=hist[n];if(!h){h=hist[n]={t:[],v:[]};}h.t.push(tt);h.v.push(v);var cut=0;while(cut<h.t.length&&h.t[cut]<tt-120)cut++;if(cut>0){h.t.splice(0,cut);h.v.splice(0,cut);}}
+var g={ctx:ctx,w:0,h:0,t:0,dt:0,state:state,theme:theme,
+v:function(n){var x=vals[n];return x===undefined?NaN:x;},
+history:function(n,s){var h=hist[n];if(!h)return{t:[],v:[]};s=s||10;var i=0;while(i<h.t.length&&h.t[i]<t-s)i++;return{t:h.t.slice(i),v:h.v.slice(i)};},
+send:function(c){var now=Date.now();if(now-sentAt>1000){sentAt=now;sent=0;}if(++sent>20)return;parent.postMessage({kind:'send',text:String(c)},'*');}};
+function size(){var d=Math.min(3,window.devicePixelRatio||1),w=innerWidth,h=innerHeight;if(cv.width!==Math.round(w*d)||cv.height!==Math.round(h*d)){cv.width=Math.round(w*d);cv.height=Math.round(h*d);}ctx.setTransform(d,0,0,d,0,0);g.w=w;g.h=h;}
+function fail(e){err.textContent=String(e&&e.message||e);}
+var last=0;
+function frame(now){requestAnimationFrame(frame);if(!draw)return;size();g.dt=last?(now-last)/1000:0;last=now;g.t=t;try{draw(g);err.textContent='';}catch(e){fail(e);}}
+addEventListener('message',function(ev){var m=ev.data;if(!m||typeof m!=='object')return;
+if(m.kind==='init'){for(var k in m.theme)theme[k]=m.theme[k];try{var f=new Function('g','"use strict";'+m.code+'\n;return {draw:typeof draw==="function"?draw:null,setup:typeof setup==="function"?setup:null};');var r=f(g);draw=r.draw;setup=r.setup;if(setup)setup(g);}catch(e){fail(e);}if(!started){started=true;requestAnimationFrame(frame);}}
+else if(m.kind==='data'){t=m.t;for(var n in m.v){vals[n]=m.v[n];if(typeof m.v[n]==='number')put(n,m.t,m.v[n]);}}
+else if(m.kind==='theme'){for(var k2 in m.theme)theme[k2]=m.theme[k2];}});
+parent.postMessage({kind:'ready'},'*');})();</script></body></html>
