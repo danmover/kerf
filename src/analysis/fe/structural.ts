@@ -25,6 +25,7 @@ import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, t
 import { bucklingModes } from "./buckling";
 import { corotate, elementFrame, internalForce, largeEffect, maxTurn, solveLarge, turnVoigt } from "./large";
 import { runBeams, type BeamMember, type BeamResult } from "./beams";
+import type { PlyFailure } from "./laminate";
 import { runShells, ShellFallback, type ShellPart, type ShellResult } from "./shells";
 import { FINISHES, criticalStress, cyclesAt, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
 import { shakeResponse, type ShakeAnswer } from "./vibration";
@@ -550,10 +551,17 @@ export interface ConvergencePoint {
 }
 
 export type SafetyAt = Located & {
-  /** what it is judged against: yield, the strength between print layers, fatigue (in the bulk or between layers) */
-  mode: "yield" | "fatigue" | "layers" | "layer fatigue";
+  /**
+   * what it is judged against: yield, the strength between print layers, fatigue (in the bulk or between layers), or a
+   * composite ply's own strengths (Tsai–Wu: the factor on the loads that cracks it)
+   */
+  mode: "yield" | "fatigue" | "layers" | "layer fatigue" | "ply";
+  /** the strength it fails against, MPa (a ply: its strength in the way it fails) */
   allowable: number;
+  /** the material there (a ply: the ply's material) */
   material: string;
+  /** the composite ply that fails first: its number from the outside (1 is the outer ply), its angle and how it fails */
+  ply?: { index: number; angle: number; failure: PlyFailure };
   /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */
   tempC?: number;
   /** in a printed part's sparse infill, whose strength is a share of the solid's (the allowable is lowered for it) */

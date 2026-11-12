@@ -411,6 +411,13 @@ export interface StructuralSpec {
    * its own is analysed as beams, and carbon layups and sheet parts on their own as shells
    */
   elements?: "beams" | "solid" | "shells";
+  /**
+   * composite plies for the carbon layups analysed (as shells): stacks laid from the outer surface inward, each for
+   * every layup or one part, and more plies inside them over zones; in place of an even quasi-isotropic laminate
+   */
+  layup?: PliesSpec[];
+  /** where the plies' 0° runs: "auto" (along the tubes on a part made of tubes, else along its length), "tubes", or a direction */
+  fibre?: "auto" | "tubes" | V3;
   /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
   topology?: TopologySpec;
   /** touching parts as contacts (pressed, parting, sliding) instead of glued */
@@ -418,6 +425,23 @@ export interface StructuralSpec {
   /** bolts tightened before the loads */
   preload?: PreloadSpec;
   span: Span;
+}
+
+/** plies("[0/±45/90]s", "carbon"): a stack of composite plies, from the outside in. */
+export interface PliesSpec {
+  /** each ply's angle from 0°, degrees, counterclockwise seen from outside; the first is the outer ply */
+  angles: number[];
+  /** ply material (PLY_MATERIALS key) */
+  material: string;
+  /** ply thickness, mm (unset: the material's) */
+  t?: number;
+  /** only this part (unset: every carbon layup analysed) */
+  part?: string;
+  /** added inside the stack over this region only: reinforcement at a joint, a bearing seat or a bolt */
+  zone?: RegionSpec;
+  /** the stack as written, like "[0/±45/90]s" */
+  code: string;
+  label: string;
 }
 
 /**

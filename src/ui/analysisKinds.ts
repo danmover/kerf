@@ -7,7 +7,7 @@ import type { AnalysisSpec } from "../analysis/spec";
 import { electricMaterial } from "../analysis/electricMaterials";
 
 export interface AnalysisKind {
-  id: "strength" | "fatigue" | "drop" | "vibration" | "shaking" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
+  id: "strength" | "plies" | "fatigue" | "drop" | "vibration" | "shaking" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
@@ -20,7 +20,7 @@ export interface AnalysisKind {
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
   ask: string;
   /** only offered when the design looks like it needs it */
-  fits?: "gears" | "bike" | "metal";
+  fits?: "gears" | "bike" | "metal" | "layup";
 }
 
 export const ANALYSIS_KINDS: AnalysisKind[] = [
@@ -30,8 +30,18 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     detail: "Stress, deflection and safety factor under the loads it will see",
     keywords: "fea finite element stress strain deflection safety factor load break bend sag strong",
     icon: "Stress",
-    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !a.fatigue && !a.topology && !(a.thermal && !a.supports.length),
+    is: (a) => a.kind === "structural" && !a.drop && !a.modal && !a.buckling && !a.fatigue && !a.topology && !a.layup?.length && !(a.thermal && !a.supports.length),
     ask: "Set up a strength analysis for this design from how it will be used: work out realistic loads and how it is held, then run it and tell me what you find.",
+  },
+  {
+    id: "plies",
+    label: "Composite plies",
+    detail: "Ply by ply through a carbon layup: which ply gives way first and how (Tsai–Wu), with 0° along its tubes",
+    keywords: "composite plies ply layup ply book stacking sequence fibre direction fiber orientation tsai-wu first ply failure carbon fibre laminate prepreg woven twill",
+    icon: "Stress",
+    is: (a) => a.kind === "structural" && !!a.layup?.length,
+    ask: "Set up a ply-by-ply strength analysis of this design's carbon layups from how they will be used: the real loads and how they are held, and a layup that suits them (0° plies where it bends, ±45° where it twists, more plies in zones where loads go in, a woven outer ply), then run it and tell me which ply gives way first and how, and change the layup until every ply has a safety of at least 2.",
+    fits: "layup",
   },
   {
     id: "fatigue",
@@ -146,11 +156,12 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
   },
 ];
 
-/** The kinds worth offering for a design: everything general, plus gears, bike rules or current when it has them. */
-export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: unknown[]; material?: string; kind?: string }[]; analyses: AnalysisSpec[] } | null | undefined): AnalysisKind[] {
+/** The kinds worth offering for a design: everything general, plus gears, bike rules, current or plies when it has them. */
+export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: unknown[]; material?: string; kind?: string; process?: { id: string } | null }[]; analyses: AnalysisSpec[] } | null | undefined): AnalysisKind[] {
+  const layup = !!m?.parts.some((p) => p.process?.id === "carbon_layup");
   const gears = !!m?.parts.some((p) => p.gear);
   const bike = !!m?.parts.some((p) => p.chain || p.tubes?.length) || !!m?.analyses.some((a) => a.kind === "uci");
   // a part of its own in a metal (a bought component's body says little about what carries its current)
   const metal = !!m?.parts.some((p) => p.kind !== "component" && electricMaterial(p.material).conductor) || !!m?.analyses.some((a) => a.kind === "structural" && a.thermal?.currents?.length);
-  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : k.fits === "bike" ? bike : metal));
+  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : k.fits === "bike" ? bike : k.fits === "layup" ? layup : metal));
 }

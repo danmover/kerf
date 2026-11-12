@@ -48,8 +48,10 @@
 import { Args } from "../lang/args";
 import { Fn, Obj, Ref, Vec, typeName, type Value } from "../lang/values";
 import type { Span } from "../lang/ast";
-import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, PreloadSpec, RandomSpec, RegionSpec, Resolution, SineSpec, SupportSpec, ThermalSpec, TopologySpec, TouchingSpec, TouchSpec, V3, Within } from "./spec";
+import type { AnalysisSpec, BucklingSpec, CurrentSpec, DropSpec, Excitation, FatigueSpec, FilmSpec, FixedTempSpec, HeatLoadSpec, LoadSpec, MassSpec, ModalSpec, PliesSpec, PreloadSpec, RandomSpec, RegionSpec, Resolution, SineSpec, SupportSpec, ThermalSpec, TopologySpec, TouchingSpec, TouchSpec, V3, Within } from "./spec";
+import { describeRegion } from "./spec";
 import { grms, PSD_PRESETS } from "./fe/vibration";
+import { layupText, parseLayup, plyMaterial, PLY_MATERIALS } from "./fe/laminate";
 import { FINISHES, MEAN_STRESS, mergeCycles, rainflow, type Finish, type LoadCycle, type MeanStress } from "./fe/fatigue";
 import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
@@ -102,6 +104,9 @@ export const STRUCTURAL_PROPS = [
   "buckling_safety",
   "large_deflection",
   "elements",
+  "layup",
+  "fibre",
+  "fiber",
   ...TOPOLOGY_PROPS,
 ];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
@@ -121,6 +126,7 @@ const BLOCK = "load block";
 const SINE = "sine sweep";
 const PSD = "random spectrum";
 const TOUCH = "touching pair";
+const PLIES = "ply stack";
 const BOLT = "tightened bolt";
 
 function def(name: string, params: string[], impl: (a: Args) => Value, doc: string): [string, Fn] {
@@ -560,6 +566,46 @@ export const ANALYSIS_FNS: Record<string, Fn> = Object.fromEntries([
       return wrap(PSD, { points, dir, label } satisfies RandomSpec, label);
     },
     'psd("navmat", Z) → random shaking of the supports along Z from an acceleration spectrum: "navmat" (NAVMAT P-9492 electronics screening, 20–2000 Hz, 6.06 g rms), "truck" (ASTM D4169 truck transport, 1–200 Hz, 0.52 g rms) or your own points in g²/Hz, like psd([(20Hz, 0.01), (80Hz, 0.04), (350Hz, 0.04), (2000Hz, 0.007)], Z), joined by straight lines on log-log axes. Kerf gives the RMS (1σ) movement and stress, shows 3σ stresses (it stays below them 99.7 % of the time) and the fatigue life by Steinberg\'s three bands. Use it in random:.',
+  ),
+  def(
+    "plies",
+    ["stack", "material", "t", "part", "zone", "name"],
+    (a) => {
+      const v = a.value("stack");
+      let angles: number[] = [];
+      let code = "";
+      if (typeof v === "string") {
+        const got = parseLayup(v);
+        if ("error" in got) a.ctx.error(`plies(): ${got.error}. Write each ply's angle from 0° from the outside in, like "[0/±45/90]s" ("s" mirrors the stack, a number after brackets repeats it, 0₂ is two 0° plies)`);
+        else angles = got;
+        code = v.trim();
+        if (/^[+-]?\d+(\.\d+)?$/.test(code)) code = `[${code}]`;
+      } else if (typeof v === "number" || Array.isArray(v)) {
+        const list = typeof v === "number" ? [v] : v;
+        angles = list.map((x, i) => {
+          if (typeof x !== "number" || !(Math.abs(x) <= 90)) a.ctx.error(`plies(): ply ${i + 1}'s angle should be a number of degrees from -90 to 90, like [0, 45, -45, 90]`);
+          return x === -90 ? 90 : (x as number) || 0;
+        });
+        if (!angles.length) a.ctx.error("plies(): the list has no plies");
+        code = layupText(angles);
+      } else a.ctx.error(`plies(): give the stack as a code like "[0/±45/90]s" or a list of angles like [0, 45, -45, 90]; got ${v === undefined ? "nothing" : typeName(v)}`);
+      const matName = a.has("material") ? a.str("material") : "carbon";
+      const m = plyMaterial(matName);
+      if (!m) a.ctx.error(`plies(): "${matName}" is not a ply material Kerf knows; use ${Object.keys(PLY_MATERIALS).map((k) => `"${k}"`).join(", ")}`);
+      const t = a.has("t") ? a.positive("t") : undefined;
+      if (t !== undefined && t > 2) a.ctx.error("plies(): t: is one ply's thickness, like 0.12mm (prepreg plies are about 0.05 to 0.3 mm)");
+      const part = a.has("part") ? refName(a.value("part"), a, "part:") : undefined;
+      let zone: RegionSpec | undefined;
+      if (a.has("zone")) {
+        const z = a.value("zone");
+        if (z instanceof Obj && z.kind === REGION) zone = z.fields.spec as unknown as RegionSpec;
+        else a.ctx.error(`plies(): zone: says where these plies go, like zone(at: (0, 0, 40), r: 30) or face(frame, -Z); got ${typeName(z!)}`);
+        if (zone!.t === "extreme") a.ctx.error("plies(): zone: should be a zone(...) or a face(part, dir), not the side that lands first");
+      }
+      const label = a.has("name") ? a.str("name") : `${code} ${m!.label}${zone ? ` in the ${describeRegion(zone)}` : ""}`;
+      return wrap(PLIES, { angles, material: m!.key, ...(t !== undefined ? { t } : {}), ...(part ? { part } : {}), ...(zone ? { zone } : {}), code, label } satisfies PliesSpec, label);
+    },
+    'plies("[0/±45/90]s", "carbon") → a stack of composite plies for a carbon layup, laid from the outer surface inward: each ply\'s angle from 0° (counterclockwise seen from outside); "s" mirrors the stack, a number after brackets repeats it ("[0/90]2s"), 0₂ (or 0_2) is two 0° plies, ±45 is +45 then -45. Materials: "carbon" (T700-class UD, 0.12 mm plies), "carbon im" (T800-class), "carbon hm" (M40J-class), "carbon woven" (3K twill, 0.22 mm), "glass", "glass woven", "aramid"; t: sets the ply thickness. zone: lays them inside the stack over a region only (round a bottom bracket, a head tube, a bolt), part: for one part only. Use it in layup:, or a list laid from the outside in, like layup: [plies("0", "carbon woven"), plies("[0/±45/90]s"), plies("[0/90]2", zone: zone(at: (0, 0, 0), r: 45))].',
   ),
   def(
     "block",
@@ -1094,6 +1140,39 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       if (other) fail(`elements: "${elements}" cannot follow ${other} yet; use elements: "solid" for it.`, elemP.span);
     }
   }
+  // ---- composite plies for the carbon layups (as shells), and where their 0° runs ----
+  const layupP = one("layup");
+  let layup: PliesSpec[] | undefined;
+  if (layupP) {
+    layup = [];
+    for (const x of listOf(layupP.value)) {
+      if (x instanceof Obj && x.kind === PLIES) layup.push(x.fields.spec as unknown as PliesSpec);
+      else
+        fail(
+          `layup: should be plies("[0/±45/90]s"), or a list of them laid from the outside in, like [plies("0", "carbon woven"), plies("[0/±45/90]s"), plies("[0/90]2", zone: zone(at: (0, 0, 0), r: 45))]; got ${typeName(x)}`,
+          layupP.span,
+        );
+    }
+    if (elements === "solid" || elements === "beams") fail(`layup: gives the plies of carbon layups analysed as shells; elements: "${elements}" cannot follow them. Leave elements: out.`, layupP.span);
+    const other = modal ? modalName : drop ? "a drop" : thermalOn || uniformTemp !== undefined ? "temperatures" : fatigue ? "fatigue" : topology ? "topology optimisation" : touching ? "touching parts" : preload ? "tightened bolts" : large ? "large deflection" : null;
+    if (other) fail(`layup: needs the layups analysed as shells, which cannot follow ${other} yet; check the plies in an analysis without it.`, layupP.span);
+    if (layup.every((l) => l.zone)) fail('layup: has only zones\' plies, which go inside a stack: give the stack too, like layup: [plies("[0/±45/90]s"), plies("[0/90]", zone: zone(at: (0, 0, 0), r: 45))].', layupP.span);
+  }
+  const fibreP = one("fibre") ?? one("fiber");
+  if (one("fibre") && one("fiber")) fail('Give fibre: once (fiber: is the same).', one("fiber")!.span);
+  let fibre: StructuralFibre | undefined;
+  if (fibreP) {
+    if (!layupP) fail('fibre: says where the plies\' 0° runs; give the plies too, like layup: plies("[0/±45/90]s").', fibreP.span);
+    const v = fibreP.value;
+    const word = typeof v === "string" ? v.toLowerCase() : "";
+    if (word === "auto") fibre = "auto";
+    else if (word === "tubes" || word === "tube" || word === "along") fibre = "tubes";
+    else if (v instanceof Vec) {
+      const d = vec(fibreP, "fibre:");
+      if (!(Math.hypot(...d) > 1e-9)) fail("fibre: should be a direction that is not zero, like X or (1, 1, 0)", fibreP.span);
+      fibre = clean(norm3(d));
+    } else fail('fibre: should be "tubes" (0° along each tube), "auto" (along the tubes on a part made of tubes, else along its length) or a direction like X, laid onto the wall', fibreP.span);
+  }
   const cycles = num("cycles", 0);
   return {
     kind: "structural",
@@ -1121,12 +1200,16 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     ...(flags.some((f) => f.name === "converge") ? { converge: true } : {}),
     ...(large !== undefined ? { large } : {}),
     ...(elements ? { elements } : {}),
+    ...(layup ? { layup } : {}),
+    ...(fibre ? { fibre } : {}),
     ...(topology ? { topology } : {}),
     ...(touching ? { touching } : {}),
     ...(preload ? { preload } : {}),
     span,
   };
 }
+
+type StructuralFibre = "auto" | "tubes" | V3;
 
 const AXES = ["X", "Y", "Z"] as const;
 

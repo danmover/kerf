@@ -2,6 +2,7 @@
 
 import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
+import { failureWords, type PlyFailure } from "./fe/laminate";
 import type { DrivetrainResult } from "./drivetrain";
 import { dropText, dropVerdict, lifeWords, shakingText, shakingVerdict, vibrationText, vibrationVerdict } from "./dynamics";
 import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
@@ -49,6 +50,8 @@ export function supportLine(spec: StructuralSpec, r: StructuralResult, i: number
 }
 
 export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
+  // a composite ply's own strengths (Tsai–Wu), the first ply to give way
+  if (m.mode === "ply" && m.ply) return `Tsai–Wu strength of ply ${m.ply.index} (${m.ply.angle}°, ${m.material}), the first to give way: ${failureWords(m.ply.failure, /cloth/.test(m.material))}, ${fmtNum(m.allowable, 0)} MPa that way`;
   // a hot plastic's allowable is derated for the temperature there
   const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
   if ((m.mode === "fatigue" || m.mode === "layer fatigue") && r.fatigue) return fatigueModeText(m, r.fatigue);
@@ -302,9 +305,31 @@ export function shellWallsText(r: StructuralResult): string | null {
   if (!s) return null;
   const what = (k: string) => (k === "laminate" ? "laminate" : k === "sheet" ? "sheet" : "wall");
   const thick = (p: { t: number; tMin: number; tMax: number }) => (p.tMax - p.tMin > 0.1 * p.t ? `${fmtNum(p.tMin, 2)}–${fmtNum(p.tMax, 2)} mm` : `${fmtNum(p.t, 2)} mm`);
-  const rows = [...s.parts].sort((a, b) => a.safety - b.safety).map((p) => `${p.part} (${thick(p)} ${what(p.kind)}, ${fmtNum(p.area / 100, 0)} cm²): peak ${fmtNum(p.stress, 1)} MPa on a face near ${p3(p.at)}, safety ${sf(p.safety)}`);
+  const rows = [...s.parts]
+    .sort((a, b) => a.safety - b.safety)
+    .map((p) => {
+      const q = p.plies;
+      if (!q) return `${p.part} (${thick(p)} ${what(p.kind)}, ${fmtNum(p.area / 100, 0)} cm²): peak ${fmtNum(p.stress, 1)} MPa on a face near ${p3(p.at)}, safety ${sf(p.safety)}`;
+      const f = q.first;
+      return `${p.part} (${q.label}, ${thick(p)}, 0° ${q.fibre}, ${fmtNum(p.area / 100, 0)} cm²): first ply to give way is ply ${f.ply} (${f.angle}°${q.stack.some((x) => x.material !== f.material) ? ` ${f.material}` : ""}) at ${sf(f.safety)}× the loads near ${p3(f.at)}, ${failureWords(f.failure, /cloth/.test(f.material))}; fibres break at ${sf(q.fibreSafety)}×`;
+    });
   return `${rows.join("; ")}.`;
 }
+
+/** A composite wall's plies, one by one: each ply's lowest Tsai–Wu factor and how it would go. */
+export function pliesText(r: StructuralResult): string | null {
+  const parts = r.shells?.parts.filter((p) => p.plies) ?? [];
+  if (!parts.length) return null;
+  return parts
+    .map((p) => {
+      const q = p.plies!;
+      const rows = q.perPly.map((x) => `${x.ply} ${x.angle}°${x.zone ? ` (${x.zone})` : ""} ${sf(x.safety)}${x.safety < 1e5 ? ` ${shortFailure(x.failure)}` : ""}`);
+      return `${p.part}: ${rows.join(", ")}`;
+    })
+    .join("; ");
+}
+
+const shortFailure = (f: PlyFailure) => (f === "fibre tension" ? "fibres pulled" : f === "fibre compression" ? "fibres pushed" : f === "matrix tension" ? "resin pulled" : f === "matrix compression" ? "resin pushed" : "shear");
 
 export function largeText(r: StructuralResult): string | null {
   const L = r.large;
@@ -395,6 +420,8 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   if (r.beams?.buckling && !r.buckling) lines.push(`Buckling (members as beams): the lowest factor is ${fmtNum(r.beams.buckling.factor, 2)}, with ${r.beams.buckling.member} moving most; add buckling to see the shape.`);
   const walls = shellWallsText(r);
   if (walls) lines.push(`Walls: ${walls}`);
+  const plies = pliesText(r);
+  if (plies) lines.push(`Plies (from the outside in, each one's lowest Tsai–Wu factor): ${plies}.`);
   if (r.shells?.buckling && !r.buckling) lines.push(`Buckling (a quick check of the walls): about ${fmtNum(r.shells.buckling.factor, 2)}× these loads, with ${r.shells.buckling.part} rippling most; add buckling to see the shape.`);
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);
   if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");

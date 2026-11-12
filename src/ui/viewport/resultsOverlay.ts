@@ -605,7 +605,7 @@ export class ResultsOverlay implements SceneOverlay {
       if (pk && pk.value >= 1.2 * pk.typical) add(`densest ${fmtNum(pk.value, pk.value < 10 ? 2 : 1)} A/mm²`, pk.at);
     } else if (this.cfg.field === "stress") {
       add(`peak ${fmtNum(r.maxStress.value, 1)} MPa`, r.maxStress.at);
-    } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" || r.minSafety.mode === "layer fatigue" ? " (layers)" : ""}${r.minSafety.mode === "fatigue" || r.minSafety.mode === "layer fatigue" ? " (fatigue)" : ""}`, r.minSafety.at);
+    } else if (this.cfg.field === "safety") add(`safety ${fmtNum(r.minSafety.value, 2)}${r.minSafety.mode === "layers" || r.minSafety.mode === "layer fatigue" ? " (layers)" : ""}${r.minSafety.mode === "fatigue" || r.minSafety.mode === "layer fatigue" ? " (fatigue)" : ""}${r.minSafety.mode === "ply" && r.minSafety.ply ? ` (ply ${r.minSafety.ply.index}, ${r.minSafety.ply.angle}°)` : ""}`, r.minSafety.at);
     else if (this.cfg.field === "life") {
       const f = r.fatigue;
       if (f) add(Number.isFinite(f.life.value) ? `shortest life ${lifeWords(f.life.value, f.unit)}` : "no fatigue limit", f.life.at);

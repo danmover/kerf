@@ -20,7 +20,8 @@ import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPreview } from "./fe/structural";
-import type { ShellPart } from "./fe/shells";
+import type { ShellPart, ShellPlies } from "./fe/shells";
+import { PLY_MATERIALS } from "./fe/laminate";
 import { resolvedSettings } from "../mfg/profiles";
 import type { BoltWant } from "./fe/bolts";
 import { GRADES, gradeFrom, headDims, type HeadType } from "../library/fasteners";
@@ -366,6 +367,36 @@ export function structuralInput(
           : undefined;
   const shellsAuto = spec.elements === undefined && !beams && beamsCan && parts.every((p) => shellOf(p));
   const shells = spec.elements === "shells" || shellsAuto;
+  // a layup's own plies (layup:): the stacks for it, laid from the outside in, then the zones' plies inside them
+  const plied = new Map<string, ShellPlies>();
+  if (spec.layup) {
+    if (!shells)
+      return {
+        error: `layup: gives the plies of carbon layups analysed as shells, and ${
+          spec.elements === "solid" ? 'elements: "solid" models them as solid carbon: leave elements: out' : !beamsCan ? `${shellsCannot(spec)} needs solid elements: check the plies in an analysis without it` : `${parts.find((p) => !shellOf(p))?.label ?? "a part"} is not a thin wall, so the parts are solved as solids: analyse the layups on their own (or with other layups and sheet parts)`
+        }.`,
+      };
+    for (const l of spec.layup)
+      if (l.part && !parts.some((p) => p.name === l.part || p.frame === l.part)) return { error: `${l.label} is for ${l.part}, which this analysis does not analyse: add it to parts:, or leave part: out.` };
+    for (const p of parts) {
+      const sh = shellOf(p);
+      const named = spec.layup.filter((l) => l.part === p.name || (!!p.frame && l.part === p.frame));
+      // unnamed stacks are for every carbon layup; a measured wall or a sheet takes plies only when they name it
+      const mine = spec.layup.filter((l) => (l.part ? named.includes(l) : sh?.kind === "laminate"));
+      if (!mine.length) continue;
+      if (sh?.kind === "sheet") return { error: `${p.label} is sheet metal, so it has no plies: leave part: ${p.name} out of ${named[0]?.label ?? "the plies"}.` };
+      const base = mine.filter((l) => !l.zone);
+      if (!base.length) return { error: `${mine[0].label} lays plies inside a stack, and ${p.label} has none: give its stack too, like layup: [plies("[0/±45/90]s"), plies("[0/90]", zone: …)].` };
+      const ply = (l: (typeof mine)[number]) => l.angles.map((angle) => ({ angle, m: PLY_MATERIALS[l.material], t: l.t ?? PLY_MATERIALS[l.material].t }));
+      plied.set(p.name, {
+        plies: base.flatMap(ply),
+        patches: mine.filter((l) => l.zone).map((l) => ({ region: l.zone!, plies: ply(l), label: l.label })),
+        label: base.map((l) => `${l.code} of ${PLY_MATERIALS[l.material].label}${l.t ? ` (${fmtNum(l.t, 3)} mm plies)` : ""}`).join(", then "),
+        fibre: spec.fibre ?? "auto",
+      });
+    }
+    if (!plied.size) return { error: "layup: has plies for none of the analysed parts: they are for carbon layups (process: mfg.carbon_layup), or the part each names with part:." };
+  }
   // a carbon layup solved as solid looks far stiffer and stronger than its laminate: say so, and how to see it as one
   const solidLayups = shells ? [] : parts.filter((p) => p.process?.id === "carbon_layup");
   const layupWarning = solidLayups.length
@@ -433,7 +464,9 @@ export function structuralInput(
     const bolt = fi && fi.head !== "set" ? { headTop: fi.headTop, outward: fi.outward, size: fi.size, headD: fi.headD, ...(headH !== undefined ? { headH } : {}), ...(fi.grade ? { grade: fi.grade } : {}) } : undefined;
     const threads = p.libKind === "nut" || p.libKind === "standoff" ? ("nut" as const) : p.libKind === "insert" ? ("insert" as const) : undefined;
     const beam = beams && p.beam ? { a: p.beam.a, b: p.beam.b, u: p.beam.u, v: p.beam.v, section: p.beam.section } : undefined;
-    const shell = shells ? shellOf(p) : undefined;
+    const sh = shells ? shellOf(p) : undefined;
+    const plies = plied.get(p.name);
+    const shell = sh && plies ? { ...sh, plies } : sh;
     fea.push({ id: p.id, name: p.name, ...(p.frame ? { group: p.frame } : {}), ...(beam ? { beam } : {}), ...(shell ? { shell } : {}), mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
   }
   // bolts tightened before the loads: the ones named, and with all every other screw and bolt analysed

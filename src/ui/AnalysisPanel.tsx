@@ -20,6 +20,8 @@ import { uciItems, uciVerdict } from "../analysis/summary";
 import { uciResult, UCI_ROAD } from "../core/uciChecks";
 import type { CheckItem } from "../core/checks";
 import type { StructuralResult, ThermalResult } from "../analysis/fe/structural";
+import type { ShellPliesResult } from "../analysis/fe/shells";
+import { failureWords, type PlyFailure } from "../analysis/fe/laminate";
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
 import { FIELD_INFO, autoDeform, fieldFor, resultFields, shownMode } from "./ResultsLayer";
@@ -1227,7 +1229,7 @@ function WallsBox({ r }: { r: StructuralResult }) {
             <tr key={p.part}>
               <td className="mono">{p.part}</td>
               <td>
-                {thick(p)} {kind(p.kind)}
+                {p.plies ? `${thick(p)}, ${p.plies.perPly.filter((x) => !x.zone).length} plies${p.plies.perPly.some((x) => x.zone) ? " and zones" : ""}` : `${thick(p)} ${kind(p.kind)}`}
               </td>
               <td className="num">{fmtNum(p.area / 100, 0)} cm²</td>
               <td className="num">{fmtNum(p.stress, 1)} MPa</td>
@@ -1236,6 +1238,55 @@ function WallsBox({ r }: { r: StructuralResult }) {
           ))}
         </tbody>
       </table>
+      {rows.filter((p) => p.plies).map((p) => (
+        <PliesTable key={p.part} part={p.part} q={p.plies!} />
+      ))}
+    </div>
+  );
+}
+
+/** A composite wall's plies from the outside in: each one's lowest Tsai–Wu factor and how it would give way. */
+function PliesTable({ part, q }: { part: string; q: ShellPliesResult }) {
+  const [all, setAll] = useState(false);
+  const rows = all ? q.perPly : q.perPly.slice(0, 10);
+  const f = q.first;
+  const sf = (x: number) => (x >= 100 ? "> 100" : fmtNum(x, 2));
+  const how: Record<PlyFailure, string> = { "fibre tension": "fibres pulled apart", "fibre compression": "fibres crushed", "matrix tension": "resin cracks across", "matrix compression": "resin crushed across", shear: "resin shears" };
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="an-note">
+        <b className="mono">{part}</b> {q.label}, 0° {q.fibre}. The first ply to give way is ply {f.ply} ({f.angle}°) at {sf(f.safety)}× the loads: {failureWords(f.failure, /cloth/.test(f.material))}. Its fibres break at {sf(q.fibreSafety)}×.
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th className="num">Ply</th>
+            <th className="num">Angle</th>
+            <th>Material</th>
+            <th className="num">Safety</th>
+            <th>Gives way by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((x) => (
+            <tr key={x.ply} style={x.ply === f.ply ? { fontWeight: 600 } : undefined}>
+              <td className="num">{x.ply}</td>
+              <td className="num">{x.angle}°</td>
+              <td>
+                {x.material}
+                {x.zone ? <span className="dim"> · {x.zone}</span> : null}
+              </td>
+              <td className="num">{sf(x.safety)}</td>
+              <td className="dim">{x.safety < 1e5 ? how[x.failure] : "–"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {q.perPly.length > 10 && (
+        <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setAll(!all)}>
+          {all ? "Show the first 10" : `Show all ${q.perPly.length} plies`}
+        </button>
+      )}
     </div>
   );
 }
