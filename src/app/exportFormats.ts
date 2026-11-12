@@ -31,8 +31,9 @@ import { viewport } from "./viewportApi";
 import { exportDrawingsPdf, exportFlatPatternsDxf } from "../drawing/export";
 import { useAnalysis } from "../analysis/runtime";
 import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
-import { download } from "../persist/files";
+import { download, safeFileName } from "../persist/files";
 import { openFilmMaker } from "../film/store";
+import { frameCutsCsv } from "../ui/FrameCuts";
 
 async function exportDrawings() {
   await exportDrawingsPdf();
@@ -126,6 +127,7 @@ export const EXPORT_FORMATS: ExportFormat[] = [
   { id: "drawings", group: "document", label: "Engineering drawings", detail: "Every sheet, dimensioned, in one PDF", ext: ".pdf", icon: "Doc", run: () => exportDrawings() },
   { id: "report", group: "document", label: "Design report", detail: "Brief, views, checks and parts; prints to PDF", ext: ".html", icon: "Doc", run: () => exportReport() },
   { id: "bom", group: "document", label: "Parts list", detail: "Quantities, make or buy, materials", ext: ".csv", icon: "List", run: () => exportBom() },
+  { id: "cut-list", group: "document", label: "Frame cut list", detail: "Each frame's pieces: cut lengths, end cuts and bars to buy", ext: ".csv", icon: "List", shown: () => !!useDesign.getState().model?.frames?.length, run: () => exportCutList() },
 
   {
     id: "app-html",
@@ -192,4 +194,11 @@ export async function runExport(id: string, opts: { selectionOnly?: boolean } = 
   } finally {
     useExports.setState({ running: null });
   }
+}
+
+/** The cut list of the design's frames, the same CSV as the button under the parts list. */
+function exportCutList() {
+  const model = useDesign.getState().model;
+  if (!model?.frames?.length) return;
+  download(frameCutsCsv(model.frames), safeFileName(model.name + " cut list", "csv"), "text/csv");
 }
