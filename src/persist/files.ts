@@ -12,6 +12,7 @@ import type { CatalogPart } from "../machine/types";
 import { IMPORT_META_VERSION, MAX_BODIES, MAX_STEP_BYTES, type ImportMeta, type ProjectImport } from "../kernel/imports";
 import { cleanName } from "../kernel/stepText";
 import { fromBase64, gunzip, sha256Hex } from "./blobs";
+import type { BranchRecord } from "./db";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -28,11 +29,29 @@ const cleanText = (s: string, max: number) =>
     .replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g, "")
     .slice(0, max);
 
+const BranchIdSchema = z.string().regex(/^(main|brn_[a-z0-9]{4,32})$/);
+
 const VersionSchema = z.object({
   ts: z.number().finite(),
   author: z.enum(["you", "claude", "system"]),
   message: z.string().max(2000),
   source: z.string().max(MAX_SOURCE_CHARS),
+  branch: BranchIdSchema.optional(),
+});
+
+// a line of work in the project (see src/core/branches.ts)
+const BranchSchema = z.object({
+  id: BranchIdSchema,
+  name: z.string().min(1).max(60),
+  from: z.union([BranchIdSchema, z.literal("")]),
+  base: z.string().max(MAX_SOURCE_CHARS),
+  head: z.string().max(MAX_SOURCE_CHARS),
+  createdAt: z.number().finite(),
+  updatedAt: z.number().finite(),
+  meets: z
+    .array(z.object({ kind: z.enum(["merged", "took"]), source: z.string().max(MAX_SOURCE_CHARS), base: z.string().max(MAX_SOURCE_CHARS), ts: z.number().finite() }))
+    .max(20)
+    .optional(),
 });
 
 // a reference photo, sketch or PDF from the brief
@@ -103,6 +122,8 @@ const ProjectFileSchema = z.object({
   assets: z.array(AssetSchema).max(300).optional(),
   imports: z.array(ImportSchema).max(60).optional(),
   importFiles: z.array(ImportFileSchema).max(60).optional(),
+  branches: z.array(BranchSchema).max(50).optional(),
+  branch: BranchIdSchema.optional(),
 });
 
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
@@ -122,6 +143,9 @@ export interface ImportedProject {
   versions: z.infer<typeof VersionSchema>[];
   assets: z.infer<typeof AssetSchema>[];
   imports: ProjectImport[];
+  /** its branches, main first, and the one that was open (absent: main) */
+  branches?: BranchRecord[];
+  branch?: string;
 }
 
 /** What reading a file produced: projects, the bytes of the STEP files they import, and anything that was dropped. */
@@ -156,15 +180,46 @@ const cleanProject = (p: ProjectFile, files: Map<string, Uint8Array>, warnings: 
     seen.add(name);
     imports.push({ name, hash: i.hash, file: cleanName(i.file, 200), size: files.get(i.hash)!.byteLength, addedAt: i.addedAt ?? Date.now(), meta: cleanMeta(i.meta) });
   }
+  const branches = cleanBranches(p);
+  const known = new Set(branches?.map((b) => b.id) ?? ["main"]);
   return {
     name: cleanText(p.name, 120),
     source: cleanText(p.source, MAX_SOURCE_CHARS),
     template: p.template ?? "imported",
-    versions: (p.versions ?? []).map((v) => ({ ...v, message: cleanText(v.message, 500), source: cleanText(v.source, MAX_SOURCE_CHARS) })),
+    // a version of a branch the file doesn't have shows on main
+    versions: (p.versions ?? []).map(({ branch, ...v }) => ({ ...v, message: cleanText(v.message, 500), source: cleanText(v.source, MAX_SOURCE_CHARS), ...(branch && branch !== "main" && known.has(branch) ? { branch } : {}) })),
     assets: (p.assets ?? []).map((a) => ({ ...a, name: cleanText(a.name, 160) })),
     imports,
+    ...(branches ? { branches, ...(p.branch && p.branch !== "main" && known.has(p.branch) ? { branch: p.branch } : {}) } : {}),
   };
 };
+
+/** A file's branches as Kerf keeps them: main first, one of each id and name, each made from one that is there. */
+function cleanBranches(p: ProjectFile): BranchRecord[] | undefined {
+  const out: BranchRecord[] = [];
+  const names = new Set<string>();
+  for (const b of p.branches ?? []) {
+    const name = cleanText(b.name, 40).replace(/\s+/g, " ").trim();
+    const key = name.toLowerCase();
+    if (!name || names.has(key) || out.some((x) => x.id === b.id) || (b.id === "main") !== (key === "main")) continue;
+    names.add(key);
+    out.push({ ...b, name, base: cleanText(b.base, MAX_SOURCE_CHARS), head: cleanText(b.head, MAX_SOURCE_CHARS), ...(b.meets ? { meets: b.meets.map((m) => ({ ...m, source: cleanText(m.source, MAX_SOURCE_CHARS), base: cleanText(m.base, MAX_SOURCE_CHARS) })) } : {}) });
+  }
+  const byId = new Map(out.map((b) => [b.id, b]));
+  if (byId.get("main")?.from !== "") return undefined;
+  // each made from a branch the file has, and so on back to main; main first
+  const reachesMain = (b: BranchRecord) => {
+    const seen = new Set<string>();
+    for (let x: BranchRecord | undefined = b; x; x = byId.get(x.from)) {
+      if (x.id === "main") return true;
+      if (seen.has(x.id)) return false;
+      seen.add(x.id);
+    }
+    return false;
+  };
+  const kept = out.filter(reachesMain).sort((a, b) => (a.id === "main" ? -1 : b.id === "main" ? 1 : 0));
+  return kept.length > 1 ? kept : undefined;
+}
 
 /** Unpack embedded STEP files, keeping only ones whose bytes match their hash and look like STEP. */
 async function readImportFiles(list: ImportFileEntry[], warnings: string[]): Promise<Map<string, Uint8Array>> {
@@ -237,11 +292,13 @@ export interface PackedFile {
   data: string;
 }
 
-/** Extra content for a project file: brief references, and imported STEP files with their bytes. */
+/** Extra content for a project file: brief references, imported STEP files with their bytes, and branches. */
 export interface ProjectFileExtras {
   assets?: ProjectFile["assets"];
   imports?: ProjectImport[];
   importFiles?: PackedFile[];
+  branches?: BranchRecord[];
+  branch?: string;
 }
 
 export function projectFile(
@@ -249,11 +306,11 @@ export function projectFile(
   source: string,
   template: string,
   createdAt: number,
-  versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string }[],
-  { assets = [], imports = [], importFiles = [] }: ProjectFileExtras = {},
+  versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string; branch?: string }[],
+  { assets = [], imports = [], importFiles = [], branches = [], branch }: ProjectFileExtras = {},
 ): string {
-  // version 1 stays readable by older Kerf builds when nothing is imported
-  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}) };
+  // version 1 stays readable by older Kerf builds when nothing is imported (they skip the branches)
+  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}), ...(branches.length > 1 ? { branches, ...(branch ? { branch } : {}) } : {}) };
   return JSON.stringify(f, null, 1);
 }
 

@@ -86,6 +86,7 @@ export function directEdit(src: string, model: Model, ask: DirectAsk, groups: Di
     if (!part) return fail(`There is no part called ${g.block}.`);
     if (part.locked) return fail(`${part.label} is locked. Unlock it in the parts list first.`);
     if (part.frame) return fail(`${part.label} is a member of frame ${part.frame}: change the frame's profile or lines instead.`);
+    if (part.insert) return fail(`${part.label} comes from ${part.insert.design}, placed here as ${part.insert.block}: open ${part.insert.design} to change it, or change the parameters design(...) gives it.`);
     if (part.sheet) return fail(`${part.label} is sheet metal: change its flanges, bends and cut-outs instead, so its flat pattern stays right.`);
     let stmt = blockOf(out, g.block);
     if (!stmt) return fail(`There is no part called ${g.block}.`);

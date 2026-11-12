@@ -31,7 +31,15 @@ const Version = z.object({
   author: z.enum(["you", "claude", "system"]),
   message: z.string().max(2000),
   source: z.string().max(LIMITS.sourceChars),
+  /** the branch it was made on (absent: main) */
+  branch: z
+    .string()
+    .regex(/^(main|brn_[a-z0-9]{4,32})$/)
+    .optional(),
 });
+
+/** A version as the app reads it: the branch only when it isn't main. */
+const out = <V extends { branch: string }>({ branch, ...v }: V) => ({ ...v, ...(branch && branch !== "main" ? { branch } : {}) });
 
 const Push = z.object({
   baseRev: z.number().int().nonnegative(),
@@ -141,9 +149,11 @@ export function projectRoutes(deps: Deps) {
           // reference files are stored as they are: a JPEG or PDF is already compressed
           return f && f.encoding === "raw" ? [{ id: a.id, kind: a.kind, mime: a.mime, name: a.name, data: Buffer.from(f.data).toString("base64") }] : [];
         });
-        const versions = db.all<{ ts: number; author: string; message: string; source: string }>("SELECT ts, author, message, source FROM versions WHERE user_id = ? AND project_id = ? ORDER BY ts", user.id, p.id);
-        const out = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}) };
-        yield (first ? "" : ",") + JSON.stringify(out);
+        const versions = db.all<{ ts: number; author: string; message: string; source: string; branch: string }>("SELECT ts, author, message, source, branch FROM versions WHERE user_id = ? AND project_id = ? ORDER BY ts", user.id, p.id).map(out);
+        // the app's branches travel in extra, and project files keep them beside the versions
+        const lines = Array.isArray((extra as { branches?: unknown }).branches) ? { branches: (extra as { branches: unknown[] }).branches, ...(typeof (extra as { branch?: unknown }).branch === "string" ? { branch: (extra as { branch: string }).branch } : {}) } : {};
+        const entry = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...lines };
+        yield (first ? "" : ",") + JSON.stringify(entry);
         first = false;
       }
       yield `],"importFiles":[`;
@@ -176,12 +186,14 @@ export function projectRoutes(deps: Deps) {
     const user = c.get("user");
     const p = get(user.id, id);
     if (!p) throw new HttpError(404, "not_found", "That project is not in your account.");
-    const versions = db.all<{ id: string; ts: number; author: string; message: string; source: string }>(
-      "SELECT id, ts, author, message, source FROM versions WHERE user_id = ? AND project_id = ? AND seq > ? ORDER BY ts",
-      user.id,
-      id,
-      since,
-    );
+    const versions = db
+      .all<{ id: string; ts: number; author: string; message: string; source: string; branch: string }>(
+        "SELECT id, ts, author, message, source, branch FROM versions WHERE user_id = ? AND project_id = ? AND seq > ? ORDER BY ts",
+        user.id,
+        id,
+        since,
+      )
+      .map(out);
     return c.json({ project: head(p), versions });
   });
 
@@ -225,7 +237,7 @@ export function projectRoutes(deps: Deps) {
       const rev = get(user.id, id)!.rev;
       for (const v of body.versions ?? []) {
         db.run(
-          "INSERT OR IGNORE INTO versions (user_id, project_id, id, ts, author, message, source, seq) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+          "INSERT OR IGNORE INTO versions (user_id, project_id, id, ts, author, message, source, seq, branch) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
           user.id,
           id,
           v.id,
@@ -234,6 +246,7 @@ export function projectRoutes(deps: Deps) {
           clean(v.message).slice(0, 500),
           clean(v.source),
           rev,
+          v.branch && v.branch !== "main" ? v.branch : "",
         );
       }
       // keep the newest versions, as the app does locally

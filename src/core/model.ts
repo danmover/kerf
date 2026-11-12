@@ -1,5 +1,6 @@
 // The evaluated design model: what the viewer, checks, AI and UI consume.
 
+import type { SplitQuery } from "../lang/split";
 import type { BandLayout } from "../library/bands";
 import type { Span } from "../lang/ast";
 import type { Diagnostic } from "../lang/parser";
@@ -263,6 +264,10 @@ export interface EvalPart {
   frame?: string;
   /** a frame member as a beam, for analysing the frame with beam elements */
   beam?: BeamInfo;
+  /** a piece of a part made in pieces (split:), or that part's pins (no piece): edits go to that part's block */
+  split?: { part: string; piece?: number; of: number };
+  /** made by another design placed in this one (component mount = design("Motor mount")): the component, the design, and the part's name there; edits go to that design */
+  insert?: { block: string; design: string; part: string };
 }
 
 /** A frame member as a beam: the line it was drawn on (through the joints), its section's own axes across it, the section. */
@@ -305,8 +310,45 @@ export interface EvalParam {
   desc?: string;
   locked: boolean;
   span: Span;
+  /** where the value is written: the parameter's own, or the configuration row that sets it (edits go there) */
   valueSpan: Span;
   usedBy: string[];
+  /** the configuration whose row gives this value (the design is read as it) */
+  config?: string;
+  /** with config: the value the parameter's own line gives (what every configuration that leaves it gets) */
+  asWritten?: number | string | boolean;
+}
+
+/** One configuration: a variant of the design, as the parameter values it changes. */
+export interface ConfigRow {
+  label: string;
+  note?: string;
+  sets: { param: string; value: number | string | boolean; text: string; span: Span; valueSpan: Span }[];
+  span: Span;
+  /** offset just after the row's opening brace, where new values go */
+  setsStart: number;
+}
+
+/** configs { }: the design's variants in one file. */
+/** The schematic block: where each part's symbol sits on the sheet (mm from the sheet's top-left corner) and its turn. */
+export interface SchematicLayout {
+  places: Record<string, { x: number; y: number; rot: 0 | 90 | 180 | 270 }>;
+  entries: { name: string; span: Span }[];
+  span: Span;
+  bodyStart: number;
+}
+
+export interface ConfigTable {
+  title: string;
+  rows: ConfigRow[];
+  /** show: the configuration the file is read as (none: the parameters as written) */
+  shown?: string;
+  showSpan?: { span: Span; valueSpan: Span };
+  /** the configuration this reading used: show:, or the one asked for (exports and checks read each in turn) */
+  active?: string;
+  span: Span;
+  /** offset just after the block's opening brace */
+  bodyStart: number;
 }
 
 export type ReqStatus = "pass" | "fail" | "pending" | "error";
@@ -360,7 +402,7 @@ export interface EvalDecision {
 
 export interface DepNode {
   id: string;
-  kind: "param" | "given" | "let" | "interface" | "sketch" | "component" | "part" | "frame" | "require" | "analysis";
+  kind: "param" | "given" | "let" | "fn" | "feature" | "interface" | "sketch" | "component" | "part" | "frame" | "require" | "analysis";
   label: string;
 }
 
@@ -464,7 +506,15 @@ export interface Model {
   /** dependency graph: edges from a definition to what reads it */
   graph: { nodes: DepNode[]; edges: { from: string; to: string }[] };
   /** names of top-level blocks with their source spans (for editing and locks) */
-  blocks: { name: string; kind: string; span: Span; locked: boolean }[];
+  blocks: {
+    name: string;
+    kind: string;
+    span: Span;
+    locked: boolean;
+    /** the design's own functions and features: their parameters as written ("at, d: 8") and what they are for */
+    sig?: string;
+    doc?: string;
+  }[];
   /** geometric queries requested by requirements */
   geoQueries: GeoQuery[];
   /** engineering drawings defined in the source */
@@ -490,6 +540,61 @@ export interface Model {
   };
   /** geometry hashes of the solids mates pick faces from (the engine has the kernel list any it has not, then evaluates again) */
   mateQueries?: string[];
+  /** configurations: variants of the design in one file */
+  configs?: ConfigTable;
+  /** parts made in pieces (split:): where they were cut and how the pieces join */
+  splits?: SplitRecord[];
+  /** split parts waiting for their cuts and pins, worked out from the part as built (the engine does, then evaluates again) */
+  splitQueries?: SplitQuery[];
+  /** other designs placed in this one (component mount = design("Motor mount")) */
+  inserts?: InsertInfo[];
+  /** the schematic sheet's layout (schematic { ctrl: (40, 60) }) */
+  schematic?: SchematicLayout;
+}
+
+/** Another design placed in this one: what it was read with, and what it brought. */
+export interface InsertInfo {
+  /** the component's name here */
+  name: string;
+  /** the design's project name, and the project */
+  design: string;
+  projectId: string;
+  label: string;
+  config?: string;
+  /** its parameters as read: the ones this design sets, and the rest at their own values */
+  params: { name: string; value: number | string | boolean; set: boolean }[];
+  /** where it is placed: at:, and rotate: (degrees about X, then Y, then Z) */
+  at: V3;
+  rotate: V3;
+  /** the parts it brought, by their names here */
+  parts: string[];
+  /** what stays in the design itself: its firmware, tests, analyses and drawings */
+  left: string[];
+  span: Span;
+}
+
+/** A part made in pieces: its pieces (parts of the same name), the cuts and the pins in each joint. */
+export interface SplitRecord {
+  name: string;
+  label: string;
+  span: Span;
+  /** the split as asked for, in words ("across x to fit the printer") */
+  asked: string;
+  /** "whole" while the cuts are being worked out, or when it fits whole; "error" when it could not be cut */
+  status: "split" | "whole" | "waiting" | "error";
+  /** piece ids, in order */
+  pieces: string[];
+  /** cut heights per direction, with the direction in words */
+  cuts: { axis: string; at: number[] }[];
+  join: "dowel" | "printed" | "glue" | "none";
+  /** pin diameter and length, mm, and the name of the pins' component or part */
+  pin?: { d: number; length: number; name: string; count: number; hole: number };
+  joints: { axis: string; at: number; pins: number; area: number; room: number }[];
+  /** each piece's extent, mm (x, y, z of the part) */
+  sizes: V3[];
+  bed?: { size: V3; what: string };
+  warnings: string[];
+  error?: string;
 }
 
 /** One member of a frame: the part or component it became, and how its piece is cut. */

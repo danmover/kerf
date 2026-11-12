@@ -97,6 +97,8 @@ export interface RemoteVersion {
   author: "you" | "claude" | "system";
   message: string;
   source: string;
+  /** the branch it was made on (absent: main) */
+  branch?: string;
 }
 
 export interface RemoteProject {

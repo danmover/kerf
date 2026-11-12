@@ -261,8 +261,9 @@ export const SHAPE_FNS: Record<string, Fn> = Object.fromEntries([
 /** Modifiers usable as statements inside a part: shell(), fillet(), chamfer(), draft() and the direct edits. */
 export const MODIFIER_PARAMS: Record<string, string[]> = {
   shell: ["t", "open"],
-  fillet: ["r", "edges"],
-  chamfer: ["r", "edges"],
+  fillet: ["r", "edges", "at", "from"],
+  chamfer: ["r", "edges", "on", "angle"],
+  full_round: ["faces"],
   draft: ["angle", "faces", "pull", "neutral"],
   push_pull: ["by", "faces"],
   replace_faces: ["faces", "with"],
@@ -271,8 +272,12 @@ export const MODIFIER_PARAMS: Record<string, string[]> = {
 };
 export const modifierDocs: Record<string, string> = {
   shell: "shell(t, open: Z) — hollow the body to wall thickness t, leaving open the outermost flat face looking along `open` (Z = open top). open also takes a face selection or a list, e.g. open: [Z, facing(-Y)].",
-  fillet: 'fillet(r, edges: "all") — round edges of the body as it is at this step. edges: a preset ("all", "top", "bottom", "vertical", "horizontal", "convex", "concave", "sharp"), a named feature (boss.root, boss.tip, boss.edges), a selector (near(), in_plane(), along(), facing(), circles(), inside(), between()), or a list. Combine with + and -.',
-  chamfer: 'chamfer(r, edges: "all") — bevel edges, picked the same way as fillet.',
+  fillet:
+    'fillet(r, edges: "all") — round edges of the body as it is at this step. edges: a preset ("all", "top", "bottom", "vertical", "horizontal", "convex", "concave", "sharp"), a named feature (boss.root, boss.tip, boss.edges), a selector (near(), in_plane(), along(), facing(), circles(), inside(), between()), or a list. Combine with + and -. between(facing(Z), boss) rounds where two sets of faces meet (a face fillet). A list of radii makes the radius change along each run of edges: fillet([1, 4], edges: …) grows from 1 to 4 mm, fillet([2, 5, 2], …) swells in the middle; the radii are spread evenly unless at: [0, 0.3, 1] says how far along each one is, and they run from the end nearest from: (x, y, z) (without it, the end lowest in x, then y, then z). A run that goes all the way round must end on the radius it starts with.',
+  chamfer:
+    'chamfer(r, edges: "all", on:, angle:) — bevel edges, picked the same way as fillet. Uneven: chamfer((3, 1), edges: …, on: facing(Z)) cuts 3 mm along the face on: picks at each edge and 1 mm along the other; chamfer(2, angle: 30, edges: …, on: facing(Z)) cuts 2 mm along that face at 30° to it.',
+  full_round:
+    "full_round(faces: …) — round a wall, rib or rim right over: each face picked (the top of a rib with in_plane(Z, h), a tube's end, a disc's edge, a plate's edge) becomes a half-round tangent to its two long sides, which must be the same distance apart. Pick only that face, not its sides.",
   draft: 'draft(angle, faces: "vertical", pull: Z, neutral: (0, 0, 0)) — tilt faces by angle (degrees) so the part releases from a mould pulled along `pull`; faces stay put on the neutral plane through `neutral`. Draft before filleting.',
   push_pull:
     "push_pull(by, faces: …) — direct edit: move faces along their outward normals by `by` mm, out (adding material) when positive and in when negative. A flat face's neighbours stretch to follow, square, sloping or conical; a round face (a hole's or a boss's side) gets bigger or smaller. Works on the solid as it is at that step, imported bodies too; pick faces with near(), facing(), in_plane(), circles(), inside() or a feature name.",

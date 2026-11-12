@@ -308,7 +308,7 @@ export class KernelCore {
     const geo: Record<string, number> = {};
     const geoErrors: Record<string, string> = {};
     // a name matches every solid of a part or component; an id matches one solid (a body of an imported file)
-    const byName = (name: string) => list.filter((w) => w.item.name === name || w.item.id === name);
+    const byName = (name: string) => list.filter((w) => w.item.name === name || w.item.id === name || w.item.of === name);
     for (const q of req.queries) {
       const key = geoKey(q);
       try {

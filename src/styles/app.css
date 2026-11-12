@@ -6209,3 +6209,56 @@ button.mp-stat:hover {
   padding-top: 8px;
   border-top: 1px solid var(--line-2);
 }
+
+/* schematic sheet (build tab, wiring: schematic) */
+.sch {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  outline: none;
+  background: radial-gradient(circle at 1px 1px, rgb(var(--ink-rgb) / 0.05) 1px, transparent 0) 0 0 / 16px 16px, var(--bg-0);
+}
+.sch-svg {
+  flex: 1;
+  min-height: 0;
+  width: 100%;
+  display: block;
+  touch-action: none;
+  user-select: none;
+  cursor: default;
+}
+.sch-svg.panning {
+  cursor: grabbing;
+}
+.sch-paper {
+  fill: #fff; /* theme: same, a sheet of paper */
+  filter: drop-shadow(0 4px 14px rgb(var(--shade-rgb) / 0.45));
+}
+.sch-pin {
+  cursor: crosshair;
+}
+.sch-bar {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px 8px;
+  padding: 5px 12px;
+  border-top: 1px solid var(--line);
+  font-size: 11.5px;
+  color: var(--text-2);
+  flex: none;
+  min-height: 34px;
+}
+.sch-what {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  max-width: 100%;
+}
+.sch-what b {
+  color: var(--text);
+  font-weight: 500;
+}

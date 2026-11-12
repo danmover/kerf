@@ -219,9 +219,12 @@ function describeShape(e: Expr, src: string): string {
 }
 
 /** The fields of a call (and of the shape inside a move/rotate/mirror around it). */
+/** The design's own features and functions by name, with their parameters, while a part's steps are read. */
+let OWN_SIGS = new Map<string, string[]>();
+
 function fieldsOf(call: Extract<Expr, { k: "call" }>, src: string, depth = 0, of?: string): StepField[] {
   const fn = calleeName(call) ?? "";
-  const sig = signatureOf(fn);
+  const sig = OWN_SIGS.get(fn) ?? signatureOf(fn);
   const out: StepField[] = [];
   let pos = 0;
   const inner: StepField[] = [];
@@ -276,6 +279,7 @@ function stepOf(it: Item, index: number, src: string, suppressed = false): Step 
       if (fn === "fillet" || fn === "chamfer") title += `${a("r") ? ` ${t("r")}` : ""}${a("edges") ? ` · ${t("edges")}` : " · all edges"}`;
       else if (fn === "shell") title += `${a("t") ? ` ${t("t")}` : ""}${a("open") ? ` · open ${t("open")}` : ""}`;
       else if (fn === "draft") title += a("angle") ? ` ${t("angle")}°` : "";
+      else if (fn === "full_round") title += a("faces") ? ` · ${t("faces")}` : "";
       return {
         index,
         kind: "modifier",
@@ -284,6 +288,7 @@ function stepOf(it: Item, index: number, src: string, suppressed = false): Step 
         span: it.span,
         suppressed,
         fields: fieldsOf(it.call, src),
+        ...(it.name ? { name: it.name } : {}),
         editable: true,
         repeatable: false,
       };
@@ -397,8 +402,22 @@ function blockOf(src: string, block: string): PartStmt | CompStmt | undefined {
 
 /** The steps of a part (or the library call of a component), in build order, with its placement last. */
 export function partSteps(src: string, block: string): PartSteps | null {
-  const stmt = blockOf(src, block);
+  const { program } = parse(src);
+  const stmt = program.stmts.find((s): s is PartStmt | CompStmt => (s.k === "part" || s.k === "component") && s.name === block);
   if (!stmt) return null;
+  // a use of the design's own feature names its values by the feature's parameters
+  const own = new Map<string, string[]>();
+  for (const s of program.stmts) if (s.k === "feature" || s.k === "fn") own.set(s.name, s.params.map((p) => p.name));
+  const saved = OWN_SIGS;
+  OWN_SIGS = own;
+  try {
+    return readSteps(src, block, stmt);
+  } finally {
+    OWN_SIGS = saved;
+  }
+}
+
+function readSteps(src: string, block: string, stmt: PartStmt | CompStmt): PartSteps {
   const steps: Step[] = [];
   if (stmt.k === "component") {
     const fn = calleeName(stmt.call) ?? "part";

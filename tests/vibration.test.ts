@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { halfSineShock, runStructural, type FeaPart, type StructuralInput } from "../src/analysis/fe/structural";
+import { missingMass } from "../src/analysis/fe/vibration";
 import { boxMesh, type V3 } from "../src/analysis/fe/voxel";
 import { mechMaterial } from "../src/analysis/materials";
 import { dynamicItems, vibrationVerdict } from "../src/analysis/dynamics";
@@ -185,4 +186,14 @@ part frame {
     // a 25 mm square beam lifts it to about 2 kHz, well clear of the spindle
     expect(vibrationVerdict(s, run(25))).toBe("pass");
   }, 30_000);
+});
+
+describe("the mass the modes leave out", () => {
+  it("matters only when the modes found stop near the band", () => {
+    // a bracket bolted by a thick plate: the plate's mass moves only in modes far above the sweep, with the table
+    expect(missingMass(0.57, 3100, 500, 12)).toEqual([]);
+    expect(missingMass(0.85, 600, 500, 6)).toEqual([]);
+    expect(missingMass(0.57, 700, 500, 6)).toEqual([expect.stringMatching(/move 57 % of the mass along the shaking and reach only 700 Hz, so the answer is a little low; ask for more modes: \(up to 12\)\.$/)]);
+    expect(missingMass(0.57, 700, 500, 12)[0]).toMatch(/12 modes is the most Kerf finds, so allow a little margin\.$/);
+  });
 });

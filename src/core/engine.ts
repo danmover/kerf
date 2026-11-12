@@ -20,8 +20,11 @@ import { useSettings } from "../app/settings";
 import type { ProcessResult } from "../mfg/types";
 import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged, recipeUsesImport, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
+import { designsUsed, evalDesigns } from "../lang/designs";
 import { setEvalFaces } from "../lang/mates";
 import type { FaceCatalogue } from "./mates";
+import { setEvalSplits } from "../lang/split";
+import { splitTable } from "./splitGeom";
 
 export interface MeshEntry {
   preview?: MeshData;
@@ -68,6 +71,9 @@ export const meshes = new Map<string, MeshEntry>();
 const faceCats = new Map<string, FaceCatalogue>();
 const faceCatsByName = new Map<string, FaceCatalogue>();
 setEvalFaces((hash, name) => faceCats.get(hash) ?? faceCatsByName.get(name));
+/** Split parts' cuts and pins, worked out from each part's mesh as built, for the printer chosen in Settings. */
+const splits = splitTable(userMachines);
+setEvalSplits(splits.lookup);
 /** A part's fast mesh (or its fine one), for measuring the design: what each screw clamps. */
 export const meshOf = (hash: string): MeshData | undefined => {
   const e = meshes.get(hash);
@@ -297,6 +303,15 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   const buildMs = performance.now() - tBuild;
 
+  // a split part is built whole first: its cuts and pins come from that solid, then the design is read again and the
+  // pieces are built
+  if (splits.resolve(model, meshOf)) {
+    const next = evaluate(src, { parsed });
+    if (get().rev !== rev) return;
+    set({ model: next });
+    return runPipeline(rev, src, next, parsed);
+  }
+
   // mates pick from the built solids' faces: have the kernel list any not listed yet, then read the design again
   const mated = await withFaces(rev, src, model, parsed);
   if (get().rev !== rev) return;
@@ -330,7 +345,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   }
   const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
   const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h), mesh: meshOf, sweepLater: true });
-  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines };
+  const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines, src, refresh: () => setTimeout(refreshReport, 0) };
   reportBase = { report: base, ctx };
   const report = composeReport(base, ctx);
   set({
@@ -494,7 +509,8 @@ class SolverChannel {
     this.busy = true;
     return new Promise((resolve) => {
       this.waiter = (conflict, error) => resolve({ conflict, error });
-      this.w!.postMessage({ id, src, hold, imports: evalImports() } satisfies SolveRequest);
+      const { table, open } = evalDesigns();
+      this.w!.postMessage({ id, src, hold, imports: evalImports(), designs: designsUsed(table, src), open } satisfies SolveRequest);
     });
   }
 }

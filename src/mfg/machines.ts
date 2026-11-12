@@ -49,6 +49,7 @@ export const MACHINE_PRESETS: MachineProfile[] = [
   m("bambu-p1s", "Bambu Lab P1S", "fdm", { bed: [256, 256, 256], max_temp: 300, enclosed: true }, "Enclosed, single nozzle"),
   m("bambu-a1", "Bambu Lab A1", "fdm", { bed: [256, 256, 256], max_temp: 300, enclosed: false }, "Open bed-slinger"),
   m("bambu-h2d", "Bambu Lab H2D", "fdm", { bed: [300, 320, 325], max_temp: 350, enclosed: true, soluble: true }, "Enclosed, two nozzles: soluble supports"),
+  m("bambu-x2d", "Bambu Lab X2D", "fdm", { bed: [256, 256, 260], max_temp: 300, enclosed: true, soluble: true }, "Enclosed and heated, two nozzles: two materials a plate or soluble supports"),
   m("ender-3-v3", "Creality Ender-3 V3", "fdm", { bed: [220, 220, 250], max_temp: 300, enclosed: false }, "Open frame, single nozzle"),
   m("voron-24", "Voron 2.4 (350)", "fdm", { bed: [350, 350, 340], max_temp: 300, enclosed: true }, "Enclosed CoreXY"),
   // resin and powder

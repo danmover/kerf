@@ -53,7 +53,8 @@ function lockItem(part: EvalPart): CtxEntry {
     icon: part.locked ? <Icon.Unlock size={14} /> : <Icon.Lock size={14} />,
     run: () => {
       const { source } = useDesign.getState();
-      const next = setBlockLocked(source, part.name, !part.locked);
+      // a placed design's parts lock with it
+      const next = setBlockLocked(source, part.insert?.block ?? part.name, !part.locked);
       if (next !== source) commitSource(next, "you", `${part.locked ? "Unlocked" : "Locked"} ${part.label}`);
     },
   };
@@ -75,7 +76,8 @@ export function partMenuEntries(hit: MenuHit): CtxEntry[] {
   const them = many ? `the ${ids.length} selected` : "it";
   const sel = useView.getState().selected;
   const imported = !!part.imported;
-  const own = part.kind === "part" && !imported;
+  // a placed design's parts are changed in that design
+  const own = part.kind === "part" && !imported && !part.insert;
   const face = planeForFace(hit.point, hit.normal);
   return [
     { heading: many ? `${ids.length} parts selected` : part.label },

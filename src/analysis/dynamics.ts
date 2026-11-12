@@ -113,6 +113,108 @@ export function vibrationText(spec: StructuralSpec, r: StructuralResult): { titl
   return { title: `Vibration: ${spec.label}: first mode ${hz(m.modes[0]?.freq ?? 0)}`, detail: `Natural frequencies: ${list}. ${detail}`, notes: detail, fix };
 }
 
+// ---------- shaking: a sine sweep or random vibration ----------
+
+/** A direction in words: +Z, or its components. */
+const along = (d: number[]) => {
+  const k = [0, 1, 2].find((i) => Math.abs(d[i]) > 0.999);
+  return k === undefined ? `(${d.map((v) => fmtNum(v, 2)).join(", ")})` : `${d[k] > 0 ? "+" : "−"}${"XYZ"[k]}`;
+};
+
+/** A length of time in words: 40 s, 12 min, 3.5 h, 20 days, 8 years. */
+export function lifeWords(s: number): string {
+  if (!Number.isFinite(s)) return "for good";
+  if (s < 120) return `${fmtNum(s, s < 10 ? 1 : 0)} s`;
+  if (s < 7200) return `${fmtNum(s / 60, s < 600 ? 1 : 0)} min`;
+  if (s < 2 * 86400) return `${fmtNum(s / 3600, s < 36000 ? 1 : 0)} h`;
+  if (s < 2 * 365.25 * 86400) return `${fmtNum(s / 86400, 0)} days`;
+  const y = s / (365.25 * 86400);
+  return y > 1e4 ? "more than 10,000 years" : `${fmtNum(y, y < 10 ? 1 : 0)} years`;
+}
+
+/** A count in words: 5.3×10⁶. */
+const count = (n: number) => {
+  if (n < 1e4) return fmtNum(n, 0);
+  const e = Math.floor(Math.log10(n));
+  const sup = String(e).replace(/[0-9]/g, (c) => "⁰¹²³⁴⁵⁶⁷⁸⁹"[Number(c)]);
+  return `${fmtNum(n / 10 ** e, 1)}×10${sup}`;
+};
+
+/** The mode nearest a frequency (on a log scale), and its index. */
+function nearestMode(r: StructuralResult, f: number): { mode: ModeResult; index: number } | null {
+  const ms = r.modal?.modes ?? [];
+  let best = -1;
+  for (let i = 0; i < ms.length; i++) if (best < 0 || Math.abs(Math.log(ms[i].freq / f)) < Math.abs(Math.log(ms[best].freq / f))) best = i;
+  return best < 0 ? null : { mode: ms[best], index: best };
+}
+
+/**
+ * The verdict on shaking: the safety factor of the stresses it shakes them to (amplitude or 3σ) against the fatigue
+ * strength for the cycles it is shaken for, as the strength check judges it; a life shorter than the duration asked fails.
+ */
+export function shakingVerdict(spec: StructuralSpec, r: StructuralResult, strength: Verdict): Verdict {
+  const v = r.vibration;
+  if (!v) return "pass";
+  let out = strength;
+  const dur = spec.modal?.duration;
+  if (dur !== undefined && Number.isFinite(v.life) && v.life < dur) out = "fail";
+  return out;
+}
+
+/** A sine sweep or random shaking in words: what shakes it, how hard it answers, the worst stress and how long it lasts. */
+export function shakingText(spec: StructuralSpec, r: StructuralResult, note = ""): { title: string; detail: string; fix?: string } | null {
+  const v = r.vibration;
+  if (!v) return null;
+  const pc = (x: number) => `${fmtNum(x * 100, x < 0.1 ? 1 : 0)} %`;
+  const ms = r.modal?.modes ?? [];
+  const inBand = ms.map((m, i) => ({ m, i })).filter(({ m }) => m.freq >= v.lo && m.freq <= v.hi);
+  const bandModes = inBand.length ? ` Modes inside the band: ${inBand.map(({ m, i }) => `${i + 1} (${hz(m.freq)})`).join(", ")}.` : " No mode lies inside the band, so it answers well away from resonance.";
+  const sfv = r.minSafety;
+  const away = sfv.nearBoundary ? sfv.away : null;
+  const sfText = (x: number) => (!Number.isFinite(x) || x >= 100 ? "over 100" : fmtNum(x, 2));
+  const judged = `against the ${sfv.mode === "fatigue" ? `fatigue strength of ${sfv.material} for ${count(v.cycles)} cycles` : `yield strength of ${sfv.material}`} (${fmtNum(sfv.allowable, 1)} MPa), target ${fmtNum(spec.safety, 2)}`;
+  const dur = spec.modal?.duration;
+  let detail: string;
+  let title: string;
+  if (v.kind === "sine") {
+    const at = v.at ?? v.lo;
+    const near = nearestMode(r, at);
+    const nearText = near && Math.abs(Math.log(near.mode.freq / at)) < 0.15 ? ` (mode ${near.index + 1}, ${hz(near.mode.freq)})` : "";
+    detail = v.dir
+      ? `Swept from ${hz(v.lo)} to ${hz(v.hi)} with the supports shaken at ${fmtNum(v.level, 2)} g (peak) along ${along(v.dir)}, damping ${pc(v.damping)}.`
+      : `Swept from ${hz(v.lo)} to ${hz(v.hi)} with the loads going up and down at their full size, damping ${pc(v.damping)}.`;
+    detail += bandModes;
+    detail += ` The worst is at ${hz(at)}${nearText}, where it moves ${fmtNum(Math.min(v.gain ?? 1, 999), (v.gain ?? 1) < 10 ? 1 : 0)} times as far as the same ${v.dir ? "acceleration" : "loads"} held still.`;
+    detail += ` There the peak stress is ${fmtNum(r.maxStress.value, 1)} MPa (von Mises) near ${p3(r.maxStress.at)} and the largest movement ${fmtNum(r.maxDisp.value, r.maxDisp.value < 0.1 ? 4 : 3)} mm; the lowest safety factor is ${sfText(sfv.value)} ${judged}.`;
+    if (away) detail += ` It sits right at a support or load; a short way off it is ${sfText(away.value)}.`;
+    detail += Number.isFinite(v.life)
+      ? ` At that stress it lasts about ${lifeWords(v.life)} of shaking at ${hz(at)} (${count(v.life * at)} cycles)${dur !== undefined ? `, ${v.life >= dur ? `${fmtNum(v.life / dur, v.life / dur < 10 ? 1 : 0)} times` : "less than"} the ${lifeWords(dur)} asked for` : ""}.`
+      : ` At that stress it does not wear out: it stays below ${v.lifeMaterial}'s fatigue limit.`;
+    title = `Shaking: ${spec.label}: worst at ${hz(at)}`;
+  } else {
+    const rms = v.rms!;
+    detail = `Shaken at random along ${along(v.dir ?? [0, 0, 1])} with ${spec.modal?.random?.label ?? `${hz(v.lo)}–${hz(v.hi)}`} (${fmtNum(v.level, 2)} g rms overall), damping ${pc(v.damping)}.`;
+    detail += bandModes;
+    detail += ` RMS (1σ): it moves up to ${fmtNum(rms.disp, rms.disp < 0.1 ? 4 : 3)} mm, and the stress reaches ${fmtNum(rms.stress, 1)} MPa (von Mises) near ${p3(rms.at)}.`;
+    detail += ` The stresses shown are 3σ, which it stays below 99.7 % of the time: peak ${fmtNum(r.maxStress.value, 1)} MPa near ${p3(r.maxStress.at)}, lowest safety factor ${sfText(sfv.value)} ${judged}.`;
+    if (away) detail += ` It sits right at a support or load; a short way off it is ${sfText(away.value)}.`;
+    const swings = v.nu0 ?? 0;
+    detail += Number.isFinite(v.life)
+      ? ` Its stress swings about ${fmtNum(swings, swings < 10 ? 1 : 0)} times a second there; by Steinberg's three bands (68 % of the swings at 1σ, 27 % at 2σ, 4 % at 3σ) it lasts about ${lifeWords(v.life)} of this shaking${dur !== undefined ? `, ${v.life >= dur ? `${fmtNum(v.life / dur, v.life / dur < 10 ? 1 : 0)} times` : "less than"} the ${lifeWords(dur)} asked for` : ""}.`
+      : ` Even its 3σ swings stay below ${v.lifeMaterial}'s fatigue limit, so it does not wear out.`;
+    title = `Random shaking: ${spec.label}: ${fmtNum(rms.stress, 1)} MPa rms`;
+  }
+  if (v.massShare < 0.8 && v.dir) detail += ` The modes found move ${pc(v.massShare)} of the mass along the shaking, so the answer is a little low.`;
+  detail += note;
+  const peak = r.maxDisp.at;
+  const lowMode = inBand[0];
+  const fix =
+    sfv.value < spec.safety || (dur !== undefined && Number.isFinite(v.life) && v.life < dur)
+      ? `Stiffen it where it moves most, near ${p3(peak)} (a brace, a gusset, a deeper section)${lowMode ? ` to lift mode ${lowMode.i + 1} (${hz(lowMode.m.freq)}) out of the band or make it move less` : ""}; add damping (rubber mounts, a damped layer); or lighten what it carries.`
+      : undefined;
+  return { title, detail, fix };
+}
+
 /** Where it lands the plastic or metal is crushed a little; judged a short way off, like a support. */
 const crushed = (r: StructuralResult) => (r.minSafety.nearBoundary && r.minSafety.away && r.minSafety.value < 1 ? r.minSafety.away : null);
 
@@ -167,6 +269,11 @@ export function dynamicItems(spec: StructuralSpec, r: StructuralResult, base: Pi
   if (r.modal) {
     const t = vibrationText(spec, r);
     out.push({ ...base, category: "vibration", id: id("modes"), status: vibrationVerdict(spec, r) as CheckStatus, title: t.title, detail: t.detail, fix: t.fix });
+  }
+  if (r.vibration) {
+    const t = shakingText(spec, r, strength.note)!;
+    const status = shakingVerdict(spec, r, strength.status);
+    out.push({ ...base, category: "vibration", id: id("shaking"), status, margin: r.minSafety.value - spec.safety, title: t.title, detail: t.detail, ...(t.fix ? { fix: t.fix } : {}) });
   }
   if (r.drop) {
     const status = dropVerdict(spec, r, strength.status);

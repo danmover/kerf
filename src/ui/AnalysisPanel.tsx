@@ -9,7 +9,7 @@ import { useAnalysis, showResults, runFine, runAccuracyCheck, runTopology, stopT
 import { topologyText } from "../analysis/topologySummary";
 import { fileStem, outlineDxf, shapeStl } from "../analysis/topologyExport";
 import { download } from "../persist/files";
-import { dirWords, largeText, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
+import { airLoadText, dirWords, largeText, modeText, staticSafety, strengthVerdict, structuralVerdict } from "../analysis/summary";
 import { count, designWords, fatigueText, fatigueVerdict, lifeText } from "../analysis/fatigueSummary";
 import { cycleWords, cyclesAt, MEAN_STRESS, type SnCurve } from "../analysis/fe/fatigue";
 import { describeRegion, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type StudySpec, type UciSpec } from "../analysis/spec";
@@ -20,11 +20,14 @@ import { uciItems, uciVerdict } from "../analysis/summary";
 import { uciResult, UCI_ROAD } from "../core/uciChecks";
 import type { CheckItem } from "../core/checks";
 import type { StructuralResult, ThermalResult } from "../analysis/fe/structural";
+import type { ShellPliesResult } from "../analysis/fe/shells";
+import { failureWords, type PlyFailure } from "../analysis/fe/laminate";
 import type { DrivetrainResult } from "../analysis/drivetrain";
 import { safetyColor, safetyT } from "../analysis/colormap";
 import { FIELD_INFO, autoDeform, fieldFor, resultFields, shownMode } from "./ResultsLayer";
 import { accuracyText, amps, bucklingText, bucklingVerdict, degC, density, duration, ohms, temperatureText, temperatureVerdict, volts, watts } from "../analysis/thermalSummary";
-import { dropVerdict, modeWords, resonances, vibrationText, vibrationVerdict } from "../analysis/dynamics";
+import { dropVerdict, lifeWords, modeWords, resonances, shakingText, shakingVerdict, vibrationText, vibrationVerdict } from "../analysis/dynamics";
+import { psdAt } from "../analysis/fe/vibration";
 import { Menu, MenuItem, Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { useChatDraft } from "./chatDraft";
@@ -277,6 +280,7 @@ function StructuralView({ spec, run }: { spec: StructuralSpec; run?: StructuralR
       {busy && <RunProgress run={run!} updating={!!r} />}
       {run?.status === "error" && <RunError spec={spec} run={run} />}
       {r?.modal && <ModesBox spec={spec} r={r} />}
+      {r?.vibration && <ShakingBox spec={spec} r={r} />}
       {r?.drop && <DropBox spec={spec} r={r} />}
       {r?.thermal && <HeatBox spec={spec} r={r} />}
       {r?.thermal?.currents?.length ? <CurrentBox spec={spec} r={r} /> : null}
@@ -522,6 +526,144 @@ function ModesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
         {text.notes}
       </div>
       {text.fix && <div className="an-note">{text.fix}</div>}
+    </div>
+  );
+}
+
+/** Shaking: what shakes it, how hard it answers across the band (or the spectrum it is shaken with), and its life. */
+function ShakingBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
+  const v = r.vibration!;
+  const strength = strengthVerdict(spec, r);
+  const status = shakingVerdict(spec, r, strength.status);
+  const text = shakingText(spec, r, strength.note);
+  const near = v.at !== undefined ? r.modal?.modes.findIndex((m) => Math.abs(Math.log(m.freq / v.at!)) < 0.15) ?? -1 : -1;
+  const pc = (x: number) => `${fmtNum(x * 100, x < 0.1 ? 1 : 0)} %`;
+  const what =
+    v.kind === "sine"
+      ? `${fmtNum(v.lo, v.lo < 10 ? 1 : 0)}–${fmtNum(v.hi, 0)} Hz ${v.dir ? `at ${fmtNum(v.level, 2)} g along ${dirWords(v.dir)}` : "with the loads going up and down"}`
+      : `${spec.modal?.random?.label ?? `${fmtNum(v.level, 2)} g rms`} along ${dirWords(v.dir ?? [0, 0, 1])}`;
+  const life = Number.isFinite(v.life) ? lifeWords(v.life) : "no wear";
+  return (
+    <div className="an-box" style={{ marginBottom: 12 }}>
+      <div className="row" style={{ gap: 8, marginBottom: 8 }}>
+        <StatusIcon status={status} />
+        <b>{v.kind === "sine" ? "Sine sweep" : "Random shaking"}</b>
+        <span className="dim mono">
+          {what} · damping {pc(v.damping)}
+        </span>
+      </div>
+      <div className="an-grid" style={{ marginBottom: 8 }}>
+        {v.kind === "sine" ? (
+          <div className={`an-stat ${status}`}>
+            <div className="k">Worst at</div>
+            <div className="v">
+              {fmtNum(v.at ?? 0, (v.at ?? 0) < 100 ? 1 : 0)}
+              <small>Hz</small>
+            </div>
+            <div className="s">
+              {near >= 0 ? `mode ${near + 1} · ` : ""}×{fmtNum(v.gain ?? 1, (v.gain ?? 1) < 10 ? 1 : 0)} the slow answer
+            </div>
+          </div>
+        ) : (
+          <>
+            <div className="an-stat">
+              <div className="k">RMS movement</div>
+              <div className="v">
+                {fmtNum(v.rms!.disp, v.rms!.disp < 0.1 ? 4 : 3)}
+                <small>mm</small>
+              </div>
+              <div className="s">1σ; shown at 3σ</div>
+            </div>
+            <div className={`an-stat ${status}`}>
+              <div className="k">RMS stress</div>
+              <div className="v">
+                {fmtNum(v.rms!.stress, v.rms!.stress < 10 ? 2 : 1)}
+                <small>MPa</small>
+              </div>
+              <div className="s">von Mises near {v3(v.rms!.at)} · swings {fmtNum(v.nu0 ?? 0, 0)}×/s</div>
+            </div>
+          </>
+        )}
+        <div className={`an-stat ${spec.modal?.duration !== undefined && Number.isFinite(v.life) && v.life < spec.modal.duration ? "fail" : ""}`}>
+          <div className="k">Life</div>
+          <div className="v" style={{ fontSize: life.length > 10 ? 15 : undefined }}>{life}</div>
+          <div className="s">{spec.modal?.duration !== undefined ? `${lifeWords(spec.modal.duration)} asked for` : "of this shaking"} · {v.lifeMaterial}{v.kind === "random" ? ", Steinberg" : ""}</div>
+        </div>
+      </div>
+      {v.kind === "sine" && v.curve ? <SweepChart v={v} modes={r.modal?.modes.map((m) => m.freq) ?? []} /> : null}
+      {v.kind === "random" && spec.modal?.random ? <PsdChart points={spec.modal.random.points} modes={r.modal?.modes.map((m) => m.freq) ?? []} /> : null}
+      {text && (
+        <div className="an-note" style={{ marginTop: 8 }}>
+          {text.detail}
+        </div>
+      )}
+      {text?.fix && <div className="an-note">{text.fix}</div>}
+    </div>
+  );
+}
+
+/** Log-log axes for a frequency chart: x across the band, y over the values' range. */
+function logAxes(lo: number, hi: number, ys: number[]) {
+  const pos = ys.filter((y) => y > 0);
+  const top = Math.max(...pos, 1e-12);
+  const bottom = Math.max(Math.min(...pos, top), top * 1e-4);
+  const x = (f: number) => (Math.log(f / lo) / Math.log(hi / lo)) * 100;
+  const y = (val: number) => 4 + ((Math.log10(top) - Math.log10(Math.max(val, bottom))) / Math.max(Math.log10(top) - Math.log10(bottom), 1e-6)) * 46;
+  return { x, y, top, bottom };
+}
+
+/** A sine sweep's answer across the band: the largest movement and stress at each frequency, the modes and the worst one marked. */
+function SweepChart({ v, modes }: { v: NonNullable<StructuralResult["vibration"]>; modes: number[] }) {
+  const chart = useMemo(() => {
+    const c = v.curve!;
+    const d = logAxes(v.lo, v.hi, c.disp);
+    const s = logAxes(v.lo, v.hi, c.stress);
+    const line = (ax: typeof d, ys: number[]) => c.f.map((f, i) => `${ax.x(f).toFixed(2)},${ax.y(ys[i]).toFixed(2)}`).join(" ");
+    return { disp: line(d, c.disp), stress: line(s, c.stress), x: d.x, dTop: d.top, sTop: s.top };
+  }, [v]);
+  return (
+    <div>
+      <svg className="an-spark" viewBox="0 0 100 54" preserveAspectRatio="none" aria-label="Response across the sweep">
+        {modes
+          .filter((f) => f > v.lo && f < v.hi)
+          .map((f, i) => (
+            <line key={i} x1={chart.x(f)} x2={chart.x(f)} y1={0} y2={54} stroke="var(--text-3)" strokeDasharray="1 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          ))}
+        {v.at !== undefined && <line x1={chart.x(v.at)} x2={chart.x(v.at)} y1={0} y2={54} stroke="var(--fail)" strokeDasharray="3 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />}
+        <polyline points={chart.stress} fill="none" stroke="var(--warn)" strokeWidth={1.4} vectorEffect="non-scaling-stroke" />
+        <polyline points={chart.disp} fill="none" stroke="var(--accent)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        {fmtNum(v.lo, v.lo < 10 ? 1 : 0)}–{fmtNum(v.hi, 0)} Hz (log) · blue: largest movement (up to {fmtNum(chart.dTop, chart.dTop < 0.1 ? 4 : 3)} mm) · amber: peak stress (up to {fmtNum(chart.sTop, 1)} MPa) · dotted: modes · dashed: the worst frequency, shown on the model
+      </div>
+    </div>
+  );
+}
+
+/** The spectrum random shaking follows (g²/Hz on log-log axes), with the modes marked. */
+function PsdChart({ points, modes }: { points: [number, number][]; modes: number[] }) {
+  const chart = useMemo(() => {
+    const lo = points[0][0],
+      hi = points[points.length - 1][0];
+    const fs: number[] = [];
+    for (let i = 0; i <= 120; i++) fs.push(lo * Math.pow(hi / lo, i / 120));
+    const vals = fs.map((f) => psdAt(points, f));
+    const ax = logAxes(lo, hi, vals);
+    return { line: fs.map((f, i) => `${ax.x(f).toFixed(2)},${ax.y(vals[i]).toFixed(2)}`).join(" "), x: ax.x, lo, hi, top: ax.top, bottom: ax.bottom };
+  }, [points]);
+  return (
+    <div>
+      <svg className="an-spark" viewBox="0 0 100 54" preserveAspectRatio="none" aria-label="Shaking spectrum">
+        {modes
+          .filter((f) => f > chart.lo && f < chart.hi)
+          .map((f, i) => (
+            <line key={i} x1={chart.x(f)} x2={chart.x(f)} y1={0} y2={54} stroke="var(--text-3)" strokeDasharray="1 3" strokeWidth={1} vectorEffect="non-scaling-stroke" />
+          ))}
+        <polyline points={chart.line} fill="none" stroke="var(--accent)" strokeWidth={1.6} vectorEffect="non-scaling-stroke" />
+      </svg>
+      <div className="mono dim" style={{ fontSize: 10.5, marginTop: 4 }}>
+        {fmtNum(chart.lo, chart.lo < 10 ? 1 : 0)}–{fmtNum(chart.hi, 0)} Hz (log) · base acceleration {fmtNum(chart.bottom, 4)} to {fmtNum(chart.top, 4)} g²/Hz · dotted: modes
+      </div>
     </div>
   );
 }
@@ -1087,7 +1229,7 @@ function WallsBox({ r }: { r: StructuralResult }) {
             <tr key={p.part}>
               <td className="mono">{p.part}</td>
               <td>
-                {thick(p)} {kind(p.kind)}
+                {p.plies ? `${thick(p)}, ${p.plies.perPly.filter((x) => !x.zone).length} plies${p.plies.perPly.some((x) => x.zone) ? " and zones" : ""}` : `${thick(p)} ${kind(p.kind)}`}
               </td>
               <td className="num">{fmtNum(p.area / 100, 0)} cm²</td>
               <td className="num">{fmtNum(p.stress, 1)} MPa</td>
@@ -1096,6 +1238,55 @@ function WallsBox({ r }: { r: StructuralResult }) {
           ))}
         </tbody>
       </table>
+      {rows.filter((p) => p.plies).map((p) => (
+        <PliesTable key={p.part} part={p.part} q={p.plies!} />
+      ))}
+    </div>
+  );
+}
+
+/** A composite wall's plies from the outside in: each one's lowest Tsai–Wu factor and how it would give way. */
+function PliesTable({ part, q }: { part: string; q: ShellPliesResult }) {
+  const [all, setAll] = useState(false);
+  const rows = all ? q.perPly : q.perPly.slice(0, 10);
+  const f = q.first;
+  const sf = (x: number) => (x >= 100 ? "> 100" : fmtNum(x, 2));
+  const how: Record<PlyFailure, string> = { "fibre tension": "fibres pulled apart", "fibre compression": "fibres crushed", "matrix tension": "resin cracks across", "matrix compression": "resin crushed across", shear: "resin shears" };
+  return (
+    <div style={{ marginTop: 10 }}>
+      <div className="an-note">
+        <b className="mono">{part}</b> {q.label}, 0° {q.fibre}. The first ply to give way is ply {f.ply} ({f.angle}°) at {sf(f.safety)}× the loads: {failureWords(f.failure, /cloth/.test(f.material))}. Its fibres break at {sf(q.fibreSafety)}×.
+      </div>
+      <table className="an-table">
+        <thead>
+          <tr>
+            <th className="num">Ply</th>
+            <th className="num">Angle</th>
+            <th>Material</th>
+            <th className="num">Safety</th>
+            <th>Gives way by</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((x) => (
+            <tr key={x.ply} style={x.ply === f.ply ? { fontWeight: 600 } : undefined}>
+              <td className="num">{x.ply}</td>
+              <td className="num">{x.angle}°</td>
+              <td>
+                {x.material}
+                {x.zone ? <span className="dim"> · {x.zone}</span> : null}
+              </td>
+              <td className="num">{sf(x.safety)}</td>
+              <td className="dim">{x.safety < 1e5 ? how[x.failure] : "–"}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      {q.perPly.length > 10 && (
+        <button className="btn sm ghost" style={{ marginTop: 6 }} onClick={() => setAll(!all)}>
+          {all ? "Show the first 10" : `Show all ${q.perPly.length} plies`}
+        </button>
+      )}
     </div>
   );
 }
@@ -1297,6 +1488,11 @@ function SetupBox({ spec, r, run }: { spec: StructuralSpec; r?: StructuralResult
     if (l.t === "pressure") return `${fmtNum(l.p, 3)} MPa on ${describeRegion(l.region)}${info ? ` (${fmtNum(info.magnitude, 1)} N over ${fmtNum(info.area, 0)} mm²)` : ""}`;
     if (l.t === "bearing")
       return `${fmtNum(Math.hypot(...l.f), 1)} N along ${v3(l.f.map((x) => x / (Math.hypot(...l.f) || 1)))} on ${describeRegion(l.region)}, spread round the side it presses${info?.pressure ? ` (peak ${fmtNum(info.pressure, 2)} MPa)` : ""}`;
+    if (l.t === "air") {
+      if (info?.air) return airLoadText(info.air, info.magnitude);
+      const how = [l.yaw !== undefined ? `at ${fmtNum(l.yaw, 0)}° yaw` : "", l.speed !== undefined ? `at ${fmtNum(l.speed * 0.0036, 0)} km/h` : "", l.scale !== 1 ? `×${fmtNum(l.scale, 2)}` : ""].filter(Boolean).join(", ");
+      return `the pressure and friction from "${l.analysis}"${how ? ` (${how})` : ""}, once it has run`;
+    }
     return `${fmtNum(l.torque / 1000, 2)} N·m about ${v3(l.axis)} on ${describeRegion(l.region)}`;
   };
   const supportTag = (s: StructuralSpec["supports"][number]) => (s.spring ? "spring" : s.pin ? "pin" : s.move ? "moved" : s.contact ? "contact" : s.dir ? "roller" : "fixed");
@@ -1526,7 +1722,8 @@ function ConvergenceBox({ run, r }: { run: StructuralRun; r?: StructuralResult }
     const hi = Math.max(0, ...ys);
     return ys.map((y, i) => `${((i / (ys.length - 1)) * 100).toFixed(2)},${(4 + ((hi - y) / (hi - lo)) * 46).toFixed(2)}`).join(" ");
   }, [trace]);
-  const balance = r ? r.equilibrium : null;
+  // shaking: the inertia the parts shake with balances the supports, not the loads
+  const balance = r && !r.vibration ? r.equilibrium : null;
   return (
     <div className="an-box">
       <h4>

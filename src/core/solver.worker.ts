@@ -7,6 +7,7 @@ import { evaluate } from "../lang/evaluator";
 import { solveConflict, type Conflict } from "./feasibility";
 import { setEvalImports } from "../lang/imports";
 import type { ImportTable } from "../kernel/imports";
+import { setEvalDesigns, type DesignTable } from "../lang/designs";
 
 export interface SolveRequest {
   id: number;
@@ -14,6 +15,9 @@ export interface SolveRequest {
   hold: string[];
   /** the project's imported files, so step() components evaluate here too */
   imports: ImportTable;
+  /** the other designs it places (design("name")), and the open project's id */
+  designs?: DesignTable;
+  open?: string;
 }
 export interface SolveResponse {
   id: number;
@@ -23,10 +27,11 @@ export interface SolveResponse {
 }
 
 self.onmessage = async (ev: MessageEvent<SolveRequest>) => {
-  const { id, src, hold, imports } = ev.data;
+  const { id, src, hold, imports, designs, open } = ev.data;
   const t0 = performance.now();
   try {
     setEvalImports(imports ?? {});
+    setEvalDesigns(designs ?? {}, open);
     const parsed = parse(src);
     const model = evaluate(src, { parsed, skipGeometry: true });
     const conflict = await solveConflict(src, parsed, model, { hold, maxOptions: 4 });

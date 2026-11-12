@@ -24,6 +24,8 @@ import { fmtNum } from "../lang/values";
 import { Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { BoardView } from "./BoardView";
+import { SchematicView } from "./SchematicView";
+import { schematicSheet, schematicSvg } from "../machine/schematic";
 import { SoundPanel } from "./SoundPanel";
 import { Belts } from "./BeltsView";
 import { hasCircuit } from "../machine/circuit/netlist";
@@ -34,8 +36,14 @@ import { useSim } from "../sim/runtime";
 type Section = "overview" | "sound" | "board" | "belts" | "wiring" | "calcs" | "firmware" | "tests" | "service";
 
 /** Remembered while the dock switches tabs. */
-const useBuildView = create<{ section: Section; wiring: "diagram" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
+const useBuildView = create<{ section: Section; wiring: "diagram" | "schematic" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
 const go = (section: Section) => useBuildView.setState({ section });
+
+/** The build tab's schematic sheet, from the find palette. */
+export function openSchematic() {
+  useBuildView.setState({ section: "wiring", wiring: "schematic" });
+  useView.setState({ dockTab: "build", dockOpen: true });
+}
 
 const money = (n: number) => `$${n.toFixed(2)}`;
 const plural = (n: number, one: string, many = one + "s") => `${n} ${n === 1 ? one : many}`;
@@ -357,28 +365,34 @@ function Wiring({ model, m, rows, items, name }: { model: Model; m: MachineData;
   const [big, setBig] = useState(false);
   const diagram = useMemo(() => (rows.length ? wiringDiagram(m, { title: name }) : null), [m, rows.length, name]);
   const elec = items.filter((i) => i.category === "electrical" && (i.status === "fail" || i.status === "warn"));
-  if (!diagram) {
+  // with parts to wire but no wires yet, the schematic is where to start: click a pin, then another
+  const pinned = m.components.some((c) => (catalogPart(c.catalogId)?.pins.length ?? 0) > 0);
+  if (!diagram && !pinned) {
     return (
       <div className="mp-pad">
         <div className="empty-state">No wires yet. Connect pins with wire statements (wire ctrl.D9 -&gt; drv.PWM) or nets, and the diagram and wire list appear here.</div>
       </div>
     );
   }
-  const file = (ext: string) => safeFileName(`${name} wiring`, ext);
+  const shownMode = diagram ? mode : "schematic";
+  const file = (ext: string, what = "wiring") => safeFileName(`${name} ${what}`, ext);
+  const schematicFile = () => download(schematicSvg(schematicSheet(m, model.schematic), name), file("svg", "schematic"), "image/svg+xml");
   return (
     <div className="mp-wiring">
       <div className="mp-toolbar">
         <Segmented
           id="build-wiring"
-          value={mode}
+          value={shownMode}
           onChange={(v) => useBuildView.setState({ wiring: v })}
           options={[
-            { value: "diagram", label: "Diagram" },
-            { value: "list", label: "Wire list" },
+            ...(diagram ? [{ value: "diagram" as const, label: "Diagram" }] : []),
+            { value: "schematic", label: "Schematic", title: "The circuit as a schematic: drag symbols, click two pins to wire them" },
+            ...(diagram ? [{ value: "list" as const, label: "Wire list" }] : []),
           ]}
         />
         <span className="mono dim" style={{ fontSize: 11 }}>
-          {plural(rows.length, "wire")} · {plural(diagram.parts, "part")}
+          {plural(rows.length, "wire")}
+          {diagram && <> · {plural(diagram.parts, "part")}</>}
         </span>
         {elec.length > 0 && (
           <button className={`chip ${elec.some((i) => i.status === "fail") ? "fail" : "warn"}`} style={{ cursor: "pointer" }} onClick={() => go("overview")} data-tip={elec.map((i) => i.title).join(" · ")}>
@@ -386,7 +400,7 @@ function Wiring({ model, m, rows, items, name }: { model: Model; m: MachineData;
           </button>
         )}
         <div className="grow" />
-        {mode === "diagram" && (
+        {shownMode === "diagram" && (
           <>
             <ZoomControls store={dockZoom} />
             <button className="btn sm" onClick={() => setBig(true)} data-tip="Show the diagram over the whole window">
@@ -394,16 +408,59 @@ function Wiring({ model, m, rows, items, name }: { model: Model; m: MachineData;
             </button>
           </>
         )}
-        <button className="btn sm" onClick={() => download(diagram.svg, file("svg"), "image/svg+xml")} data-tip="Printable diagram">
+        {shownMode === "schematic" && (
+          <button className="btn sm" onClick={() => setBig(true)} data-tip="Edit the schematic over the whole window">
+            <Icon.Fit size={13} /> Full screen
+          </button>
+        )}
+        {shownMode === "schematic" ? (
+          <button className="btn sm" onClick={schematicFile} data-tip="Printable schematic">
+            <Icon.Download size={13} /> SVG
+          </button>
+        ) : (
+          diagram && (
+            <button className="btn sm" onClick={() => download(diagram.svg, file("svg"), "image/svg+xml")} data-tip="Printable diagram">
+              <Icon.Download size={13} /> SVG
+            </button>
+          )
+        )}
+        {rows.length > 0 && (
+          <button className="btn sm" onClick={() => download(wiresCsv(rows), file("csv"), "text/csv")} data-tip="Wire list for a spreadsheet">
+            <Icon.Download size={13} /> CSV
+          </button>
+        )}
+      </div>
+      {shownMode === "schematic" || !diagram ? <SchematicView model={model} m={m} /> : shownMode === "diagram" ? <Diagram store={dockZoom} svg={diagram.svg} width={diagram.width} height={diagram.height} /> : <WireTable model={model} rows={rows} />}
+      {big && shownMode === "schematic" && <BigSchematic model={model} m={m} title={`Schematic: ${name}`} onClose={() => setBig(false)} onSvg={schematicFile} />}
+      {big && diagram && shownMode !== "schematic" && <BigDiagram svg={diagram.svg} width={diagram.width} height={diagram.height} title={`Wiring: ${name}`} sub={`${plural(rows.length, "wire")} · ${plural(diagram.parts, "part")}`} onClose={() => setBig(false)} onSvg={() => download(diagram.svg, file("svg"), "image/svg+xml")} />}
+    </div>
+  );
+}
+
+function BigSchematic({ model, m, title, onClose, onSvg }: { model: Model; m: MachineData; title: string; onClose: () => void; onSvg: () => void }) {
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => e.key === "Escape" && !(e.target as Element | null)?.closest?.(".sch") && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+  return createPortal(
+    <div className="mp-overlay" role="dialog" aria-modal="true" aria-label={title}>
+      <div className="mp-toolbar">
+        <span style={{ fontWeight: 500 }}>{title}</span>
+        <span className="dim" style={{ fontSize: 11.5 }}>
+          Drag empty paper to pan, the wheel zooms
+        </span>
+        <div className="grow" />
+        <button className="btn sm" onClick={onSvg}>
           <Icon.Download size={13} /> SVG
         </button>
-        <button className="btn sm" onClick={() => download(wiresCsv(rows), file("csv"), "text/csv")} data-tip="Wire list for a spreadsheet">
-          <Icon.Download size={13} /> CSV
+        <button className="icon-btn" onClick={onClose} aria-label="Close" data-tip="Close (Esc)">
+          <Icon.X size={16} />
         </button>
       </div>
-      {mode === "diagram" ? <Diagram store={dockZoom} svg={diagram.svg} width={diagram.width} height={diagram.height} /> : <WireTable model={model} rows={rows} />}
-      {big && <BigDiagram svg={diagram.svg} width={diagram.width} height={diagram.height} title={`Wiring: ${name}`} sub={`${plural(rows.length, "wire")} · ${plural(diagram.parts, "part")}`} onClose={() => setBig(false)} onSvg={() => download(diagram.svg, file("svg"), "image/svg+xml")} />}
-    </div>
+      <SchematicView model={model} m={m} />
+    </div>,
+    document.body,
   );
 }
 

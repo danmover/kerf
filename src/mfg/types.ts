@@ -3,6 +3,8 @@
 // analysis found. Plain data so it crosses the kernel worker boundary.
 
 import type { V3 } from "../kernel/recipe";
+import type { PliesSpec } from "../analysis/spec";
+import type { PlyBook } from "./plies";
 
 export type ProcessId =
   | "fdm"
@@ -23,7 +25,7 @@ export type ProcessId =
 /** A cutting tool in a mill's library: diameter and how deep it reaches (flute or neck length), mm. */
 export type Tool = [d: number, reach: number];
 
-export type SettingValue = number | boolean | string | V3 | V3[] | Tool[];
+export type SettingValue = number | boolean | string | V3 | V3[] | Tool[] | PliesSpec[];
 
 /** How one part is made: a process and the settings the design gave it (defaults are not stored). */
 export interface ProcessSpec {
@@ -36,6 +38,12 @@ export interface ProcessSpec {
 }
 
 export type Severity = "fail" | "warn";
+
+/** What a sheet() part's own forms are, so the sheet checks judge them as forms: each hem's inside radius, and the room each louvre takes (centre, unit axes, half sizes, in the part's own coordinates). */
+export interface SheetFormsRule {
+  hems: number[];
+  louvres: { c: V3; axes: [V3, V3, V3]; half: V3 }[];
+}
 
 /**
  * The numbers a part is checked against, resolved from the process, its
@@ -77,10 +85,10 @@ export interface Rules {
   envelope?: { size: V3; frame: V3 | null; what: string };
   /** turned parts: every surface revolves about this axis */
   revolve?: { axis: V3; maxSlender: number; maxBoreRatio: number; maxD: number; maxLength: number; liveTools?: boolean };
-  /** moulded composites: the laminate laid over the part's outer surface, mm, and its cured density, g/cm³ */
-  layup?: { wall: number; density: number };
+  /** moulded composites: the laminate laid over the part's outer surface, mm, and its cured density, g/cm³ (and its plies, when the process gives them) */
+  layup?: { wall: number; density: number; plies?: PlyBook };
   /** sheet metal: constant thickness t (null: measure), minimum inside bend radius */
-  sheet?: { t: number | null; bendR: number | null; bendFactor: number; holeEdge: number; brake?: number; maxT?: number };
+  sheet?: { t: number | null; bendR: number | null; bendFactor: number; holeEdge: number; brake?: number; maxT?: number; forms?: SheetFormsRule };
   /** profile cutting: a flat plate cut through along normal (null: find it) */
   profile?: { normal: V3 | null; t: number | null; maxT: number; minWeb: number };
   /** closed internal voids trap resin or powder */

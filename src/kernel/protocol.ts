@@ -38,6 +38,8 @@ export interface PlacedItem {
   density: number;
   /** excluded from pairwise solid booleans (gears: checked by tooth and envelope checks instead) */
   noInterference?: boolean;
+  /** the part it is a piece of (split:): measured with its other pieces when the design names that part */
+  of?: string;
 }
 
 export interface AccessProbe {

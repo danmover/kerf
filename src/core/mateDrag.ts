@@ -5,7 +5,7 @@
 // changes. Keep here writes a mated pose into the parts' at: and rotate: (axis: or facing: for components
 // placed that way), so the design draws them there and their mates hold them.
 
-import { frameFor, xformMatrix, type V3 } from "../kernel/recipe";
+import { frameFor, xformMatrix, type V3, type Xform } from "../kernel/recipe";
 import { fmtNum } from "../lang/values";
 import { motionPose } from "./kinematics";
 import { moveIdentity, rotAxisAngle, solveMates, type BodyMove } from "./mates";
@@ -100,14 +100,17 @@ export function mateDeltas(model: Model, moves: Map<string, BodyMove>): Map<stri
     const s = shown.get(body) ?? moveIdentity(mv.c);
     const D = mulMat(moveMatrix(mv), invRigid(moveMatrix(s)));
     if (isIdentity(D)) continue;
-    for (const p of model.parts) if (p.name === body) out.set(p.id, D);
+    for (const p of model.parts) if (bodyOf(p) === body || p.name === body) out.set(p.id, D);
   }
   return out;
 }
 
+/** The body a part moves with under mates: a piece with its part, and what a placed design brought with the design. */
+const bodyOf = (p: EvalPart) => p.insert?.block ?? p.split?.part ?? p.name;
+
 /** How far a body has moved from where the design shows it, in words: a turn (about whatever axis) and a slide along it. */
 export function movedWords(model: Model, body: string, moves: Map<string, BodyMove>): string {
-  const D = mateDeltas(model, moves).get(model.parts.find((p) => p.name === body)?.id ?? "");
+  const D = mateDeltas(model, moves).get(model.parts.find((p) => p.name === body || bodyOf(p) === body)?.id ?? "");
   if (!D) return `${body} is where the design puts it`;
   const { axis, angle } = rotAxisAngle([D[0], D[4], D[8], D[1], D[5], D[9], D[2], D[6], D[10]]);
   const t: V3 = [D[12], D[13], D[14]];
@@ -190,6 +193,11 @@ export function eulerXYZ(m: Mat): V3 {
   return [deg(Math.atan2(-r(1, 2), r(1, 1))), sy > 0 ? 90 : -90, 0];
 }
 
+/** rotate: (rx, ry, rz) about X, then Y, then Z, then at: */
+const placeXforms = (r: V3, at: V3): Xform[] => [
+  ...([0, 1, 2] as const).filter((k) => r[k]).map((k): Xform => ({ op: "rotate", angle: r[k], origin: [0, 0, 0], axis: [k === 0 ? 1 : 0, k === 1 ? 1 : 0, k === 2 ? 1 : 0] })),
+  { op: "translate", v: at },
+];
 const vec = (v: V3, digits: number) => `(${v.map((x) => fmtNum(Math.abs(x) < 10 ** -digits / 2 ? 0 : x, digits)).join(", ")})`;
 
 /**
@@ -204,8 +212,21 @@ export function keepPose(src: string, model: Model, moves: Map<string, BodyMove>
   let out = src;
   for (const p of model.parts) {
     const D = deltas.get(p.id);
-    if (!D || done.has(p.name)) continue;
-    done.add(p.name);
+    if (!D || done.has(p.insert?.block ?? p.name)) continue;
+    done.add(p.insert?.block ?? p.name);
+    if (p.insert) {
+      // a placed design keeps its pose in its own at: and rotate:
+      const ins = model.inserts?.find((i) => i.name === p.insert!.block);
+      const W = ins && mulMat(D, xformMatrix(placeXforms(ins.rotate, ins.at)));
+      const r = W && eulerXYZ(W);
+      const next = W && r ? setBlockProps(out, ins.name, { at: vec([W[12], W[13], W[14]], 3), rotate: r.every((x) => Math.abs(x) < 0.005) ? null : vec(r, 2) }) : out;
+      if (next === out) skipped.push({ name: p.insert.block, why: "its block was not found" });
+      else {
+        out = next;
+        kept.push(p.insert.block);
+      }
+      continue;
+    }
     if (p.frame) {
       skipped.push({ name: p.name, why: "it is a member of a frame" });
       continue;

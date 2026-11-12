@@ -22,7 +22,15 @@ export function rulesOnMachine(spec: ProcessSpec, material: string, machines: Ma
 export function processProbes(model: Model, builtHashes: Set<string>, machines: MachineContext = NO_MACHINES): ProcessProbe[] {
   return madeParts(model)
     .filter((p) => p.process && builtHashes.has(p.hash))
-    .map((p) => ({ id: p.id, hash: p.hash, rules: rulesOnMachine(p.process!, p.material, machines) }));
+    .map((p) => ({ id: p.id, hash: p.hash, rules: withSheetForms(rulesOnMachine(p.process!, p.material, machines), p) }));
+}
+
+/** A sheet() part's hems and louvres, for the sheet checks to judge as forms rather than as tight bends and odd walls. */
+function withSheetForms(rules: Rules, p: EvalPart): Rules {
+  if (!rules.sheet || !p.sheet) return rules;
+  const hems = p.sheet.bends.filter((b) => / hem$/.test(b.name)).map((b) => b.r);
+  const louvres = (p.sheet.forms ?? []).map((f) => ({ c: f.box.c, axes: f.box.axes, half: f.box.half }));
+  return hems.length || louvres.length ? { ...rules, sheet: { ...rules.sheet, forms: { hems, louvres } } } : rules;
 }
 
 /** Probes for checking one part against every process, for comparing them: each on the user's machine for it. */

@@ -9,9 +9,11 @@ import type { CompletionContext, CompletionResult, Completion } from "@codemirro
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
 import { useImports } from "../../core/imports";
+import { evalDesigns } from "../../lang/designs";
 import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../../lang/modelling";
 import { SHEET_FNS } from "../../lang/sheet";
 import { MOULD_FNS } from "../../lang/mould";
+import { SPLIT_FNS } from "../../lang/split";
 import { AERO_FNS } from "../../lang/aero";
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
@@ -84,8 +86,12 @@ const parser: StreamParser<St> = {
       if (STATEMENTS.has(w)) return "keyword";
       if (BRIEF_ENTRIES.has(w) && !stream.string.slice(0, stream.start).trim() && stream.peek() === " ") return "keyword";
       if (LINE_KEYWORDS.has(w) && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*\{/, false)) return "keyword";
+      // configs "Sizes" { and its config "Large" { rows: only at the start of a line, before a quoted label (or configs {)
+      if ((w === "configs" || w === "config") && !stream.string.slice(0, stream.start).trim() && stream.match(w === "configs" ? /^\s*("(?:[^"\\]|\\.)*"\s*)?\{/ : /^\s+"(?:[^"\\]|\\.)*"\s*\{/, false)) return "keyword";
       // mate name = against(...) and mate against(...): a statement only at the start of a line
       if (w === "mate" && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*[(=]/, false)) return "keyword";
+      // the design's own functions and features: fn name(...), function name(...), feature name(...) at the start of a line
+      if ((w === "fn" || w === "function" || w === "feature") && !stream.string.slice(0, stream.start).trim() && stream.match(/^\s+[A-Za-z_][A-Za-z0-9_]*\s*\(/, false)) return "keyword";
       if (BRIEF_FLAGS.has(w) && stream.peek() !== ":" && !stream.string.slice(stream.pos).trim()) return "controlKeyword";
       if (first && state.depth === state.sketchDepth && SKETCH_WORDS.has(w) && /^\s+[A-Za-z_(]/.test(stream.string.slice(stream.pos))) return "operatorKeyword";
       if (OPS_KW.has(w)) return "operatorKeyword";
@@ -207,6 +213,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.values(PATH_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "path", apply: f.name + "(" })),
     ...Object.values(FEATURE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "feature", apply: f.name + "(" })),
     ...Object.values({ ...SHEET_FNS, ...MOULD_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "mould" ? "mould" : "sheet metal", apply: f.name + "(" })),
+    ...Object.values(SPLIT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "split into pieces", apply: f.name + "(" })),
     ...Object.values(AERO_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "airfoil" ? "profile" : "aero tube", apply: f.name + "(" })),
     ...Object.values(SELECT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "selection", apply: f.name + "(" })),
     ...Object.entries(CONSTRAINTS).map(([k, c]) => ({ label: k, type: "keyword", info: c.doc, detail: c.dim ? "sketch dimension" : "sketch relation" })),
@@ -223,6 +230,8 @@ export function kerfCompletions(getModel: () => Model | null) {
   for (const f of Object.values(MATE_FNS)) if (!fnCompletions.some((c) => c.label === f.name)) fnCompletions.push({ label: f.name, type: "function", info: f.doc, detail: "mate", apply: f.name + "(" });
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
   kw.push({ label: "mate", type: "keyword", detail: "how two parts meet", info: "mate name = against(face(lid, -Z), face(box, +Z)): places the first part by how its faces, holes and points meet the second's (against, flush, concentric, pin, distance, angle, parallel, perpendicular, tangent, coincident, rigid); what the mates leave free can be dragged" });
+  kw.push({ label: "fn", type: "keyword", detail: "your own function", info: "fn name(a, b: 2) = expr, or fn name(a) { let t = ...  value }: works out a number, vector, shape or profile from its values, callable anywhere after it; b: 2 is a default" });
+  kw.push({ label: "feature", type: "keyword", detail: "your own feature", info: 'feature name(at, d: 8) "what it is" { add ... as post  cut ...  fillet(0.5, edges: post.root) }: steps used in any part on their own line, name(...) or name(...) as label; label.root, label.tip, label.edges and label.faces pick what it made' });
   kw.push({ label: "frame", type: "keyword", detail: "structural frame", info: 'frame name { profile: "2020", box: (w, d, h) } or path: [(x, y, z), ...]: 2020 extrusion or steel sections along lines, trimmed where they meet, with a cut list' });
   const profiles: Completion[] = ["2020", "2040", "box 40x40x3", "box 50x25x2.5", "tube 26.9x2.6", "angle 30x30x3", "flat 40x5", "bar 20x20", "rod 12"].map((p) => ({ label: `"${p}"`, type: "text", detail: /^\d/.test(p) ? "V-slot extrusion" : "section" }));
   const consts: Completion[] = [...CONSTS].map((c) => ({ label: c, type: "constant", detail: THREADS[c] ? "thread" : undefined }));
@@ -230,7 +239,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
-  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "chain", "label", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "split", "chain", "label", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 
@@ -258,11 +267,20 @@ export function kerfCompletions(getModel: () => Model | null) {
     const defined: Completion[] = [];
     if (model) {
       for (const p of model.params) defined.push({ label: p.name, type: "variable", detail: `param = ${typeof p.value === "number" ? +p.value.toFixed(3) : String(p.value)}`, info: p.desc });
-      for (const b of model.blocks) if (b.kind !== "param" && b.kind !== "require" && b.kind !== "decision") defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
+      for (const b of model.blocks) {
+        if (b.kind === "param" || b.kind === "require" || b.kind === "decision") continue;
+        if (b.kind === "fn" || b.kind === "feature") defined.push({ label: b.name, type: "function", detail: `your ${b.kind === "fn" ? "function" : "feature"} (${b.sig ?? ""})`, info: b.doc, apply: b.name + "(" });
+        else defined.push({ label: b.name, type: b.kind === "let" || b.kind === "given" ? "variable" : "class", detail: b.kind });
+      }
       for (const u of model.brief?.uses ?? []) defined.push({ label: u.id, type: "constant", detail: "use", info: u.text });
     }
     // imported STEP files place like library components
     const imports: Completion[] = useImports.getState().list.map((i) => ({ label: `step(${JSON.stringify(i.name)})`, type: "class", detail: "imported STEP", info: i.file, apply: `step(${JSON.stringify(i.name)})` }));
-    return { from: word.from, options: [...defined, ...imports, ...fnCompletions, ...consts, ...kw, ...props, ...briefProps, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
+    // and so do your other designs, as subassemblies
+    const { table, open } = evalDesigns();
+    const designs: Completion[] = Object.values(table)
+      .filter((d) => d.id !== open)
+      .map((d) => ({ label: `design(${JSON.stringify(d.name)})`, type: "class", detail: "your design", info: "Places it here as one subassembly: give its parameters by name, like design(\"Name\", width: 80)", apply: `design(${JSON.stringify(d.name)})` }));
+    return { from: word.from, options: [...defined, ...imports, ...designs, ...fnCompletions, ...consts, ...kw, ...props, ...briefProps, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
   };
 }

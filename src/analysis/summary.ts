@@ -2,9 +2,10 @@
 
 import { fmtNum } from "../lang/values";
 import type { SafetyAt, StructuralResult } from "./fe/structural";
+import { failureWords, type PlyFailure } from "./fe/laminate";
 import type { DrivetrainResult } from "./drivetrain";
-import { dropText, dropVerdict, vibrationText, vibrationVerdict } from "./dynamics";
-import { describeRegion, UNRELIABLE_RESIDUAL, type AnalysisSpec, type DrivetrainSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
+import { dropText, dropVerdict, lifeWords, shakingText, shakingVerdict, vibrationText, vibrationVerdict } from "./dynamics";
+import { describeRegion, UNRELIABLE_RESIDUAL, type AirLoadResult, type AnalysisSpec, type DrivetrainSpec, type LoadSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
 import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
 import type { AirflowRun } from "./aeroRuntime";
@@ -22,6 +23,24 @@ export interface RunLike {
 }
 
 const p3 = (p: number[]) => `(${p.map((v) => fmtNum(v, 1)).join(", ")})`;
+
+/** Where a load acts, in words: its region, or the air of the airflow analysis it comes from. */
+export const loadWhere = (l: LoadSpec): string => (l.t === "air" ? `the air from "${l.analysis}"` : describeRegion(l.region));
+
+const kmh = (ms: number) => `${fmtNum(ms * 3.6, ms * 3.6 < 10 ? 1 : 0)} km/h`;
+
+/** An air load as it went on: the force on each part, how its pressures were matched to the run, and what was left out. */
+export function airLoadText(a: AirLoadResult, magnitude: number): string {
+  const at = `${fmtNum(a.yaw, 0)}° yaw, ${kmh(a.speed)}${Math.abs(a.speed - a.runSpeed) > 1e-6 ? ` (the run was at ${kmh(a.runSpeed)}; pressures go as the speed squared)` : ""}`;
+  const parts = a.parts.map((p) => {
+    const f = Math.hypot(...p.force);
+    const m = Math.hypot(...p.measured);
+    const matched = Math.abs(p.scale - 1) < 0.005 ? "" : `, pressures ×${fmtNum(p.scale, 2)} to match the ${fmtNum(m, m < 10 ? 2 : 1)} N the run measured from the flow`;
+    return `${fmtNum(f, f < 10 ? 2 : 1)} N on ${p.name} over ${fmtNum(p.area, 0)} mm²${matched}`;
+  });
+  const left = a.left.length ? `; not in this analysis: ${a.left.map((l) => `${fmtNum(l.force, l.force < 10 ? 2 : 1)} N on ${l.name}`).join(", ")}` : "";
+  return `air from "${a.analysis}" (${at}) totalling ${fmtNum(magnitude, magnitude < 10 ? 2 : 1)} N: ${parts.join("; ")}${left}`;
+}
 const sf = (v: number) => (!Number.isFinite(v) || v >= 100 ? "over 100" : fmtNum(v, 2));
 /** A direction in words: +Z, −X, or its components when it is at an angle. */
 export const dirWords = (d: number[]) => {
@@ -49,13 +68,16 @@ export function supportLine(spec: StructuralSpec, r: StructuralResult, i: number
 }
 
 export function modeText(r: StructuralResult, cycles?: number, m: SafetyAt = r.minSafety): string {
+  // a composite ply's own strengths (Tsai–Wu), the first ply to give way
+  if (m.mode === "ply" && m.ply) return `Tsai–Wu strength of ply ${m.ply.index} (${m.ply.angle}°, ${m.material}), the first to give way: ${failureWords(m.ply.failure, /cloth/.test(m.material))}, ${fmtNum(m.allowable, 0)} MPa that way`;
   // a hot plastic's allowable is derated for the temperature there
   const hot = m.tempC !== undefined && m.tempC > 30 ? ` at ${fmtNum(m.tempC, 0)} °C` : "";
   if ((m.mode === "fatigue" || m.mode === "layer fatigue") && r.fatigue) return fatigueModeText(m, r.fatigue);
   // a printed part's sparse infill has a share of the solid's strength
   const inf = m.infill ? " in its infill" : "";
   if (m.mode === "layers" || m.mode === "layer fatigue") return `strength between print layers of ${m.material}${inf}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
-  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${inf}${hot} for ${cycles ? cycles.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
+  const n = cycles ?? r.vibration?.cycles;
+  if (m.mode === "fatigue") return `fatigue strength of ${m.material}${inf}${hot} for ${n ? n.toExponential(0) : "many"} cycles (${fmtNum(m.allowable, 1)} MPa)`;
   return `yield strength of ${m.material}${inf}${hot} (${fmtNum(m.allowable, 1)} MPa)`;
 }
 
@@ -247,6 +269,11 @@ const modalOnly = (spec: StructuralSpec) => !!spec.modal && !spec.loads.length &
 
 /** Pass, warn or fail for a structural result, the same way the checks judge it. */
 export function structuralVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
+  if (r.vibration) {
+    const a = vibrationVerdict(spec, r);
+    const b = shakingVerdict(spec, r, strengthVerdict(spec, r).status);
+    return a === "fail" || b === "fail" ? "fail" : a === "warn" || b === "warn" ? "warn" : "pass";
+  }
   if (modalOnly(spec)) return vibrationVerdict(spec, r);
   if (spec.drop) return dropVerdict(spec, r, strengthVerdict(spec, r).status);
   const temp = temperatureVerdict(r)?.status ?? "pass";
@@ -296,9 +323,31 @@ export function shellWallsText(r: StructuralResult): string | null {
   if (!s) return null;
   const what = (k: string) => (k === "laminate" ? "laminate" : k === "sheet" ? "sheet" : "wall");
   const thick = (p: { t: number; tMin: number; tMax: number }) => (p.tMax - p.tMin > 0.1 * p.t ? `${fmtNum(p.tMin, 2)}–${fmtNum(p.tMax, 2)} mm` : `${fmtNum(p.t, 2)} mm`);
-  const rows = [...s.parts].sort((a, b) => a.safety - b.safety).map((p) => `${p.part} (${thick(p)} ${what(p.kind)}, ${fmtNum(p.area / 100, 0)} cm²): peak ${fmtNum(p.stress, 1)} MPa on a face near ${p3(p.at)}, safety ${sf(p.safety)}`);
+  const rows = [...s.parts]
+    .sort((a, b) => a.safety - b.safety)
+    .map((p) => {
+      const q = p.plies;
+      if (!q) return `${p.part} (${thick(p)} ${what(p.kind)}, ${fmtNum(p.area / 100, 0)} cm²): peak ${fmtNum(p.stress, 1)} MPa on a face near ${p3(p.at)}, safety ${sf(p.safety)}`;
+      const f = q.first;
+      return `${p.part} (${q.label}, ${thick(p)}, 0° ${q.fibre}, ${fmtNum(p.area / 100, 0)} cm²): first ply to give way is ply ${f.ply} (${f.angle}°${q.stack.some((x) => x.material !== f.material) ? ` ${f.material}` : ""}) at ${sf(f.safety)}× the loads near ${p3(f.at)}, ${failureWords(f.failure, /cloth/.test(f.material))}; fibres break at ${sf(q.fibreSafety)}×`;
+    });
   return `${rows.join("; ")}.`;
 }
+
+/** A composite wall's plies, one by one: each ply's lowest Tsai–Wu factor and how it would go. */
+export function pliesText(r: StructuralResult): string | null {
+  const parts = r.shells?.parts.filter((p) => p.plies) ?? [];
+  if (!parts.length) return null;
+  return parts
+    .map((p) => {
+      const q = p.plies!;
+      const rows = q.perPly.map((x) => `${x.ply} ${x.angle}°${x.zone ? ` (${x.zone})` : ""} ${sf(x.safety)}${x.safety < 1e5 ? ` ${shortFailure(x.failure)}` : ""}`);
+      return `${p.part}: ${rows.join(", ")}`;
+    })
+    .join("; ");
+}
+
+const shortFailure = (f: PlyFailure) => (f === "fibre tension" ? "fibres pulled" : f === "fibre compression" ? "fibres pushed" : f === "matrix tension" ? "resin pulled" : f === "matrix compression" ? "resin pushed" : "shear");
 
 export function largeText(r: StructuralResult): string | null {
   const L = r.large;
@@ -357,6 +406,17 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
     lines.push(`${t.detail}${t.fix ? ` Fix: ${t.fix}` : ""}`);
   }
   if (r.drop) lines.push(dropText(spec, r));
+  if (r.vibration) {
+    // the fields are the shaking's (amplitude or 3σ), so the static lines (loads, their balance) do not apply
+    const t = shakingText(spec, r, strengthVerdict(spec, r).note)!;
+    lines.push(`Shaking: ${shakingVerdict(spec, r, strengthVerdict(spec, r).status).toUpperCase()}. ${t.detail}${t.fix ? ` Fix: ${t.fix}` : ""}`);
+    if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
+    lines.push("Supports: " + spec.supports.map((s) => describeRegion(s.region)).join("; ") + ".");
+    if (spec.loads.length) lines.push(`Loads going up and down: ${spec.loads.map(loadWhere).join("; ")}.`);
+    lines.push(...extraLines(spec, r));
+    if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
+    return lines.join("\n");
+  }
   if (modalOnly(spec)) {
     lines.push("Supports: " + spec.supports.map((s) => describeRegion(s.region)).join("; ") + ".");
     if (r.warnings.length) lines.push("Notes: " + r.warnings.join(" "));
@@ -378,6 +438,8 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
   if (r.beams?.buckling && !r.buckling) lines.push(`Buckling (members as beams): the lowest factor is ${fmtNum(r.beams.buckling.factor, 2)}, with ${r.beams.buckling.member} moving most; add buckling to see the shape.`);
   const walls = shellWallsText(r);
   if (walls) lines.push(`Walls: ${walls}`);
+  const plies = pliesText(r);
+  if (plies) lines.push(`Plies (from the outside in, each one's lowest Tsai–Wu factor): ${plies}.`);
   if (r.shells?.buckling && !r.buckling) lines.push(`Buckling (a quick check of the walls): about ${fmtNum(r.shells.buckling.factor, 2)}× these loads, with ${r.shells.buckling.part} rippling most; add buckling to see the shape.`);
   lines.push(`Largest principal strain ${fmtNum(Math.abs(r.maxStrain.value) * 100, 4)} % (${fmtNum(Math.abs(r.maxStrain.value) * 1e6, 0)} microstrain). Mass ${fmtNum(r.mass, 2)} g.`);
   if (r.hotSpots.length) lines.push("Hot spots (separate high-stress areas): " + r.hotSpots.slice(0, 5).map((h, i) => `${i + 1}) ${p3(h.at)} ${fmtNum(h.stress, 1)} MPa, safety ${sf(h.safety)}`).join("; ") + ".");
@@ -396,8 +458,9 @@ export function structuralSummary(spec: StructuralSpec, run: RunLike | undefined
       "Loads: " +
         r.loads
           .map((l, i) => {
-            const where = describeRegion(spec.loads[i].region);
             const L = spec.loads[i];
+            if (L.t === "air" && l.air) return airLoadText(l.air, l.magnitude);
+            const where = loadWhere(L);
             if (L.t === "torque") return `torque ${fmtNum(L.torque / 1000, 3)} N·m about ${p3(L.axis)} through ${p3(l.at)} on ${where} (${fmtNum(l.area, 0)} mm²)`;
             if (L.t === "bearing") return `bearing load ${fmtNum(l.magnitude, 1)} N along ${p3(l.vector.map((x) => x / (l.magnitude || 1)) as V3)} on ${where}, spread with a cosine over the side it presses (peak ${fmtNum(l.pressure ?? 0, 2)} MPa)`;
             return `${l.kind} totalling ${fmtNum(l.magnitude, 1)} N on ${where} (${fmtNum(l.area, 0)} mm², centred ${p3(l.at)})`;
@@ -471,13 +534,19 @@ export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: D
   }
   const setup = spec.drop
     ? `${spec.parts.join(", ")}; ${spec.drop.tip ? `tips over toward ${p3(spec.drop.dir)}` : `falls ${fmtNum((spec.drop.height ?? 0) / 1000, 2)} m`} onto ${spec.drop.floor.name}; safety target ${fmtNum(spec.safety, 2)}`
-    : modalOnly(spec)
+    : spec.modal?.shake || spec.modal?.random
+      ? `${spec.parts.join(", ")}; ${spec.modal.shake ? `sine sweep ${spec.modal.shake.label}${spec.modal.shake.accel !== undefined ? "" : " of the loads"}` : `random shaking, ${spec.modal.random!.label}`}; safety target ${fmtNum(spec.safety, 2)}`
+      : modalOnly(spec)
       ? `${spec.parts.join(", ")}; natural frequencies${spec.modal!.excite.length ? ` against ${spec.modal!.excite.map((e) => e.label).join(", ")}` : ""}`
       : `${spec.parts.join(", ")}; ${spec.supports.length} support(s), ${spec.loads.length} load(s)${spec.accel ? ", body load" : ""}; safety target ${fmtNum(spec.safety, 2)}`;
   let state = "not run yet";
   if (run?.status === "running" || run?.status === "waiting") state = "running";
   else if (run?.status === "error") state = `error: ${run.error ?? "did not finish"}`;
-  else if (run?.result && modalOnly(spec)) state = `${structuralVerdict(spec, run.result)}, first mode ${fmtNum(run.result.modal?.modes[0]?.freq ?? 0, 1)} Hz`;
+  else if (run?.result?.vibration) {
+    const r = run.result;
+    const v = r.vibration!;
+    state = `${structuralVerdict(spec, r)}, ${v.kind === "sine" ? `worst at ${fmtNum(v.at ?? 0, 1)} Hz (${fmtNum(v.gain ?? 1, 1)}× the slow answer)` : `${fmtNum(v.rms?.stress ?? 0, 1)} MPa rms`}, safety ${sf(r.minSafety.value)}, peak ${fmtNum(r.maxStress.value, 1)} MPa${v.kind === "random" ? " (3σ)" : ""}, life ${Number.isFinite(v.life) ? lifeWords(v.life) : "for good"}`;
+  } else if (run?.result && modalOnly(spec)) state = `${structuralVerdict(spec, run.result)}, first mode ${fmtNum(run.result.modal?.modes[0]?.freq ?? 0, 1)} Hz`;
   else if (run?.result) {
     const r = run.result;
     state = `${structuralVerdict(spec, r)}${r.drop ? `, ${fmtNum(r.drop.g, 0)} g on landing` : ""}${r.modal ? `, first mode ${fmtNum(r.modal.modes[0]?.freq ?? 0, 1)} Hz` : ""}, safety ${sf(r.minSafety.value)}, peak ${fmtNum(r.maxStress.value, 1)} MPa, deflection ${fmtNum(r.maxDisp.value, 3)} mm`;

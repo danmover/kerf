@@ -95,8 +95,11 @@ export type ShapeRecipe =
   | { t: "unfold"; part: PartRecipe; pieces: { region: ShapeRecipe; xf: Xform[] }[]; bends: ShapeRecipe[] }
   /** one half of a two-part mould round a part (placed by xf), split across the pull at `split` (null: where the part is widest) */
   | { t: "mould"; part: PartRecipe; xf: Xform[]; half: "top" | "bottom"; pull: V3; split: number | null; wall: number; shrink: number; keys: number; sprue: number; vents: number; bolt: number }
-  /** another part's solid where it sits (xf), brought into the frame of the part that uses it (into: that part's placement undone) */
-  | { t: "part"; part: PartRecipe; xf: Xform[]; into?: Xform[] };
+  /**
+   * another part's solid where it sits (xf), brought into the frame of the part that uses it (into: that part's
+   * placement undone); hash: that part's geometry hash, so the kernel builds it once for every piece cut from it
+   */
+  | { t: "part"; part: PartRecipe; xf: Xform[]; into?: Xform[]; hash?: string };
 
 /** Steepest taper an extrusion takes, degrees from straight. */
 export const MAX_TAPER = 80;
@@ -137,6 +140,8 @@ export type Sel =
   | SelPreset
   | { s: "feat"; f: string; part: "faces" | "edges" | "root" | "tip" }
   | { s: "between"; a: string; b: string }
+  /** edges where a face of one set meets a face of the other (between() given face selections) */
+  | { s: "meet"; a: Sel; b: Sel }
   | { s: "near"; p: V3; r: number }
   | { s: "plane"; n: V3; d: number }
   | { s: "along"; d: V3 }
@@ -150,13 +155,29 @@ export type Sel =
 /** @deprecated kept for older recipes; any Sel works */
 export type EdgeSel = "vertical" | "top" | "bottom" | "all";
 
+/**
+ * A fillet radius that changes along each run of edges: radius r[i] at fraction at[i] of the way along (at runs 0 to
+ * 1, increasing), from the end nearest `from` (the end lowest in x, then y, then z without it); straight lines between.
+ */
+export interface FilletLaw {
+  r: number[];
+  at: number[];
+  from?: V3;
+}
+
 /** A face to leave open when shelling: the outermost face in a direction, or a face selection. */
 export type OpenSpec = { dir: V3 } | { sel: Sel };
 
 export type PartOp = (
   | { op: "add" | "cut" | "intersect"; shape: ShapeRecipe; name?: string }
   | { op: "shell"; t: number; open: V3 | OpenSpec[] }
-  | { op: "fillet" | "chamfer"; r: number | V2; edges: Sel }
+  /**
+   * fillet: `vary` makes the radius change along each run of edges; chamfer: `on` is the face (at each edge) its
+   * first size runs along, for two sizes (r: (d1, d2)) or a size and an angle from that face
+   */
+  | { op: "fillet" | "chamfer"; r: number | V2; edges: Sel; vary?: FilletLaw; on?: Sel; angle?: number }
+  /** the faces picked rounded right over: a half-round tangent to their two long sides (the top of a rib, a rim) */
+  | { op: "full_round"; faces: Sel }
   | { op: "draft"; angle: number; faces: Sel; pull: V3; neutral: V3 }
   /** direct edits, on the solid as it is at this step whatever made it (an imported body too) */
   | { op: "push_pull"; d: number; faces: Sel }

@@ -20,8 +20,11 @@ import { componentLosses } from "../machine/heat";
 import { runDrivetrain, type DrivetrainResult } from "./drivetrain";
 import { RESOLUTION_TARGET, type DrivetrainSpec, type HeatLoadSpec, type StructuralSpec } from "./spec";
 import type { FeaPart, PartPrint, StructuralInput, StructuralResult, TopologyPreview } from "./fe/structural";
-import type { ShellPart } from "./fe/shells";
+import type { ShellPart, ShellPlies } from "./fe/shells";
+import { PLY_MATERIALS } from "./fe/laminate";
 import { resolvedSettings } from "../mfg/profiles";
+import { plyBook, plyStacks } from "../mfg/plies";
+import type { PliesSpec } from "./spec";
 import type { BoltWant } from "./fe/bolts";
 import { GRADES, gradeFrom, headDims, type HeadType } from "../library/fasteners";
 import { threadSpec } from "../library/standards";
@@ -34,6 +37,8 @@ import { accuracyText, bucklingText, bucklingVerdict, heatOnlySpec, temperatureT
 import { dynamicItems } from "./dynamics";
 import { topologyNext, topologyText } from "./topologySummary";
 import type { FeaRequest, FeaResponse } from "./protocol";
+import { useAirflow } from "./aeroRuntime";
+import { airflowNamed, airKey, isAirLoad, resultId, withAirFields, type AirSource } from "./airLoads";
 
 export type ResultField = "stress" | "safety" | "disp" | "strain" | "temp" | "life" | "current";
 
@@ -317,6 +322,19 @@ export function partPrint(spec: StructuralSpec, p: EvalPart, m: MechMaterial, me
 }
 
 const numberOr = (v: unknown, d: number) => (typeof v === "number" && v > 0 ? v : d);
+/** A carbon layup's laminate thickness: its plies' when its process gives them, otherwise its wall:. */
+const laminateT = (p: EvalPart) => plyBook(plyStacks(resolvedSettings(p.process!).plies))?.wall ?? numberOr(resolvedSettings(p.process!).wall, 1.2);
+const plyList = (l: PliesSpec) => l.angles.map((angle) => ({ angle, m: PLY_MATERIALS[l.material], t: l.t ?? PLY_MATERIALS[l.material].t }));
+/** Stacks laid from the outside in (the zones' plies inside them, where they lie), as a shell's laminate. */
+function shellPlies(stacks: PliesSpec[], fibre: StructuralSpec["fibre"]): ShellPlies {
+  const base = stacks.filter((l) => !l.zone);
+  return {
+    plies: base.flatMap(plyList),
+    patches: stacks.filter((l) => l.zone).map((l) => ({ region: l.zone!, plies: plyList(l), label: l.label })),
+    label: base.map((l) => `${l.code} of ${PLY_MATERIALS[l.material].label}${l.t ? ` (${fmtNum(l.t, 3)} mm plies)` : ""}`).join(", then "),
+    fibre: fibre ?? "auto",
+  };
+}
 
 /** What an analysis asks for that thin-wall shells do not solve, in words. */
 function shellsCannot(spec: StructuralSpec): string {
@@ -334,16 +352,36 @@ function shellsCannot(spec: StructuralSpec): string {
 const JOINING_KINDS = new Set(["screw", "bolt", "nut", "insert", "washer", "standoff", "rivet"]);
 
 /** World-space meshes and properties of the parts an analysis names; null while geometry is still building. */
+/**
+ * The design's own airflow runs, as air loads take them: a run that is done and up to date, or why the load waits (the
+ * run is still to come, or is going) or cannot go on.
+ */
+export function liveAirSource(model: Pick<Model, "analyses">): AirSource {
+  return (label) => {
+    const aero = airflowNamed(model, label);
+    if (typeof aero === "string") return { error: aero };
+    const run = useAirflow.getState().runs.get(aero.label);
+    if (run?.status === "error") return { error: `The airflow analysis "${aero.label}" did not finish (${run.error ?? "it stopped"}), so its air cannot load this analysis yet.` };
+    if (!run || run.status !== "done" || run.stale || !run.result) return { wait: `Waiting for the airflow run "${aero.label}" to finish` };
+    return { result: run.result, aero, id: resultId(run.result) };
+  };
+}
+
 export function structuralInput(
   spec: StructuralSpec,
   parts: EvalPart[],
   fine: boolean,
   buildErrors: Map<string, string>,
   meshOf: (hash: string) => MeshData | undefined = shownMesh,
-): { input?: StructuralInput; error?: string } | null {
+  air?: AirSource,
+): { input?: StructuralInput; error?: string; wait?: string } | null {
   if (!parts.length) return { error: `None of ${spec.parts.join(", ")} has geometry to analyse.` };
   const broken = parts.find((p) => buildErrors.has(p.hash));
   if (broken) return { error: `${broken.label} did not build, so it cannot be analysed yet.` };
+  // air loads take their pressures from an airflow run, which may still be to come
+  const withAir = withAirFields(spec, parts, air);
+  if ("error" in withAir) return { error: withAir.error };
+  if ("wait" in withAir) return { wait: withAir.wait };
   const th = spec.thermal;
   if (th && !th.heat.length && !th.currents?.length && !th.fixed.length)
     return { error: `heat: "auto" found no electronics that use power among ${spec.parts.join(", ")}, so nothing makes heat. Add source(part, watts) for what gets hot.` };
@@ -358,7 +396,7 @@ export function structuralInput(
   // when everything analysed is one, unless asked for solids or for what shells cannot follow (the same list as beams)
   const shellOf = (p: EvalPart): ShellPart | undefined =>
     p.process?.id === "carbon_layup"
-      ? { kind: "laminate", t: numberOr(resolvedSettings(p.process).wall, 1.2) }
+      ? { kind: "laminate", t: laminateT(p) }
       : p.sheet
         ? { kind: "sheet", t: p.sheet.t }
         : spec.elements === "shells"
@@ -366,10 +404,41 @@ export function structuralInput(
           : undefined;
   const shellsAuto = spec.elements === undefined && !beams && beamsCan && parts.every((p) => shellOf(p));
   const shells = spec.elements === "shells" || shellsAuto;
+  // a layup's own plies (layup:): the stacks for it, laid from the outside in, then the zones' plies inside them
+  const plied = new Map<string, ShellPlies>();
+  if (spec.layup) {
+    if (!shells)
+      return {
+        error: `layup: gives the plies of carbon layups analysed as shells, and ${
+          spec.elements === "solid" ? 'elements: "solid" models them as solid carbon: leave elements: out' : !beamsCan ? `${shellsCannot(spec)} needs solid elements: check the plies in an analysis without it` : `${parts.find((p) => !shellOf(p))?.label ?? "a part"} is not a thin wall, so the parts are solved as solids: analyse the layups on their own (or with other layups and sheet parts)`
+        }.`,
+      };
+    for (const l of spec.layup)
+      if (l.part && !parts.some((p) => p.name === l.part || p.frame === l.part)) return { error: `${l.label} is for ${l.part}, which this analysis does not analyse: add it to parts:, or leave part: out.` };
+    for (const p of parts) {
+      const sh = shellOf(p);
+      const named = spec.layup.filter((l) => l.part === p.name || (!!p.frame && l.part === p.frame));
+      // unnamed stacks are for every carbon layup; a measured wall or a sheet takes plies only when they name it
+      const mine = spec.layup.filter((l) => (l.part ? named.includes(l) : sh?.kind === "laminate"));
+      if (!mine.length) continue;
+      if (sh?.kind === "sheet") return { error: `${p.label} is sheet metal, so it has no plies: leave part: ${p.name} out of ${named[0]?.label ?? "the plies"}.` };
+      const base = mine.filter((l) => !l.zone);
+      if (!base.length) return { error: `${mine[0].label} lays plies inside a stack, and ${p.label} has none: give its stack too, like layup: [plies("[0/±45/90]s"), plies("[0/90]", zone: …)].` };
+      plied.set(p.name, shellPlies(mine, spec.fibre));
+    }
+    if (!plied.size) return { error: "layup: has plies for none of the analysed parts: they are for carbon layups (process: mfg.carbon_layup), or the part each names with part:." };
+  }
+  // a carbon layup's own plies, from its process (mfg.carbon_layup(plies: ...)), unless the analysis gives it others
+  if (shells)
+    for (const p of parts) {
+      if (plied.has(p.name) || p.process?.id !== "carbon_layup") continue;
+      const own = plyStacks(resolvedSettings(p.process).plies);
+      if (own.some((l) => !l.zone)) plied.set(p.name, shellPlies(own, spec.fibre));
+    }
   // a carbon layup solved as solid looks far stiffer and stronger than its laminate: say so, and how to see it as one
   const solidLayups = shells ? [] : parts.filter((p) => p.process?.id === "carbon_layup");
   const layupWarning = solidLayups.length
-    ? `${solidLayups.map((p) => p.label).join(", ")} ${solidLayups.length > 1 ? "are carbon layups" : "is a carbon layup"}, solved here as if solid carbon, which looks far stiffer and stronger than its ${fmtNum(numberOr(resolvedSettings(solidLayups[0].process!).wall, 1.2))} mm laminate: ${
+    ? `${solidLayups.map((p) => p.label).join(", ")} ${solidLayups.length > 1 ? "are carbon layups" : "is a carbon layup"}, solved here as if solid carbon, which looks far stiffer and stronger than its ${fmtNum(laminateT(solidLayups[0]))} mm laminate: ${
         spec.elements === "solid" ? "leave elements: out to analyse it as a laminate shell" : !beamsCan ? `${shellsCannot(spec)} needs solid elements, so check its strength in an analysis without it` : "analyse it on its own (or with other layups and sheet parts) to see it as a laminate shell"
       }.`
     : undefined;
@@ -389,7 +458,8 @@ export function structuralInput(
     // with heat, a bought component of an unknown material is its own insides (copper, board and plastic), not a plastic
     const component = p.kind === "component";
     // with fatigue, the same material machined and cast has two S-N curves
-    const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : undefined;
+    const shaken = !!(spec.modal?.shake || spec.modal?.random);
+    const finish = spec.fatigue ? (spec.fatigue.finish ?? partFinish(p)) : shaken ? (spec.modal!.finish ?? partFinish(p)) : undefined;
     // a screw or bolt of a known grade is as strong as that grade says (an 8.8 bolt is not mild steel)
     const grade = !spec.material && p.fastener ? gradeFrom(p.fastener.grade) : undefined;
     const key = (temps ? `${name}|${component}` : name) + (finish ? `|${finish}` : "") + (grade ? `|${grade}` : "");
@@ -432,8 +502,13 @@ export function structuralInput(
     const bolt = fi && fi.head !== "set" ? { headTop: fi.headTop, outward: fi.outward, size: fi.size, headD: fi.headD, ...(headH !== undefined ? { headH } : {}), ...(fi.grade ? { grade: fi.grade } : {}) } : undefined;
     const threads = p.libKind === "nut" || p.libKind === "standoff" ? ("nut" as const) : p.libKind === "insert" ? ("insert" as const) : undefined;
     const beam = beams && p.beam ? { a: p.beam.a, b: p.beam.b, u: p.beam.u, v: p.beam.v, section: p.beam.section } : undefined;
-    const shell = shells ? shellOf(p) : undefined;
-    fea.push({ id: p.id, name: p.name, ...(p.frame ? { group: p.frame } : {}), ...(beam ? { beam } : {}), ...(shell ? { shell } : {}), mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
+    const sh = shells ? shellOf(p) : undefined;
+    const plies = plied.get(p.name);
+    const shell = sh && plies ? { ...sh, plies } : sh;
+    // face(frame, ...), face(bar, ...) and face(mount, ...) take every member of the frame, piece of the part made in
+    // pieces, or part of the placed design
+    const group = p.insert?.block ?? p.frame ?? (p.split?.piece ? p.split.part : undefined);
+    fea.push({ id: p.id, name: p.name, ...(group ? { group } : {}), ...(beam ? { beam } : {}), ...(shell ? { shell } : {}), mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
   }
   // bolts tightened before the loads: the ones named, and with all every other screw and bolt analysed
   let preload: BoltWant[] | undefined;
@@ -450,7 +525,7 @@ export function structuralInput(
     parts: fea,
     materials: mats,
     supports: spec.supports,
-    loads: spec.loads,
+    loads: withAir.loads,
     accel: spec.accel,
     target: typeof res === "string" ? RESOLUTION_TARGET[res] : RESOLUTION_TARGET.standard,
     h: typeof res === "string" ? undefined : res.h,
@@ -462,6 +537,15 @@ export function structuralInput(
     maxDeflection: spec.maxDeflection,
     masses: spec.masses,
     modes: spec.modal?.modes,
+    ...(spec.modal?.shake || spec.modal?.random
+      ? {
+          ...(spec.modal.shake ? { shake: { lo: spec.modal.shake.lo, hi: spec.modal.shake.hi, ...(spec.modal.shake.accel !== undefined ? { accel: spec.modal.shake.accel, dir: spec.modal.shake.dir } : {}) } } : {}),
+          ...(spec.modal.random ? { random: { points: spec.modal.random.points, dir: spec.modal.random.dir } } : {}),
+          damping: spec.modal.damping,
+          ...(spec.modal.duration !== undefined ? { duration: spec.modal.duration } : {}),
+          shakeLife: { finishes, reliability: spec.modal.reliability ?? 0.5 },
+        }
+      : {}),
     drop: spec.drop,
     ...(th
       ? {
@@ -538,18 +622,21 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
     runs.delete(label);
     if (shown === label) shown = null;
   }
+  const air = liveAirSource(model);
   for (const written of specs) {
     // heat: "auto" and the ambient come from the model, so a change to the wiring or the brief re-runs a heat analysis
     const spec = resolveThermal(written, model);
     // compare input keys first: meshes are only copied into world space when something changed
     const parts = model.parts.filter((p) => spec.parts.includes(p.name));
-    const plainKey = inputKey(spec, parts, false);
+    // an air load runs again with each new airflow run
+    const airK = airKey(spec, air);
+    const plainKey = inputKey(spec, parts, false) + airK;
     // a fine run (or an accuracy check) stays so until the inputs change
     const fine = fineWanted.get(spec.label) === baseKey(plainKey);
     if (!fine) fineWanted.delete(spec.label);
     const check = !!spec.converge || checkWanted.get(spec.label) === baseKey(plainKey);
     if (!check) checkWanted.delete(spec.label);
-    const key = fine || check ? inputKey(spec, parts, fine, check) : plainKey;
+    const key = fine || check ? inputKey(spec, parts, fine, check) + airK : plainKey;
     const run = runs.get(spec.label);
     if (run && run.key === key) continue;
     // a topology run takes many solves, so it runs only when asked; a change to the design leaves the last shape
@@ -561,13 +648,15 @@ function schedule(state: Pick<ReportContext, "model" | "rev" | "buildErrors">) {
       runs.set(spec.label, { label: spec.label, key, fine, status: "idle", stage: "Ready to run", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() });
       continue;
     }
-    const prep = structuralInput(spec, parts, fine, state.buildErrors);
+    const prep = structuralInput(spec, parts, fine, state.buildErrors, shownMesh, air);
     if (!prep) continue;
     if (prep.input && check) prep.input.converge = true;
     cancel(spec.label);
     const resolution = (fine ? "fine" : typeof spec.resolution === "string" ? spec.resolution : `${fmtNum(spec.resolution.h)} mm`) + (check ? ", accuracy check" : "");
     const base: StructuralRun = { label: spec.label, key, fine, check, status: "waiting", stage: "Waiting", frac: 0, trace: [], stale: !!run?.result, result: run?.result, resolution, startedAt: performance.now() };
     if (prep.error) runs.set(spec.label, { ...base, status: "error", error: prep.error, setup: true, result: undefined, stale: false });
+    // its air is still to come: it runs when the airflow run it takes its pressures from is done
+    else if (prep.wait) runs.set(spec.label, { ...base, stage: prep.wait });
     else {
       runs.set(spec.label, base);
       queue.push({ id: ++nextId, label: spec.label, key, input: prep.input! });
@@ -679,7 +768,8 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const what = spec.modal ? "vibration" : spec.drop ? "drop" : heatOnly ? "heat" : "stress";
   const category = spec.modal ? ("vibration" as const) : spec.drop ? ("knocks" as const) : ("analysis" as const);
   if (!run || run.status === "waiting" || run.status === "running") {
-    return [{ ...base, category, id: id(heatOnly ? "temperature" : "strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : heatOnly ? "Temperature" : "Strength"}: ${spec.label}`, detail: run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…` }];
+    const airWait = run?.status === "waiting" && run.stage.startsWith("Waiting for the airflow") ? `${run.stage}; the ${what} analysis takes its pressures from it, then runs.` : undefined;
+    return [{ ...base, category, id: id(heatOnly ? "temperature" : "strength"), status: "pending", title: `${spec.modal ? "Vibration" : spec.drop ? "Drop" : heatOnly ? "Temperature" : "Strength"}: ${spec.label}`, detail: airWait ?? (run?.result ? `Re-running the ${what} analysis for the latest change…` : `Running the ${what} analysis…`) }];
   }
   if (run.status === "error" || !run.result) {
     return [{ ...base, category, id: id("setup"), status: "fail", title: `${what[0].toUpperCase()}${what.slice(1)} analysis: ${spec.label}`, detail: run.error ?? "The analysis did not finish." }];
@@ -703,7 +793,7 @@ function structuralItems(spec: StructuralSpec, run: StructuralRun | undefined, m
   const { status, note } = strengthVerdict(spec, r);
   out.push(...dynamicItems(spec, r, base, { status, note }));
   // modal and drop analyses report through their own items; a static strength line only when there are loads
-  if (spec.drop || (spec.modal && !spec.loads.length && !spec.accel)) {
+  if (spec.drop || (spec.modal && (spec.modal.shake || spec.modal.random || (!spec.loads.length && !spec.accel)))) {
     if (r.warnings.length) out.push({ ...base, id: id("notes"), status: "info", title: `Accuracy notes: ${spec.label}`, detail: r.warnings.join(" ") });
     return out;
   }
@@ -773,6 +863,33 @@ export function startAnalysisRuntime() {
   if (started) return;
   started = true;
   registerReportPass("analyses", analysisItems, 20);
+  // an air load waits for its airflow run: one that finishes, fails or starts again schedules the strength runs again
+  let airSeen = "";
+  useAirflow.subscribe((st) => {
+    const d = useDesign.getState();
+    if (!d.model) return;
+    const model = d.model;
+    const labels = new Set(
+      model.analyses.flatMap((a) =>
+        a.kind === "structural"
+          ? a.loads.filter(isAirLoad).map((l) => {
+              const aero = airflowNamed(model, l.analysis);
+              return typeof aero === "string" ? l.analysis : aero.label;
+            })
+          : [],
+      ),
+    );
+    if (!labels.size) return;
+    const seen = [...labels]
+      .map((l) => {
+        const r = st.runs.get(l);
+        return `${l}:${r?.status ?? "-"}:${r?.stale ? 1 : 0}:${r?.result ? resultId(r.result) : 0}`;
+      })
+      .join("|");
+    if (seen === airSeen) return;
+    airSeen = seen;
+    schedule({ model, rev: d.reportRev, buildErrors: d.buildErrors });
+  });
   // a report composed before the runtime started has no analysis items yet
   refreshReport();
 }

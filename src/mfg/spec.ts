@@ -8,6 +8,7 @@ import { defaultMaterial, materialInfo } from "./materials";
 import type { ProcessId, ProcessSpec, SettingValue, Tool } from "./types";
 import type { V3 } from "../kernel/recipe";
 import type { EvalPart, Model } from "../core/model";
+import { PLIES_KIND, type PliesSpec } from "../analysis/spec";
 
 export type { ProcessId, ProcessSpec };
 
@@ -105,6 +106,20 @@ function settingValue(sd: SettingDef, v: Value, fname: string, ctx: CallCtx): Se
       if (!tools.length) return ctx.error(`${what} needs at least one tool`);
       if (tools.length > MAX_TOOLS) return ctx.error(`${what} takes at most ${MAX_TOOLS} tools`);
       return sortTools(tools);
+    }
+    case "plies": {
+      const example = 'like plies: [plies("0", "carbon woven"), plies("[0/±45/90]s"), plies("[0/90]2", zone: zone(at: (0, 0, 0), r: 45), name: "bottom bracket")]';
+      const stacks: PliesSpec[] = [];
+      for (const x of Array.isArray(v) ? v : [v]) {
+        if (!(x instanceof Obj) || x.kind !== PLIES_KIND) return ctx.error(`${fname}(): plies: is the ply schedule, plies("[0/±45/90]s") or a list of them laid from the outer surface in, ${example}; got ${typeName(x)}`);
+        const p = x.fields.spec as unknown as PliesSpec;
+        if (p.part) return ctx.error(`${fname}(): plies: are this part's own, so leave part: out of ${p.label}`);
+        if (p.zone?.t === "extreme") return ctx.error(`${fname}(): ${p.label}: zone: should be a zone(...) or a face(part, dir)`);
+        stacks.push(p);
+      }
+      if (!stacks.length) return ctx.error(`${fname}(): plies: needs at least one plies(...), ${example}`);
+      if (stacks.every((p) => p.zone)) return ctx.error(`${fname}(): plies: has only zones' plies, which go inside the stack over the whole part: give that stack too, ${example}`);
+      return stacks;
     }
   }
 }
@@ -275,7 +290,8 @@ export function partMaterial(material: string | undefined, spec: ProcessSpec | u
  */
 export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts: { buildVolume?: V3; material?: string } = {}): void {
   for (const p of model.parts) {
-    if (p.kind !== "part" || p.processNone) continue;
+    // a placed design's parts are made as that design says
+    if (p.kind !== "part" || p.processNone || p.insert) continue;
     const own = !!p.process;
     if (!own && spec && (!p.materialSpan || suits(p.material, spec.id))) {
       p.process = { ...spec, settings: { ...spec.settings } };

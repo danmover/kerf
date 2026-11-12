@@ -15,6 +15,30 @@ export interface ProjectRecord {
   thumbnail?: string;
   /** STEP files imported into the project; their bytes are in the blobs store */
   imports?: ProjectImport[];
+  /** the id of the branch open now (see src/core/branches.ts); absent means main */
+  branch?: string;
+  /** the project's branches, main first, once it has more than main */
+  branches?: BranchRecord[];
+}
+
+/** A line of work in a project: made from another branch, merged back into it, or left as an alternative. */
+export interface BranchRecord {
+  /** "main", or an id that stays when the branch is renamed */
+  id: string;
+  name: string;
+  /** the id of the branch it was made from ("" for main) */
+  from: string;
+  /** the design when it was made: the starting point both branches share */
+  base: string;
+  /** its latest design; for the branch open now, the project's source is newer */
+  head: string;
+  createdAt: number;
+  updatedAt: number;
+  /**
+   * where it met its parent since: its own design when that went into the parent (merged), or the parent's when it took
+   * the parent's changes (took), with the base that merge was worked out from
+   */
+  meets?: { kind: "merged" | "took"; source: string; base: string; ts: number }[];
 }
 
 /** Bytes of an imported file, shared by every project that imports the same file. */
@@ -33,6 +57,8 @@ export interface VersionRecord {
   author: "you" | "claude" | "system";
   message: string;
   source: string;
+  /** the id of the branch it was made on; absent on main */
+  branch?: string;
 }
 
 /** A file the user added to a project, such as a reference photo, sketch or datasheet. */

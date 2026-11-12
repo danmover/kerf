@@ -1,7 +1,7 @@
 // Evaluates a parsed Kerf program into a Model: parameters, placed parts and
 // components with geometry recipes, requirement results and a dependency graph.
 
-import type { BriefItem, BriefProp, Expr, Item, Program, Span, Stmt } from "./ast";
+import type { BriefItem, BriefProp, DefParam, Expr, Item, Program, Span, Stmt } from "./ast";
 import { parse, parseExpression, type Diagnostic } from "./parser";
 import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, SketchLineObj, SketchObj, Vec, fmtNum, geoKey, show, typeName, type CallCtx, type GeoQuery, type Value } from "./values";
 import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionProps, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
@@ -13,13 +13,14 @@ import { TubeV, type AeroTube } from "./aero";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
+import { DESIGN_FN, DesignFn, evalDesigns, findDesign, missingDesignMessage, placeDesign, placementMove, type DesignEntry, type DesignTable } from "./designs";
 import type { ImportRef, ImportTable } from "../kernel/imports";
-import { frameFor, hasDetail, recipeHash, rotateAbout, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
+import { frameFor, hasDetail, hashString, recipeHash, rotateAbout, stableStringify, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type FilletLaw, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import { materialDensity } from "../library/standards";
 import { materialRecord, pricePerKg } from "../library/materialDb";
-import type { BandInfo, Brief, BriefUse, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion } from "../core/model";
+import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, SchematicLayout, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, InsertInfo, Link, Model, Motion, SplitRecord } from "../core/model";
 import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
@@ -40,17 +41,22 @@ import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
 import { MATE_FNS, MateRefV, MateV, evalFaces, type FaceLookup } from "./mates";
+import { axisFrame, axisWord, evalSplits, pinDepth, pinHoleClearance, splitKey, splitPrinted, splitSpec, splitWords, type SplitLookup, type SplitQuery } from "./split";
 import { bodyBox, mateFits, moveDir, movePoint, moveXforms, pickAxis, pickPlane, solveMates, isStill, type BodyMove, type FaceCatalogue, type MateBody, type MateGeom, type MateSpec } from "../core/mates";
 import { studyVariable } from "../analysis/studyLang";
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
 import { specToSource } from "../mfg/profiles";
+import { plyBook, plyStacks } from "../mfg/plies";
 import { DIM_STYLES, DRAWING_CALLS, DRAWING_PROPS, SHEET_NAMES, VIEW_KINDS, WELD_KINDS, defaultSpec, parseScale, type DimStyleName, type DrawingSpec, type SheetSize, type ViewKind, type WeldKind } from "../drawing/spec";
 import { GDT_KINDS, type GdtKind } from "../drawing/gdt";
 
+/** Functions a part's process: can call besides the usual ones: a carbon layup's plies and the zones they reinforce. */
+const PROCESS_CALLS: Record<string, Fn> = { plies: ANALYSIS_FNS.plies, zone: ANALYSIS_FNS.zone };
+
 export interface EvalOptions {
-  /** param name -> replacement number (used by the feasibility solver) */
-  overrides?: Record<string, number>;
+  /** param name -> replacement value (the feasibility solver's numbers; the sizes a design(...) insert gives) */
+  overrides?: Record<string, number | string | boolean>;
   /** skip part geometry (fast path for requirement-only evaluation) */
   skipGeometry?: boolean;
   /** resolved geometric quantities, keyed by geoKey() */
@@ -61,7 +67,18 @@ export interface EvalOptions {
   imports?: ImportTable;
   /** each built solid's flat and round faces, by geometry hash, for mates (defaults to the table set with setEvalFaces) */
   faces?: FaceLookup;
+  /** the cuts and pins of split parts, worked out from each part as built (defaults to the table set with setEvalSplits) */
+  splits?: SplitLookup;
+  /** read the design as this configuration (a configs row's label) instead of the one show: names */
+  config?: string;
+  /** other designs design("name") can insert, by project id (defaults to the table set with setEvalDesigns) */
+  designs?: DesignTable;
+  /** the projects being read, outermost first, so a design never ends up inside itself */
+  designStack?: string[];
 }
+
+/** Most configurations one design keeps. */
+const MAX_CONFIGS = 50;
 
 class EvalError extends Error {
   constructor(
@@ -71,6 +88,39 @@ class EvalError extends Error {
     super(message);
   }
 }
+
+type FnStmt = Extract<Stmt, { k: "fn" }>;
+type FeatureStmt = Extract<Stmt, { k: "feature" }>;
+
+/** The design's own function (fn name(a, b: 2) = ...): a value like any other function, callable after it. */
+class UserFn extends Fn {
+  constructor(
+    name: string,
+    call: Fn["call"],
+    doc: string,
+    public stmt: FnStmt,
+  ) {
+    super(name, call, doc);
+  }
+}
+
+/** The design's own feature (feature name(...) { steps }): its steps go into a part where it is used. */
+class UserFeature extends Fn {
+  constructor(
+    name: string,
+    call: Fn["call"],
+    doc: string,
+    public stmt: FeatureStmt,
+  ) {
+    super(name, call, doc);
+  }
+}
+
+/** How deep the design's own functions may call themselves. */
+const MAX_FN_DEPTH = 100;
+
+/** The parameters as written: "at, d: 8, h: 10". */
+const sigText = (src: string, params: DefParam[]) => params.map((p) => (p.default ? `${p.name}: ${src.slice(p.default.span.start, p.default.span.end)}` : p.name)).join(", ");
 
 const POSITIONAL: Record<string, string[]> = {
   bearing: ["code"],
@@ -109,7 +159,7 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode", "split"];
 const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label", "explode"];
 
 /** Fields of the brief block, by the type of value each takes. */
@@ -123,7 +173,15 @@ export const BRIEF_FIELDS = [...BRIEF_TEXT, ...BRIEF_LISTS, "temp", "outdoor", "
 const MACHINE_PROPS = ["role", "load", "buy", "price", "rating", "on", "side", "ref", "measured", "held", "leads", "brightness"];
 const GRAVITY = 9.81;
 
-const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
+/** the colours parts take in turn when they give none */
+export const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
+
+/** what a design(...) insert takes: where it goes, and what is said of all of it */
+const INSERT_PROPS = ["at", "rotate", "group", "label", "held", "explode"];
+/** fields of an insert that its own parts' names do not take */
+const INSERT_FIELDS = new Set(["name", "kind", "design", "config", "at", "params", "parts", "place", "turn"]);
+/** how deep designs may sit inside designs */
+const MAX_INSERT_DEPTH = 6;
 
 const FRAME_PROPS = ["profile", "box", "path", "levels", "top", "bottom", "at", "rotate", "ends", "material", "finish", "color", "group", "label", "held", "explode"];
 /** short lengths of stock section from a hardware store or a metal merchant's offcuts cost about this many times the bulk price per kg */
@@ -156,6 +214,17 @@ interface CompInfo {
   value: Obj;
 }
 
+/** Another design as read for a design(...) insert: its model, its plain values and its components. */
+interface InnerRead {
+  model: Model;
+  values: Record<string, number | string | boolean>;
+  comps: Map<string, CompInfo>;
+}
+
+/** Settled readings of inserted designs, by design, parameters and where they sit, newest last. */
+const INNER_READS = new Map<string, InnerRead>();
+const INNER_READS_MAX = 32;
+
 interface PartState {
   base: ShapeRecipe | null;
   baseName?: string;
@@ -174,6 +243,8 @@ interface PartState {
   flex: FlexInfo[];
   /** the part's sheet() body */
   sheet?: SheetInfo;
+  /** inside a use of the design's own feature: the name its steps go under (boss#1), its scope (where its own as-names live) and the feature */
+  inst?: { name: string; scope: Scope; feature: string };
   /** aero_tube()s it is built from */
   tubes: AeroTube[];
 }
@@ -238,6 +309,7 @@ export function evaluateSelector(text: string, features: string[], design?: stri
   if (design) ev.run(parse(design).program);
   const scope = new Scope();
   for (const f of features) scope.vars.set(f, new FeatRef(f, "feature"));
+  ev.stepNames = new Map(features.map((f) => [f, "feature"]));
   try {
     const v = ev.expr(parsed.expr, scope);
     ev.callSpan = parsed.expr.span;
@@ -295,6 +367,14 @@ class Evaluator {
   mateResult: Model["mates"] | undefined;
   /** frame members by name, to the frame they belong to (references to a member depend on its frame) */
   memberOf = new Map<string, string>();
+  /** split parts: what each asks of the part as built, how it came out, and the whole part (what shape_of() and mould() see) */
+  splitQueries: SplitQuery[] = [];
+  splits: SplitRecord[] = [];
+  splitWhole = new Map<string, EvalPart>();
+  /** configs { }: the table, and the values of the row the design is read as */
+  configTable: ConfigTable | undefined;
+  schematic: SchematicLayout | undefined;
+  configValues = new Map<string, ConfigRow["sets"][number] & { row: string }>();
   callSpan: Span = { start: 0, end: 0 };
   colorIdx = 0;
   stmtGeo: GeoQuery[] = [];
@@ -306,6 +386,13 @@ class Evaluator {
   pendingRefs: { mc: MachineComponent; prefix: string }[] = [];
   scenarios: ScenarioDef[] = [];
   apps: AppSpec[] = [];
+  /** how deep the design's own functions are calling, and which of its features are being used inside which */
+  fnDepth = 0;
+  featStack: string[] = [];
+  /** the named steps of the part being read (or those a selector is read against), so big.post finds a step named inside a use */
+  stepNames: Map<string, string> | null = null;
+  /** other designs placed in this one (component x = design("name")) */
+  inserts: InsertInfo[] = [];
 
   constructor(
     private src: string,
@@ -328,6 +415,7 @@ class Evaluator {
     this.builtins.set("calc", calcNamespace());
     this.builtins.set("sim", simNamespace());
     this.builtins.set("mfg", mfgNamespace());
+    this.builtins.set("design", DESIGN_FN);
   }
 
   ctx(): CallCtx {
@@ -347,13 +435,15 @@ class Evaluator {
       imports: () => this.opts.imports ?? evalImports(),
       tick: (n: number) => this.tick(n, this.callSpan),
       partShape: (name: string) => {
-        const p = this.parts.find((q) => q.name === name && q.kind === "part");
+        const p = this.splitWhole.get(name) ?? this.parts.find((q) => q.name === name && q.kind === "part");
         if (!p) return undefined;
         this.current?.add(this.memberOf.get(name) ?? name);
         return { recipe: p.recipe, xf: p.xf, material: p.material };
       },
       partShapes: (name: string) => {
-        const ps = this.parts.filter((q) => q.name === name);
+        // a part made in pieces is used whole: one solid, no pin holes
+        const whole = this.splitWhole.get(name);
+        const ps = whole ? [whole] : this.parts.filter((q) => q.name === name);
         if (!ps.length) return undefined;
         this.current?.add(this.memberOf.get(name) ?? name);
         this.shapeRefs++;
@@ -371,7 +461,211 @@ class Evaluator {
     this.defLabel.set(name, label ?? name);
   }
 
+  // ---------------- the design's own functions and features ----------------
+
+  /** A name for the design's own function or feature: not one of Kerf's (should a later Kerf add the same name, the design's wins). */
+  ownName(name: string, what: string, span: Span) {
+    if (this.builtins.has(name) || name in MODIFIER_PARAMS || name === "step") throw new EvalError(`"${name}" is one of Kerf's own names: give your ${what} another name`, span);
+  }
+
+  /** The design's names a function or feature reads, for the dependency graph: what it makes depends on them. */
+  defDeps(exprs: Expr[], items: Item[], bound: Set<string>) {
+    const names = new Set<string>();
+    const ex = (e: Expr | undefined): void => {
+      if (!e) return;
+      switch (e.k) {
+        case "ident":
+          names.add(e.name);
+          return;
+        case "vec":
+        case "list":
+          e.items.forEach(ex);
+          return;
+        case "unary":
+          ex(e.arg);
+          return;
+        case "binary":
+          ex(e.left);
+          ex(e.right);
+          return;
+        case "ternary":
+          ex(e.cond);
+          ex(e.a);
+          ex(e.b);
+          return;
+        case "member":
+          ex(e.obj);
+          return;
+        case "index":
+          ex(e.obj);
+          ex(e.index);
+          return;
+        case "call":
+          ex(e.callee);
+          for (const a of e.args) ex(a.value);
+          return;
+      }
+    };
+    const walk = (list: Item[]): void => {
+      for (const i of list) {
+        if (i.k === "prop") ex(i.value);
+        else if (i.k === "let") (ex(i.value), bound.add(i.name));
+        else if (i.k === "op") (ex(i.shape), i.name && bound.add(i.name));
+        else if (i.k === "modifier") (ex(i.call), i.name && bound.add(i.name));
+        else if (i.k === "cosmetic") walk(i.body);
+        else if (i.k === "for") (bound.add(i.varName), ex(i.iter), walk(i.body));
+        else if (i.k === "if") (ex(i.cond), walk(i.then), i.else && walk(i.else));
+      }
+    };
+    exprs.forEach(ex);
+    walk(items);
+    for (const n of names) if (!bound.has(n) && this.globals.has(n)) this.current?.add(this.memberOf.get(n) ?? n);
+  }
+
+  /** fn name(a, b: 2) = expr, or with lets in braces: a function of the design's own. */
+  userFn(s: FnStmt) {
+    const sig = sigText(this.src, s.params);
+    this.blocks.push({ name: s.name, kind: "fn", span: s.span, locked: false, sig, ...(s.doc ? { doc: s.doc } : {}) });
+    this.ownName(s.name, "function", s.nameSpan);
+    const defaults = s.params.map((p) => p.default).filter((e): e is Expr => !!e);
+    this.defDeps([...defaults, ...s.lets.map((l) => l.value), s.body], [], new Set([...s.params.map((p) => p.name), ...s.lets.map((l) => l.name)]));
+    const f: UserFn = new UserFn(s.name, (pos, named) => this.callUserFn(f, pos, named), `${s.name}(${sig})${s.doc ? `: ${s.doc}` : ""} (the design's own function)`, s);
+    this.define(s.name, "fn", f, s.nameSpan);
+  }
+
+  /** feature name(at, d: 8) { steps }: steps of the design's own, used in parts. */
+  userFeature(s: FeatureStmt) {
+    const sig = sigText(this.src, s.params);
+    this.blocks.push({ name: s.name, kind: "feature", span: s.span, locked: false, sig, ...(s.doc ? { doc: s.doc } : {}) });
+    this.ownName(s.name, "feature", s.nameSpan);
+    const prop = s.items.find((i) => i.k === "prop" || i.k === "flag");
+    if (prop) throw new EvalError(`A feature is steps (add, cut, fillet, for, if, let), and ${prop.k === "prop" ? `${prop.name}:` : (prop as { name: string }).name} belongs to the part it is used in. Give it as a parameter if the feature needs it.`, prop.span);
+    const defaults = s.params.map((p) => p.default).filter((e): e is Expr => !!e);
+    this.defDeps(defaults, s.items, new Set(s.params.map((p) => p.name)));
+    const f = new UserFeature(
+      s.name,
+      () => {
+        throw new EvalError(`${s.name}() is a feature: use it on its own line in a part, like ${s.name}(...) or ${s.name}(...) as label. For a value or a shape, make it a function: fn ${s.name}(...) = ...`, this.callSpan);
+      },
+      `${s.name}(${sig})${s.doc ? `: ${s.doc}` : ""} (the design's own feature: use it in a part on its own line)`,
+      s,
+    );
+    this.define(s.name, "feature", f, s.nameSpan);
+  }
+
+  /** Bind a call's values to a function's or feature's parameters; a default is worked out from the ones before it. */
+  bindArgs(what: string, params: DefParam[], pos: Value[], named: Record<string, Value>, at: Span): Scope {
+    const list = params.map((p) => p.name);
+    const has = (k: string) => Object.prototype.hasOwnProperty.call(named, k);
+    if (pos.length > params.length) throw new EvalError(`${what}() takes ${params.length ? `${params.length} value${params.length === 1 ? "" : "s"} (${list.join(", ")})` : "no values"}, not ${pos.length}`, at);
+    for (const k of Object.keys(named))
+      if (!list.includes(k)) {
+        const sugg = suggest(k, list);
+        throw new EvalError(`${what}() has no parameter "${k}"${sugg ? `. Did you mean "${sugg}"?` : list.length ? `: its parameters are ${list.join(", ")}` : ""}`, at);
+      }
+    const scope = new Scope();
+    params.forEach((p, i) => {
+      if (i < pos.length) {
+        if (has(p.name)) throw new EvalError(`${what}(): ${p.name} is given twice, in its place and as ${p.name}:`, at);
+        scope.vars.set(p.name, pos[i]);
+      } else if (has(p.name)) scope.vars.set(p.name, named[p.name]);
+      else if (p.default) scope.vars.set(p.name, this.expr(p.default, scope));
+      else throw new EvalError(`${what}() needs ${p.name}: ${what}(${sigText(this.src, params)})`, at);
+    });
+    return scope;
+  }
+
+  callUserFn(f: UserFn, pos: Value[], named: Record<string, Value>): Value {
+    const s = f.stmt;
+    const at = this.callSpan;
+    if (this.fnDepth >= MAX_FN_DEPTH) throw new EvalError(`${s.name}() calls itself more than ${MAX_FN_DEPTH} deep: give it a case that stops, like n <= 0 ? 0 : ${s.name}(n - 1)`, at);
+    const scope = this.bindArgs(s.name, s.params, pos, named, at);
+    this.fnDepth++;
+    try {
+      for (const l of s.lets) scope.vars.set(l.name, this.expr(l.value, scope));
+      return this.expr(s.body, scope);
+    } catch (e) {
+      throw this.inDef(e, `${s.name}()`, at);
+    } finally {
+      this.fnDepth--;
+    }
+  }
+
+  /** An error inside the design's own function or feature, told with where it was used. */
+  inDef(e: unknown, what: string, at: Span): unknown {
+    if (!(e instanceof EvalError) || e.message.startsWith("In ")) return e;
+    return new EvalError(`In ${what}, used on line ${this.lineOf(at.start)}: ${e.message}`, e.span);
+  }
+
+  lineOf(offset: number): number {
+    let n = 1;
+    for (let i = 0; i < offset && i < this.src.length; i++) if (this.src.charCodeAt(i) === 10) n++;
+    return n;
+  }
+
+  /** The design's own feature a step in a part uses, when that is what the name is. */
+  ownFeature(name: string, scope: Scope): UserFeature | undefined {
+    const local = scope.get(name);
+    if (local !== undefined) return local instanceof UserFeature ? local : undefined;
+    const g = this.globals.get(name);
+    if (!(g instanceof UserFeature)) return undefined;
+    this.current?.add(name);
+    return g;
+  }
+
+  /**
+   * A use of the design's own feature in a part: its steps run there with the values given, and everything they make
+   * is named for the use (as label, or boss#1), so label.root, label.edges and label.faces pick it like any named step.
+   * Inside, names given with as belong to that use (label.post), so two uses never share a name.
+   */
+  applyFeature(f: UserFeature, call: Expr & { k: "call" }, scope: Scope, st: PartState, depth: number, as: string | undefined, asSpan: Span | undefined, span: Span) {
+    const s = f.stmt;
+    if (this.featStack.includes(s.name)) throw new EvalError(`${s.name}() is used inside itself (${[...this.featStack.slice(this.featStack.indexOf(s.name)), s.name].join(" → ")}): a feature can't be made of itself`, call.span);
+    const pos: Value[] = [];
+    const named: Record<string, Value> = {};
+    for (const a of call.args) {
+      const v = this.expr(a.value, scope);
+      if (a.name) {
+        if (Object.prototype.hasOwnProperty.call(named, a.name)) throw new EvalError(`Argument "${a.name}" given twice`, a.span);
+        named[a.name] = v;
+      } else {
+        if (Object.keys(named).length) throw new EvalError("Positional arguments must come before named ones", a.span);
+        pos.push(v);
+      }
+    }
+    const saved = this.callSpan;
+    this.callSpan = call.span;
+    try {
+      const fscope = this.bindArgs(s.name, s.params, pos, named, call.span);
+      const name = as ? this.nameFeature(st, as, s.name, asSpan ?? span) : this.autoName(st, s.name);
+      const outer = st.inst;
+      st.inst = { name, scope: fscope, feature: s.name };
+      this.featStack.push(s.name);
+      try {
+        this.items(s.items, fscope, st, depth + 1);
+      } catch (e) {
+        throw this.inDef(e, `${s.name}()`, call.span);
+      } finally {
+        st.inst = outer;
+        this.featStack.pop();
+      }
+    } finally {
+      this.callSpan = saved;
+    }
+  }
+
+  /** The name an unnamed ready-made feature or a use of the design's own feature goes under: screw_boss#1, boss#2. */
+  autoName(st: PartState, kind: string): string {
+    const key = st.inst ? `${st.inst.name}.${kind}` : kind;
+    const k = (st.auto.get(key) ?? 0) + 1;
+    st.auto.set(key, k);
+    const name = `${key}#${k}`;
+    st.feats.set(name, { kind, cosmetic: st.cosmetic });
+    return name;
+  }
+
   run(program: Program) {
+    this.prepareConfigs(program);
     for (const s of program.stmts) {
       this.current = new Set();
       this.stmtGeo = [];
@@ -391,6 +685,92 @@ class Evaluator {
       if (id) this.deps.set(id, this.current);
       this.current = null;
     }
+    this.finishConfigs();
+  }
+
+  /**
+   * configs { }: read first, so the row the design is read as (opts.config, else show:) gives its parameters their
+   * values. The values are constants: numbers, text or true/false.
+   */
+  prepareConfigs(program: Program) {
+    const stmts = program.stmts.filter((s): s is Extract<Stmt, { k: "configs" }> => s.k === "configs");
+    if (!stmts.length) {
+      if (this.opts.config !== undefined) this.diags.push({ message: `There is no configuration "${this.opts.config}": the design has no configs block`, start: 0, end: 1, severity: "error" });
+      return;
+    }
+    for (const extra of stmts.slice(1)) this.diags.push({ message: "A design has one configs block: put every configuration in the first one", start: extra.span.start, end: extra.span.start + 7, severity: "error" });
+    const s = stmts[0];
+    const table: ConfigTable = { title: s.title, rows: [], span: s.span, bodyStart: s.bodyStart };
+    const report = (e: unknown, where: string) => {
+      if (!(e instanceof EvalError)) throw e;
+      this.diags.push({ message: where + e.message, start: e.span.start, end: Math.max(e.span.end, e.span.start + 1), severity: "error" });
+    };
+    for (const p of s.props) {
+      if (p.name !== "show") {
+        this.diags.push({ message: `Unknown configs field "${p.name}". Use show: "Label" to say which configuration the design is read as.`, start: p.span.start, end: p.span.end, severity: "warning" });
+        continue;
+      }
+      try {
+        const v = this.expr(p.value, null);
+        if (typeof v !== "string") throw new EvalError('show: names a configuration in quotes, like show: "Large"', p.value.span);
+        table.shown = v;
+        table.showSpan = { span: p.span, valueSpan: p.value.span };
+      } catch (e) {
+        report(e, "In configs: ");
+      }
+    }
+    for (const r of s.rows) {
+      if (!r.label.trim()) {
+        this.diags.push({ message: "A configuration needs a name, like config \"Large\" { width: 80 }", start: r.span.start, end: r.span.end, severity: "error" });
+        continue;
+      }
+      if (table.rows.some((x) => x.label === r.label)) {
+        this.diags.push({ message: `Configuration "${r.label}" appears twice`, start: r.span.start, end: r.span.end, severity: "warning" });
+        continue;
+      }
+      const sets: ConfigRow["sets"] = [];
+      for (const st of r.sets) {
+        try {
+          const v = this.expr(st.value, null);
+          if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") throw new EvalError(`the value for ${st.param} must be a number, text or true/false (a configuration's values are written out, not worked out from other names)`, st.value.span);
+          if (sets.some((x) => x.param === st.param)) throw new EvalError(`${st.param} is set twice`, st.span);
+          sets.push({ param: st.param, value: v, text: this.src.slice(st.value.span.start, st.value.span.end), span: st.span, valueSpan: st.value.span });
+        } catch (e) {
+          // the values are read before anything is defined, so a name in one is never found
+          const name = e instanceof EvalError ? /^"([^"]+)" is not defined/.exec(e.message)?.[1] : undefined;
+          report(name ? new EvalError(`the value for ${st.param} must be written out, like ${st.param}: 80 (a configuration's values cannot be worked out from ${name} or other names)`, st.value.span) : e, `In configuration "${r.label}": `);
+        }
+      }
+      table.rows.push({ label: r.label, ...(r.note !== undefined ? { note: r.note } : {}), sets, span: r.span, setsStart: r.setsStart });
+    }
+    if (table.rows.length > MAX_CONFIGS) {
+      const extra = table.rows[MAX_CONFIGS];
+      this.diags.push({ message: `A design is limited to ${MAX_CONFIGS} configurations; the rest are left out`, start: extra.span.start, end: extra.span.end, severity: "warning" });
+      table.rows.length = MAX_CONFIGS;
+    }
+    const want = this.opts.config ?? table.shown;
+    if (want !== undefined) {
+      const row = table.rows.find((x) => x.label === want);
+      if (row) {
+        table.active = row.label;
+        for (const st of row.sets) this.configValues.set(st.param, { ...st, row: row.label });
+      } else if (this.opts.config !== undefined) this.diags.push({ message: `There is no configuration "${want}" (the configurations are ${table.rows.map((x) => `"${x.label}"`).join(", ") || "none yet"})`, start: s.span.start, end: s.span.start + 7, severity: "error" });
+      else if (table.showSpan) this.diags.push({ message: `show: "${want}" is not one of the configurations (${table.rows.map((x) => `"${x.label}"`).join(", ") || "none yet"}), so the parameters are read as written`, start: table.showSpan.valueSpan.start, end: table.showSpan.valueSpan.end, severity: "warning" });
+    }
+    this.configTable = table;
+  }
+
+  /** Every name a configuration sets should be a parameter of the design. */
+  finishConfigs() {
+    const t = this.configTable;
+    if (!t) return;
+    const names = new Set(this.params.map((p) => p.name));
+    for (const r of t.rows)
+      for (const st of r.sets)
+        if (!names.has(st.param)) {
+          const near = this.params.map((p) => p.name).find((n) => n.toLowerCase() === st.param.toLowerCase());
+          this.diags.push({ message: `Configuration "${r.label}" sets ${st.param}, which is not a parameter of the design${near ? ` (did you mean ${near}?)` : ""}. Declare it with param ${st.param} = …`, start: st.span.start, end: st.span.end, severity: "warning" });
+        }
   }
 
   stmtId(s: Stmt): string | undefined {
@@ -416,28 +796,40 @@ class Evaluator {
       case "param": {
         this.blocks.push({ name: s.name, kind: "param", span: s.span, locked: s.locked });
         let v = this.expr(s.value, null);
-        const ov = this.opts.overrides?.[s.name];
+        const own = v;
+        let ov = this.opts.overrides?.[s.name];
+        // a value of another type (text for a number) is not taken: the parameter keeps its own, and the one setting it says so
+        if (ov !== undefined && (typeof own === "number" || typeof own === "string" || typeof own === "boolean") && typeof ov !== typeof own) ov = undefined;
+        // the configuration the design is read as gives the value, and owns its edits
+        let row = ov === undefined ? this.configValues.get(s.name) : undefined;
+        if (row && typeof row.value !== typeof v) {
+          this.diags.push({ message: `Configuration "${row.row}" sets ${s.name} to ${typeName(row.value)}, but ${s.name} is ${typeName(v)}; the parameter's own value is used`, start: row.valueSpan.start, end: row.valueSpan.end, severity: "error" });
+          row = undefined;
+        }
         if (ov !== undefined) v = ov;
+        else if (row) v = row.value;
         if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") {
           throw new EvalError(`Parameter "${s.name}" must be a number, text or true/false (got ${typeName(v)}). Use let for vectors and lists.`, s.valueSpan);
         }
+        const valueSpan = row ? row.valueSpan : s.valueSpan;
         const min = s.min ? this.num(this.expr(s.min, null), s.min.span) : undefined;
         const max = s.max ? this.num(this.expr(s.max, null), s.max.span) : undefined;
         if (typeof v === "number" && ((min !== undefined && v < min - 1e-9) || (max !== undefined && v > max + 1e-9))) {
-          this.diags.push({ message: `Parameter "${s.name}" = ${fmtNum(v)} is outside its range ${fmtNum(min ?? -Infinity)}..${fmtNum(max ?? Infinity)}`, start: s.valueSpan.start, end: s.valueSpan.end, severity: "warning" });
+          this.diags.push({ message: `Parameter "${s.name}" = ${fmtNum(v)}${row ? ` (configuration "${row.row}")` : ""} is outside its range ${fmtNum(min ?? -Infinity)}..${fmtNum(max ?? Infinity)}`, start: valueSpan.start, end: valueSpan.end, severity: "warning" });
         }
         this.define(s.name, "param", v, s.nameSpan);
         this.params.push({
           name: s.name,
           value: v,
-          text: this.src.slice(s.valueSpan.start, s.valueSpan.end),
+          text: row ? row.text : this.src.slice(s.valueSpan.start, s.valueSpan.end),
           min,
           max,
           desc: s.desc,
           locked: s.locked,
           span: s.span,
-          valueSpan: s.valueSpan,
+          valueSpan,
           usedBy: [],
+          ...(row && (typeof own === "number" || typeof own === "string" || typeof own === "boolean") ? { config: row.row, asWritten: own } : {}),
         });
         return;
       }
@@ -448,6 +840,12 @@ class Evaluator {
         if (v instanceof CalcObj) this.machine.calcs.push({ ...v.trace, name: s.name, span: s.span });
         return;
       }
+      case "fn":
+        this.userFn(s);
+        return;
+      case "feature":
+        this.userFeature(s);
+        return;
       case "interface": {
         this.blocks.push({ name: s.name, kind: "interface", span: s.span, locked: false });
         const scope = new Scope();
@@ -480,6 +878,12 @@ class Evaluator {
         return;
       case "decision":
         this.decision(s);
+        return;
+      case "configs":
+        // read before everything else (prepareConfigs)
+        return;
+      case "schematic":
+        this.schematicStmt(s);
         return;
       case "scenario":
         this.scenario(s);
@@ -734,6 +1138,42 @@ class Evaluator {
 
   // ---------------- decisions ----------------
 
+  /** The schematic layout, with a warning for each name that is not a part with pins. */
+  schematicChecked(): SchematicLayout {
+    const sch = this.schematic!;
+    const withPins = this.machine.components.filter((c) => catalogPart(c.catalogId)?.pins.length);
+    const names = new Set(withPins.map((c) => c.name));
+    const count = new Map(withPins.map((c) => [c.name, c.count]));
+    for (const e of sch.entries) {
+      const copy = /^(\w+)\[(\d+)\]$/.exec(e.name);
+      if (copy && count.has(copy[1])) {
+        const n = count.get(copy[1])!;
+        if (Number(copy[2]) >= n) this.diags.push({ message: `schematic: ${copy[1]} has ${n} ${n === 1 ? "copy" : "copies"}, numbered from 0 to ${n - 1}, so ${e.name} has no symbol on the sheet`, start: e.span.start, end: e.span.end, severity: "warning" });
+        continue;
+      }
+      if (!names.has(e.name))
+        this.diags.push({ message: `schematic: "${e.name}" is not one of the design's electronic parts${names.size ? ` (${[...names].slice(0, 8).join(", ")}${names.size > 8 ? ", …" : ""})` : ""}, so it has no symbol on the sheet`, start: e.span.start, end: e.span.end, severity: "warning" });
+    }
+    return sch;
+  }
+
+  /** schematic { ctrl: (40, 60)  drv: (160, 60, 90) }: where each part's symbol sits on the sheet, and its turn */
+  schematicStmt(s: Extract<Stmt, { k: "schematic" }>) {
+    if (this.schematic) throw new EvalError("A design has one schematic block: put every part's place in the first one", { start: s.span.start, end: s.span.start + 9 });
+    const out: SchematicLayout = { places: {}, entries: [], span: s.span, bodyStart: s.bodyStart };
+    for (const p of s.places) {
+      const v = this.expr(p.value, null);
+      const xs = v instanceof Vec ? v.v : null;
+      if (!xs || (xs.length !== 2 && xs.length !== 3) || !xs.every((x) => Number.isFinite(x))) throw new EvalError(`schematic: ${p.name} takes its place on the sheet as (x, y), or (x, y, turn) with the turn in degrees, like ${p.name}: (40, 60)`, p.value.span);
+      const turn = xs.length === 3 ? (((Math.round(xs[2] / 90) * 90) % 360) + 360) % 360 : 0;
+      if (xs.length === 3 && Math.abs(xs[2] - Math.round(xs[2] / 90) * 90) > 1e-6) this.diags.push({ message: `schematic: ${p.name} turns in quarter turns (0, 90, 180 or 270), so ${fmtNum(xs[2])} is read as ${turn}`, start: p.value.span.start, end: p.value.span.end, severity: "warning" });
+      if (out.places[p.name]) this.diags.push({ message: `schematic: ${p.name} is placed twice; the last place is used`, start: p.span.start, end: p.span.end, severity: "warning" });
+      out.places[p.name] = { x: xs[0], y: xs[1], rot: turn as 0 | 90 | 180 | 270 };
+      out.entries.push({ name: p.name, span: p.span });
+    }
+    this.schematic = out;
+  }
+
   decision(s: Extract<Stmt, { k: "decision" }>) {
     this.blocks.push({ name: s.name, kind: "decision", span: s.span, locked: false });
     if (this.decisions.some((d) => d.name === s.name)) throw new EvalError(`Decision "${s.name}" is already defined`, s.nameSpan);
@@ -880,7 +1320,9 @@ class Evaluator {
       }
       case "call": {
         const override = e.callee.k === "ident" ? this.callOverride?.[e.callee.name] : undefined;
-        const callee = override ?? this.expr(e.callee, scope);
+        let callee = override ?? this.expr(e.callee, scope);
+        // a value named like one of Kerf's functions (a feature's hole: 3 parameter) leaves hole(...) calling the function
+        if (!(callee instanceof Fn) && e.callee.k === "ident" && this.builtins.get(e.callee.name) instanceof Fn) callee = this.builtins.get(e.callee.name)!;
         if (!(callee instanceof Fn)) throw new EvalError(`${show(callee)} is not a function`, e.callee.span);
         const pos: Value[] = [];
         const named: Record<string, Value> = {};
@@ -923,7 +1365,12 @@ class Evaluator {
     if (o instanceof FeatRef) {
       const m = featMember(o, name);
       if (m !== undefined) return m;
-      throw new EvalError(`Feature "${o.name}" has root, tip, edges, faces, convex and concave, not "${name}"`, span);
+      // a step named inside a use of the design's own feature: big.post
+      const sub = `${o.name}.${name}`;
+      const kind = this.stepNames?.get(sub);
+      if (kind !== undefined) return new FeatRef(sub, kind);
+      const inside = [...(this.stepNames?.keys() ?? [])].filter((n) => n.startsWith(`${o.name}.`) && !n.slice(o.name.length + 1).includes(".") && !n.includes("#", o.name.length)).map((n) => n.slice(o.name.length + 1));
+      throw new EvalError(`Feature "${o.name}" has root, tip, edges, faces, convex and concave${inside.length ? `, and the steps named inside it: ${inside.join(", ")}` : ""}, not "${name}"`, span);
     }
     if (o instanceof SelV) {
       const m = selMember(o, name);
@@ -1027,8 +1474,9 @@ class Evaluator {
 
   component(s: Extract<Stmt, { k: "component" }>) {
     const callee = this.expr(s.call.callee, null);
+    if (callee instanceof DesignFn) return this.insertDesign(s);
     if (!(callee instanceof LibFn) && !(callee instanceof ImportFn)) {
-      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), or from an imported file (STEP, STL, OBJ or 3MF) with step("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
+      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), from an imported file (STEP, STL, OBJ or 3MF) with step("name"), or from another of your designs with design("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
     }
     const key = callee instanceof ImportFn ? "step" : callee.libKey;
     const pos: Value[] = [];
@@ -1404,6 +1852,242 @@ class Evaluator {
         });
       });
     });
+  }
+
+  // ---------------- other designs inside this one ----------------
+
+  /**
+   * component mount = design("Motor mount", width: 80) { at:, rotate: }: another of the user's designs, read with
+   * the parameters given and placed here as one subassembly (src/lang/designs.ts). What it makes becomes part of
+   * this design, named after the component (mount_base), where the component puts it; its own requirements are
+   * checked with the sizes given. Mates and analyses take the component as one body.
+   */
+  insertDesign(s: Extract<Stmt, { k: "component" }>) {
+    this.callSpan = s.call.span;
+    const own = evalDesigns();
+    const table = this.opts.designs ?? own.table;
+    // the projects being read, outermost first: this one (its id, when the engine says it) and the ones it is inside
+    const stack = this.opts.designStack ?? [own.open ?? ""];
+    // the design's name, then its parameters by name, and config: for one of its configurations
+    let name: string | undefined;
+    let config: string | undefined;
+    let configSpan: Span | undefined;
+    const sets: { name: string; value: number | string | boolean; span: Span }[] = [];
+    for (const [i, a] of s.call.args.entries()) {
+      const v = this.expr(a.value, null);
+      if (v instanceof Pending) throw new EvalError("A design's parameters cannot depend on measured geometry", a.span);
+      if (!a.name || a.name === "name") {
+        if (i > 0 && !a.name) throw new EvalError(`design(): give the design's parameters by name, like design("${name ?? "Motor mount"}", width: 80)`, a.span);
+        if (typeof v !== "string") throw new EvalError(`design("name") names another of your designs, like design("Motor mount"); got ${typeName(v)}`, a.span);
+        name = v;
+      } else if (a.name === "config") {
+        if (typeof v !== "string") throw new EvalError(`config: names one of the design's configurations, like config: "Small"; got ${typeName(v)}`, a.span);
+        config = v;
+        configSpan = a.span;
+      } else {
+        if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") throw new EvalError(`${a.name}: a design's parameter is a number, text or true/false; got ${typeName(v)}`, a.value.span);
+        if (sets.some((x) => x.name === a.name)) throw new EvalError(`${a.name}: is given twice`, a.span);
+        sets.push({ name: a.name, value: v, span: a.span });
+      }
+    }
+    const nameSpan = s.call.args[0]?.span ?? s.call.span;
+    if (name === undefined) throw new EvalError('design("name") names another of your designs, like design("Motor mount")', s.call.span);
+    const { entry, twins } = findDesign(table, name);
+    if (!entry) throw new EvalError(missingDesignMessage(table, name, stack[0]), nameSpan);
+    if (entry.id === stack[0]) throw new EvalError(`"${entry.name}" is this design: a design can't be placed inside itself`, nameSpan);
+    if (stack.includes(entry.id)) throw new EvalError(`"${entry.name}" is already being read further out (a design it places places it back), so it can't go in here`, nameSpan);
+    if (stack.length > MAX_INSERT_DEPTH + 1) throw new EvalError(`Designs sit ${MAX_INSERT_DEPTH} deep inside each other here, the most Kerf reads`, nameSpan);
+    if (twins) this.diags.push({ message: `${twins + 1} projects are called "${entry.name}": this places the one changed last. Rename the others to choose.`, start: nameSpan.start, end: nameSpan.end, severity: "warning" });
+
+    // where it goes, and what is said of all of it
+    const props: Record<string, Value> = {};
+    const propSpans: Record<string, Span> = {};
+    const flags = new Set<string>();
+    for (const it of s.items) {
+      if (it.k === "prop") {
+        if (!INSERT_PROPS.includes(it.name)) throw new EvalError(`${it.name}: is not for a placed design: it takes ${INSERT_PROPS.map((p) => `${p}:`).join(", ")} and the flags locked, hidden and removable. Its parts' own properties are set in ${entry.name} itself.`, it.span);
+        props[it.name] = this.expr(it.value, null);
+        propSpans[it.name] = it.span;
+      } else if (it.k === "flag") {
+        if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". A placed design takes locked, hidden and removable.`, it.span);
+        flags.add(it.name);
+      } else throw new EvalError(`A placed design takes properties (${INSERT_PROPS.map((p) => `${p}:`).join(", ")}) and flags (locked, hidden, removable)`, it.span);
+    }
+    checkHeld(props.held, propSpans.held);
+    if (props.group !== undefined && typeof props.group !== "string") throw new EvalError('group: expected a name in quotes, like group: "Drive"', propSpans.group);
+    if (props.label !== undefined && typeof props.label !== "string") throw new EvalError('label: expected a name in quotes, like label: "Left motor mount"', propSpans.label);
+    const label = typeof props.label === "string" ? props.label : entry.name;
+    this.blocks.push({ name: s.name, kind: "component", span: s.span, locked: flags.has("locked") });
+    const ctx = this.ctx();
+    if (Array.isArray(props.at)) throw new EvalError(`at: places the design once: give each copy a component of its own, like component ${s.name}_2 = design("${entry.name}") { at: (x, y, z) }`, propSpans.at);
+    const at: V3 = props.at !== undefined ? toV3(props.at, ctx, "at") : [0, 0, 0];
+    const rot: Xform[] = [];
+    if (props.rotate !== undefined) {
+      const r = toV3(props.rotate, ctx, "rotate (rx, ry, rz) degrees");
+      if (r[0]) rot.push({ op: "rotate", angle: r[0], origin: [0, 0, 0], axis: [1, 0, 0] });
+      if (r[1]) rot.push({ op: "rotate", angle: r[1], origin: [0, 0, 0], axis: [0, 1, 0] });
+      if (r[2]) rot.push({ op: "rotate", angle: r[2], origin: [0, 0, 0], axis: [0, 0, 1] });
+    }
+    const move = placementMove(rot, at);
+    const explode = explodeProp(props.explode, ctx, propSpans.explode);
+
+    // read it with the parameters given
+    const read = this.readDesign(entry, table, [...stack, entry.id], s.name, sets, config);
+    const inner = read.model;
+    for (const x of sets) {
+      const ip = inner.params.find((p) => p.name === x.name);
+      if (!ip) {
+        const names = inner.params.map((p) => p.name);
+        const near = suggest(x.name, names);
+        throw new EvalError(`${entry.name} has no parameter "${x.name}"${near ? `: did you mean ${near}?` : ""}${names.length ? ` Its parameters: ${names.join(", ")}` : " It has none to set"}`, x.span);
+      }
+      const what = typeof ip.value === "number" ? "a number" : typeof ip.value === "string" ? "text" : "true or false";
+      if (typeof ip.value !== typeof x.value) throw new EvalError(`${x.name}: ${entry.name} gives it ${what} (${ip.text}), so give it ${what} here too`, x.span);
+      if (typeof x.value === "number" && ((ip.min !== undefined && x.value < ip.min - 1e-9) || (ip.max !== undefined && x.value > ip.max + 1e-9)))
+        this.diags.push({ message: `${x.name}: ${fmtNum(x.value)} is outside the range ${entry.name} gives it (${fmtNum(ip.min ?? -Infinity)} to ${fmtNum(ip.max ?? Infinity)})`, start: x.span.start, end: x.span.end, severity: "warning" });
+    }
+    const err = inner.diagnostics.find((d) => d.severity === "error");
+    if (err) {
+      const line = entry.source.slice(0, err.start).split("\n").length;
+      throw new EvalError(`${entry.name}, line ${line}: ${err.message}`, config !== undefined && /configuration/i.test(err.message) ? configSpan! : nameSpan);
+    }
+
+    // its names here: each part, piece and component as mount_<name>, reached as mount.<name> too
+    const pre = `${s.name}_`;
+    const group = typeof props.group === "string" ? props.group : label;
+    const placed = this.opts.skipGeometry
+      ? null
+      : placeDesign(inner, { block: s.name, design: entry.name, move, span: s.span, group, ...(typeof props.held === "string" ? { held: props.held.trim() } : {}), ...(explode !== undefined ? { explode } : {}), locked: flags.has("locked"), hidden: flags.has("hidden"), removable: flags.has("removable") });
+    const fields: Record<string, Value> = { name: s.name, kind: "design", design: entry.name, at: new Vec(at) };
+    if (config !== undefined) fields.config = config;
+    fields.params = new Obj(Object.fromEntries(inner.params.map((p) => [p.name, p.value])), "params", `${s.name}.params`);
+    const kinds = new Map<string, "part" | "component">();
+    for (const b of inner.blocks) if (b.kind === "part" || b.kind === "component") kinds.set(b.name, b.kind);
+    for (const p of inner.parts) if (!kinds.has(p.name)) kinds.set(p.name, p.kind);
+    const after = moveXforms(move);
+    const refs: Value[] = [];
+    for (const [n, kind] of kinds) {
+      const here = pre + n;
+      if (this.globals.has(here)) throw new EvalError(`${entry.name}'s ${n} would be called ${here} here, and that name is taken: rename this component or the other ${here}`, s.nameSpan);
+      let v: Value;
+      const info = read.comps.get(n);
+      if (kind === "component" && info) {
+        // a component placed again: its points and directions where they are here, so it can be wired and mated
+        const xf = [...info.xf, ...after];
+        const lf = info.def.fields;
+        const cf: Record<string, Value> = { name: here, kind: String(info.value.fields.kind ?? "") };
+        for (const [k, x] of Object.entries(lf.scalars ?? {})) cf[k] = x;
+        for (const [k, q] of Object.entries(lf.points ?? {})) cf[k] = new Vec(applyXforms(q, xf));
+        for (const [k, d] of Object.entries(lf.dirs ?? {})) cf[k] = new Vec(vnorm(applyXformsToDir(d, xf)));
+        for (const [k, list] of Object.entries(lf.pointLists ?? {})) cf[k] = list.map((q) => new Vec(applyXforms(q, xf)));
+        for (const [k, sh] of Object.entries(lf.shapes ?? {})) cf[k] = new ShapeV({ t: "xform", shape: sh, xf });
+        if (typeof info.value.fields.count === "number") cf.count = info.value.fields.count;
+        v = new Obj(cf, "component", here);
+        const motion = placed?.parts.find((p) => p.name === here && p.motion)?.motion;
+        this.comps.set(here, { def: info.def, at: movePoint(move, info.at), axis: vnorm(moveDir(move, info.axis)), xf, ...(motion ? { motion } : {}), value: v as Obj });
+      } else v = new Ref(here, kind);
+      this.define(here, kind, v, s.nameSpan, `${label}: ${n}`);
+      // shown in the dependency graph, and edited, as the placed design
+      this.defKind.delete(here);
+      this.memberOf.set(here, s.name);
+      refs.push(v);
+      if (!INSERT_FIELDS.has(n)) fields[n] = v;
+    }
+    fields.parts = refs;
+    for (const [k, v] of Object.entries(read.values)) if (!(k in fields)) fields[k] = v;
+    fields.place = new Fn("place", (pos, named, c) => new Vec(movePoint(move, toV3(pos[0] ?? named.p, c, "place(p)"))), `place((x, y, z)) → a point of ${entry.name} (in its own coordinates) where it is in this design`);
+    fields.turn = new Fn("turn", (pos, named, c) => new Vec(vnorm(moveDir(move, toV3(pos[0] ?? named.d, c, "turn(d)")))), `turn(d) → a direction of ${entry.name} as it points in this design`);
+    this.define(s.name, "component", new Obj(fields, "component", s.name), s.nameSpan, `design ${label}`);
+
+    // its requirements, checked with the sizes given here
+    for (const r of inner.requirements) {
+      if (r.status === "pending") continue;
+      this.reqs.push({ label: `${label}: ${r.label}`, level: r.level, uses: [], status: r.status, ...(r.margin !== undefined ? { margin: r.margin } : {}), detail: r.detail, span: s.span, deps: [...(this.current ?? [])], geo: [] });
+    }
+    // what it bought, wired and worked out (made even when the geometry is skipped)
+    const machine = placed ?? placeDesign(inner, { block: s.name, design: entry.name, move, span: s.span, group, locked: false, hidden: false, removable: false });
+    this.machine.components.push(...machine.components);
+    this.machine.wires.push(...machine.wires);
+    for (const n of machine.nets) {
+      if (this.machine.nets.some((x) => x.name === n.name)) throw new EvalError(`${entry.name}'s net ${n.name.slice(pre.length)} would be ${n.name} here, which is already a net`, s.nameSpan);
+      this.machine.nets.push(n);
+    }
+    this.machine.calcs.push(...machine.calcs);
+    for (const it of machine.items) {
+      const same = this.machine.items.find((x) => x.label === it.label);
+      if (same) same.qty += it.qty;
+      else this.machine.items.push({ ...it });
+    }
+    this.machine.boards.push(...machine.boards);
+    this.machine.belts.push(...machine.belts);
+    for (const h of inner.mateQueries ?? []) this.mateQueries.add(h);
+    this.splitQueries.push(...(inner.splitQueries ?? []));
+    this.inserts.push({
+      name: s.name,
+      design: entry.name,
+      projectId: entry.id,
+      label,
+      ...(config !== undefined ? { config } : {}),
+      params: inner.params.map((p) => ({ name: p.name, value: p.value, set: sets.some((x) => x.name === p.name) })),
+      at,
+      rotate: props.rotate !== undefined ? toV3(props.rotate, ctx, "rotate") : [0, 0, 0],
+      parts: [...new Set(inner.parts.map((p) => pre + p.name))],
+      left: machine.left,
+      span: s.span,
+    });
+    if (!placed) return;
+    this.frames.push(...placed.frames);
+    this.splits.push(...placed.splits);
+    for (const p of placed.parts) {
+      if (p.kind === "part" && p.motion) this.partMotion.set(p.name, p.motion);
+      this.parts.push(p);
+    }
+  }
+
+  /**
+   * Read a design placed in this one, with the parameters given. A reading is kept for the next evaluation once it
+   * is settled (no mates or splits waiting for the kernel), so typing elsewhere does not read it again.
+   */
+  readDesign(entry: DesignEntry, table: DesignTable, stack: string[], block: string, sets: { name: string; value: number | string | boolean }[], config: string | undefined): InnerRead {
+    const overrides = Object.fromEntries(sets.map((x) => [x.name, x.value]));
+    const shared = !this.opts.designs && !this.opts.faces && !this.opts.splits;
+    const key = shared ? [entry.id, hashString(entry.source), block, stableStringify(overrides), config ?? "", this.opts.skipGeometry ? 1 : 0, stack.join(">"), evalDesigns().version].join("|") : "";
+    const hit = key ? INNER_READS.get(key) : undefined;
+    if (hit) {
+      INNER_READS.delete(key);
+      INNER_READS.set(key, hit);
+      return hit;
+    }
+    if (/(^|[^\w.])step\s*\(/.test(entry.source.replace(/\/\/[^\n]*/g, "")))
+      throw new EvalError(`${entry.name} uses an imported file (step("...")), and a design placed in another can't bring its imported files yet: import the file here as well and place it with step()`, this.callSpan);
+    const parsed = parse(entry.source);
+    const faces = this.opts.faces ?? evalFaces();
+    const ev = new Evaluator(entry.source, {
+      overrides,
+      ...(config !== undefined ? { config } : {}),
+      ...(this.opts.designs ? { designs: this.opts.designs } : {}),
+      designStack: stack,
+      imports: {},
+      // its parts are named here as block_name: faces found for them under that name are theirs
+      faces: (hash, name) => faces(hash, `${block}_${name}`),
+      ...(this.opts.splits ? { splits: this.opts.splits } : {}),
+      ...(this.opts.skipGeometry ? { skipGeometry: true } : {}),
+    });
+    ev.run(parsed.program);
+    ev.finishMates();
+    const model = ev.toModel(parsed.diagnostics);
+    const values: Record<string, number | string | boolean> = {};
+    for (const [n, v] of ev.globals) {
+      const k = ev.defKind.get(n);
+      if ((k === "param" || k === "let" || k === "given") && (typeof v === "number" || typeof v === "string" || typeof v === "boolean")) values[n] = v;
+    }
+    const read: InnerRead = { model, values, comps: ev.comps };
+    const settled = !model.splits?.some((r) => r.status === "waiting") && (model.mateQueries ?? []).every((h) => !!faces(h, "\u0000"));
+    if (key && settled) {
+      INNER_READS.set(key, read);
+      if (INNER_READS.size > INNER_READS_MAX) INNER_READS.delete(INNER_READS.keys().next().value!);
+    }
+    return read;
   }
 
   /** Number board parts without an explicit ref: R1, R2, C1... in the order they are written. */
@@ -1935,7 +2619,13 @@ class Evaluator {
       // properties can still matter for motion
       return;
     }
-    this.items(s.items, scope, state, 0);
+    const outerSteps = this.stepNames;
+    this.stepNames = new Map();
+    try {
+      this.items(s.items, scope, state, 0);
+    } finally {
+      this.stepNames = outerSteps;
+    }
     if (!state.base) throw new EvalError(`Part "${s.name}" has no geometry. Start with: body box(...) or body cylinder(...)`, s.nameSpan);
     const ctx = this.ctx();
     const xf: Xform[] = [];
@@ -1978,6 +2668,13 @@ class Evaluator {
           });
     // a sheet() body is cut and bent unless the part says how it is made
     if (!process && state.sheet && state.props.process !== false) process = { id: "sheet_metal", settings: { t: state.sheet.t } };
+    // a layup's plies make its wall: a wall: that says otherwise is not used
+    const laid = process?.id === "carbon_layup" ? plyBook(plyStacks(process.settings.plies)) : null;
+    const wallSet = process?.settings.wall;
+    if (laid && typeof wallSet === "number" && Math.abs(laid.wall - wallSet) > 0.005) {
+      const at = processSpan ?? s.span;
+      this.diags.push({ message: `In part "${s.name}": wall: ${fmtNum(wallSet, 3)} is not used: its plies make a ${fmtNum(laid.wall, 3)} mm wall. Leave wall: out.`, start: at.start, end: at.end, severity: "warning", rule: `${s.name} layup wall` });
+    }
     const material = partMaterial(typeof state.props.material === "string" ? state.props.material : undefined, process);
     const limit = allowableStrain(material);
     for (const c of state.strain) {
@@ -2000,7 +2697,7 @@ class Evaluator {
       sheet = { ...rest, flat, flatHash: recipeHash(flat) };
     }
     const explodeDir = explodeProp(state.props.explode, ctx, state.propSpans.explode);
-    this.parts.push({
+    const record: EvalPart = {
       id: s.name,
       name: s.name,
       label: typeof state.props.label === "string" ? state.props.label : s.name,
@@ -2030,7 +2727,189 @@ class Evaluator {
       ...(state.flex.length ? { flex: state.flex } : {}),
       ...(sheet ? { sheet } : {}),
       ...(state.tubes.length ? { tubes: state.tubes } : {}),
+    };
+    if (state.props.split !== undefined && state.props.split !== false) this.splitPart(s, state.props.split, state.propSpans.split, record);
+    else this.parts.push(record);
+  }
+
+  // ---------------- split: a part made in pieces ----------------
+
+  /** The parts a name stands for: the part or component itself, the pieces of a part made in pieces, or what a placed design brought. */
+  partsNamed(name: string): EvalPart[] {
+    const own = this.parts.filter((p) => p.name === name);
+    if (own.length) return own;
+    const pieces = this.parts.filter((p) => p.split?.part === name && p.split.piece !== undefined);
+    return pieces.length ? pieces : this.parts.filter((p) => p.insert?.block === name);
+  }
+
+  /** The body a mate moves for a name: a placed design moves whole, whichever of its parts the mate holds by. */
+  mateBody(name: string): string {
+    const block = this.memberOf.get(name);
+    return block && this.inserts.some((i) => i.name === block) ? block : name;
+  }
+
+  /**
+   * `split: X` or `split: pieces(...)`: the part made in pieces that fit its machine, cut where the engine worked out
+   * from the part as built (src/core/splitGeom.ts) and joined on pins. Each piece is a part of its own (name_1,
+   * name_2...) and the part's name stands for all of them (partsNamed); the pins are a component of their own
+   * (name_pins). Until the cuts are known the part is shown whole.
+   */
+  splitPart(s: Extract<Stmt, { k: "part" }>, value: Value, span: Span, whole: EvalPart) {
+    const ctx = this.ctx();
+    this.callSpan = span;
+    const spec = splitSpec(value, ctx);
+    if (whole.sheet) throw new EvalError("split: is for printed, machined and cast parts; a sheet() part is cut and bent from one sheet (make the pieces as sheet parts of their own)", span);
+    if (whole.process?.id === "carbon_layup") throw new EvalError("split: a carbon layup is laid up in its mould in one piece; split its mould instead", span);
+    if (whole.motion) throw new EvalError("split: a moving part is made whole; split the parts that stand still", span);
+    const asked = splitWords(spec);
+    const q: SplitQuery = { key: splitKey(whole.hash, spec), hash: whole.hash, part: s.name, spec, ...(whole.process ? { process: whole.process } : {}), material: whole.material };
+    this.splitQueries.push(q);
+    this.splitWhole.set(s.name, whole);
+    const warn = (message: string, severity: "warning" | "error" = "warning") => this.diags.push({ message: `In part "${s.name}": ${message}`, start: span.start, end: span.end, severity });
+    const record = (status: SplitRecord["status"], extra: Partial<SplitRecord> = {}): SplitRecord => ({ name: s.name, label: whole.label, span, asked, status, pieces: [], cuts: [], join: spec.join, joints: [], sizes: [], warnings: [], ...extra });
+    const info = (this.opts.splits ?? evalSplits())(q);
+    if (!info) {
+      this.parts.push(whole);
+      this.splits.push(record("waiting", { pieces: [whole.id] }));
+      return;
+    }
+    const warnings = info.warnings.map((w) => w.charAt(0).toUpperCase() + w.slice(1) + ".");
+    if (info.error) {
+      warn(`split: ${info.error}.`, "error");
+      this.parts.push(whole);
+      this.splits.push(record("error", { pieces: [whole.id], error: info.error, warnings }));
+      return;
+    }
+    for (const w of info.warnings) warn(`split: ${w}.`);
+    const cuts = info.cuts.map((at, i) => ({ axis: axisWord(spec.axes[i].dir), at: at.map((t) => Math.round(t * 10) / 10) }));
+    const box = (c: { box: [V3, V3] }): V3 => [0, 1, 2].map((k) => Math.round((c.box[1][k] - c.box[0][k]) * 10) / 10) as V3;
+    if (info.cells.length < 2) {
+      this.parts.push(whole);
+      this.splits.push(record("whole", { pieces: [whole.id], cuts, sizes: info.cells.map(box), ...(info.bed ? { bed: info.bed } : {}), warnings }));
+      return;
+    }
+    if (whole.mass !== undefined) warn("split: mass: is shared out evenly between the pieces.");
+    const n = info.cells.length;
+    const printed = splitPrinted(whole);
+    const pinned = (spec.join === "dowel" || spec.join === "printed") && info.pin > 0;
+    const clr = pinHoleClearance(spec.join, printed);
+    const depth = pinDepth(info.length);
+    const frames = spec.axes.map((a) => axisFrame(a.dir));
+    // the slab between two cuts (the part's ends 5 mm beyond its extent), as wide as the part across
+    const slab = (a: number, ix: number): ShapeRecipe => {
+      const c = info.cuts[a];
+      const [lo, hi] = info.range[a];
+      const t0 = ix === 0 ? lo - 5 : c[ix - 1];
+      const t1 = ix === c.length ? hi + 5 : c[ix];
+      const [[u0, u1], [v0, v1]] = info.across[a];
+      const { u, n: dir } = frames[a];
+      return { t: "extrude", p: { t: "rect", w: u1 - u0 + 10, h: v1 - v0 + 10, r: 0, c: [(u0 + u1) / 2, (v0 + v1) / 2] }, h: t1 - t0, f: { o: vscale(dir, t0), u, n: dir }, twist: 0, scale: 1 };
+    };
+    const ids: string[] = [];
+    info.cells.forEach((cell, k) => {
+      const ops: PartOp[] = [];
+      cell.index.forEach((ix, a) => {
+        if (info.cuts[a].length) ops.push({ op: "intersect", shape: slab(a, ix) });
+      });
+      if (pinned)
+        for (const j of info.joints) {
+          if (j.below !== k && j.above !== k) continue;
+          const dir = vscale(frames[j.axis].n, j.below === k ? -1 : 1);
+          for (const p of j.spots) ops.push({ op: "cut", shape: { t: "hole", d: info.pin + clr, depth, at: p, dir } });
+        }
+      const recipe: PartRecipe = { base: { t: "part", part: whole.recipe, xf: [], hash: whole.hash }, ops };
+      // each piece is a part of its own (bar_1, bar_2), the way a frame's members are, for the parts list, the
+      // print files and the drawings; the part's own name stands for all of them
+      const id = `${s.name}_${k + 1}`;
+      ids.push(id);
+      this.define(id, "part", new Ref(id, "part"), s.nameSpan);
+      this.memberOf.set(id, s.name);
+      this.defKind.delete(id);
+      const { flex: _flex, tubes: _tubes, ...rest } = whole;
+      this.parts.push({
+        ...rest,
+        id,
+        name: id,
+        label: `${whole.label} (piece ${k + 1} of ${n})`,
+        recipe,
+        hash: recipeHash(recipe),
+        detail: hasDetail(whole.recipe),
+        ...(whole.mass !== undefined ? { mass: whole.mass / n } : {}),
+        // a glued piece is held by the glue; pinned ones by their pins
+        ...(!whole.held && spec.join === "glue" && k > 0 ? { held: "glued to the piece beside it" } : {}),
+        split: { part: s.name, piece: k + 1, of: n },
+      });
     });
+    if (whole.flex?.length) warn("split: the snap hooks of a part made in pieces are not checked; give them their own part.");
+    let pin: SplitRecord["pin"];
+    const spots = info.joints.reduce((t, j) => t + j.spots.length, 0);
+    if (pinned && spots) {
+      const name = `${s.name}_pins`;
+      const xf = whole.xf;
+      const sp = s.span;
+      const num = (v: number): Expr => ({ k: "num", v: Math.round(v * 1e6) / 1e6, span: sp });
+      const str = (v: string): Expr => ({ k: "str", v, span: sp });
+      const vec = (p: V3): Expr => ({ k: "vec", items: p.map(num), span: sp });
+      const prop = (pname: string, v: Expr): Item => ({ k: "prop", name: pname, value: v, span: sp });
+      const L = info.length;
+      if (spec.join === "dowel") {
+        const blocksBefore = this.blocks.length;
+        try {
+          // one pattern of pins per cut direction (a pattern shares one axis)
+          const byAxis = new Map<number, V3[]>();
+          for (const j of info.joints) for (const p of j.spots) byAxis.set(j.axis, [...(byAxis.get(j.axis) ?? []), p]);
+          const groups = [...byAxis];
+          groups.forEach(([a, pts], gi) => {
+            const cname = groups.length === 1 ? name : `${name}_${gi + 1}`;
+            const dir = frames[a].n;
+            const ends = pts.map((p) => applyXforms(vsub(p, vscale(dir, L / 2)), xf));
+            const items: Item[] = [prop("at", { k: "list", items: ends.map(vec), span: sp }), prop("axis", vec(vnorm(applyXformsToDir(dir, xf)))), prop("group", str(whole.group)), prop("label", str(`${whole.label} pin`))];
+            const call: Expr & { k: "call" } = {
+              k: "call",
+              callee: { k: "member", obj: { k: "ident", name: "lib", span: sp }, name: "dowel", span: sp },
+              args: [
+                { name: "d", value: num(info.pin), span: sp },
+                { name: "length", value: num(L), span: sp },
+              ],
+              span: sp,
+            };
+            const first = this.parts.length;
+            this.component({ k: "component", name: cname, call, items, span: sp, nameSpan: s.nameSpan });
+            for (let i = first; i < this.parts.length; i++) this.parts[i].split = { part: s.name, of: n };
+            this.memberOf.set(cname, s.name);
+            this.defKind.delete(cname);
+          });
+        } finally {
+          this.blocks.splice(blocksBefore);
+        }
+      } else {
+        // printed pins: one part of them all, printed with the pieces, a little short so they never bottom out
+        this.define(name, "part", new Ref(name, "part"), s.nameSpan);
+        this.memberOf.set(name, s.name);
+        this.defKind.delete(name);
+        const cyl = (j: (typeof info.joints)[number], p: V3): ShapeRecipe => {
+          const dir = frames[j.axis].n;
+          return { t: "cyl", d: info.pin, h: L - 0.4, at: vsub(p, vscale(dir, (L - 0.4) / 2)), dir };
+        };
+        const shapes = info.joints.flatMap((j) => j.spots.map((p) => cyl(j, p)));
+        const recipe: PartRecipe = { base: shapes.length === 1 ? shapes[0] : { t: "union", shapes }, ops: [{ op: "chamfer", r: Math.min(0.4, info.pin * 0.1), edges: "all" }] };
+        const { flex: _flex, tubes: _tubes, mass: _mass, features: _features, ...rest } = whole;
+        this.parts.push({ ...rest, id: name, name, label: `${whole.label} pins`, recipe, hash: recipeHash(recipe), detail: false, features: [], split: { part: s.name, of: n } });
+      }
+      pin = { d: info.pin, length: L, name, count: spots, hole: Math.round((info.pin + clr) * 100) / 100 };
+    }
+    const sizes = info.cells.map(box);
+    this.splits.push(
+      record("split", {
+        pieces: ids,
+        cuts,
+        ...(pin ? { pin } : {}),
+        joints: info.joints.map((j) => ({ axis: axisWord(spec.axes[j.axis].dir), at: Math.round(info.cuts[j.axis][j.cut] * 10) / 10, pins: pinned ? j.spots.length : 0, area: j.area, room: j.room })),
+        sizes,
+        ...(info.bed ? { bed: info.bed } : {}),
+        warnings,
+      }),
+    );
   }
 
   // ---------------- frames: structural members along lines ----------------
@@ -2255,6 +3134,22 @@ class Evaluator {
 
   /** Register `as name` for an operation; returns the feature name to put in the recipe. */
   nameFeature(st: PartState, name: string, kind: string, span: Span): string {
+    if (st.inst) {
+      // inside a use of the design's own feature: the name belongs to that use (boss#1.post)
+      const full = `${st.inst.name}.${name}`;
+      const had = st.feats.get(full);
+      const own = st.inst.scope.vars.get(name);
+      if (had) {
+        if (!st.cosmetic) had.cosmetic = false;
+        if (own === undefined) st.inst.scope.vars.set(name, new FeatRef(full, kind));
+        return full;
+      }
+      if (own !== undefined) throw new EvalError(`"${name}" is already used in feature ${st.inst.feature}()`, span);
+      st.feats.set(full, { kind, cosmetic: st.cosmetic });
+      st.inst.scope.vars.set(name, new FeatRef(full, kind));
+      this.stepNames?.set(full, kind);
+      return full;
+    }
     const prev = st.feats.get(name);
     if (prev) {
       // the same name again (often in a loop) adds more tools to the same feature
@@ -2266,6 +3161,7 @@ class Evaluator {
     if (st.root.vars.has(name)) throw new EvalError(`"${name}" is already used in this part`, span);
     st.feats.set(name, { kind, cosmetic: st.cosmetic });
     st.root.vars.set(name, new FeatRef(name, kind));
+    this.stepNames?.set(name, kind);
     return name;
   }
 
@@ -2287,13 +3183,22 @@ class Evaluator {
     for (const it of items) {
       switch (it.k) {
         case "prop": {
+          if (st.inst) throw new EvalError(`${it.name}: belongs to the part, not to feature ${st.inst.feature}(): give it as a parameter if the feature needs it`, it.span);
           if (st.cosmetic) throw new EvalError("Properties belong outside the cosmetic { } block", it.span);
           if (!PART_PROPS.includes(it.name)) throw new EvalError(`Unknown part property "${it.name}". Use: ${PART_PROPS.join(", ")}`, it.span);
-          st.props[it.name] = this.expr(it.value, scope);
+          const saved = this.callOverride;
+          // a carbon layup's ply schedule is written in its process: mfg.carbon_layup(plies: [plies(...), plies(..., zone: zone(...))])
+          if (it.name === "process") this.callOverride = { ...saved, ...PROCESS_CALLS };
+          try {
+            st.props[it.name] = this.expr(it.value, scope);
+          } finally {
+            this.callOverride = saved;
+          }
           st.propSpans[it.name] = it.span;
           break;
         }
         case "flag":
+          if (st.inst) throw new EvalError(`"${it.name}" is not a step: a feature is made of add, cut, fillet and the other steps, for, if and let`, it.span);
           if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". Parts accept the flags locked, hidden and removable.`, it.span);
           st.flags.add(it.name);
           break;
@@ -2301,20 +3206,21 @@ class Evaluator {
           scope.vars.set(it.name, this.expr(it.value, scope));
           break;
         case "op": {
+          // add boss(...) reads as boss(...): the design's own feature adds and cuts on its own
+          const shapeCall = it.shape.k === "call" ? it.shape : undefined;
+          const own = shapeCall && shapeCall.callee.k === "ident" ? this.ownFeature(shapeCall.callee.name, scope) : undefined;
+          if (own && shapeCall) {
+            if (it.op !== "add" && it.op !== "body") throw new EvalError(`${own.name}() is a feature: it adds and cuts on its own, so write ${own.name}(...) on its own line`, it.span);
+            this.applyFeature(own, shapeCall, scope, st, depth, it.name, it.nameSpan, it.span);
+            break;
+          }
           const v = this.expr(it.shape, scope);
           const feats = flattenFeatures(v);
           if (feats) {
             if (it.op !== "add") throw new EvalError(`${feats[0].kind}() adds and cuts on its own: write add ${feats[0].kind}(...)`, it.span);
             if (!st.base) throw new EvalError(`${feats[0].kind}() needs a body to stand on; start the part with body ...`, it.span);
             for (const f of feats) {
-              let name: string;
-              if (it.name) name = this.nameFeature(st, it.name, f.kind, it.nameSpan ?? it.span);
-              else {
-                const k = (st.auto.get(f.kind) ?? 0) + 1;
-                st.auto.set(f.kind, k);
-                name = `${f.kind}#${k}`;
-                st.feats.set(name, { kind: f.kind, cosmetic: st.cosmetic });
-              }
+              const name = it.name ? this.nameFeature(st, it.name, f.kind, it.nameSpan ?? it.span) : this.autoName(st, f.kind);
               for (const step of f.steps) {
                 if ("shape" in step) this.pushOp(st, { op: step.op, shape: step.shape, name }, it.span);
                 else st.ops.push({ op: step.op, r: step.r, edges: { s: "feat", f: name, part: step.part }, cosmetic: true });
@@ -2332,14 +3238,17 @@ class Evaluator {
               st.sheet = sh.info;
             }
             if (sh instanceof TubeV && (it.op === "body" || it.op === "add") && !st.cosmetic) st.tubes.push(sh.tube);
+            // inside a use of the design's own feature, every step it makes goes under the use's name
+            const opName = (kind: string) => (it.name ? this.nameFeature(st, it.name, kind, it.nameSpan ?? it.span) : st.inst?.name);
             if (it.op === "body" || (it.op === "add" && !st.base)) {
               if (!st.base) {
                 st.base = sh.recipe;
-                if (it.name) st.baseName = this.nameFeature(st, it.name, "body", it.nameSpan ?? it.span);
-              } else this.pushOp(st, { op: "add", shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, "add", it.nameSpan ?? it.span) }, it.span);
+                const bn = opName("body");
+                if (bn) st.baseName = bn;
+              } else this.pushOp(st, { op: "add", shape: sh.recipe, name: opName("add") }, it.span);
             } else {
               if (!st.base) throw new EvalError(`"${it.op}" needs a body first (start the part with body ...)`, it.span);
-              this.pushOp(st, { op: it.op, shape: sh.recipe, name: it.name && this.nameFeature(st, it.name, it.op, it.nameSpan ?? it.span) }, it.span);
+              this.pushOp(st, { op: it.op, shape: sh.recipe, name: opName(it.op) }, it.span);
             }
           }
           break;
@@ -2356,8 +3265,17 @@ class Evaluator {
         }
         case "modifier": {
           const callee = it.call.callee;
+          const own = callee.k === "ident" ? this.ownFeature(callee.name, scope) : undefined;
+          if (own) {
+            this.applyFeature(own, it.call, scope, st, depth, it.name, it.nameSpan, it.span);
+            break;
+          }
+          const calleeName = callee.k === "ident" ? callee.name : undefined;
+          if (it.name) throw new EvalError(`Only a use of one of the design's own features can be named here: ${calleeName ? `${calleeName}() makes no feature of its own` : "this is not one"}`, it.nameSpan ?? it.span);
           if (callee.k !== "ident" || !(callee.name in MODIFIER_PARAMS)) {
-            throw new EvalError("Only shell(), fillet(), chamfer(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
+            const fn = calleeName ? scope.get(calleeName) ?? this.globals.get(calleeName) : undefined;
+            if (fn instanceof UserFn) throw new EvalError(`${calleeName}() is a function: it gives a value, so put body, add, cut or intersect in front (add ${calleeName}(...)). To use steps on their own line, make it a feature: feature ${calleeName}(...) { add ... }`, it.span);
+            throw new EvalError("Only shell(), fillet(), chamfer(), full_round(), draft() and the direct edits push_pull(), replace_faces(), delete_faces() and move_faces() can be used as statements. Shapes need body/add/cut/intersect in front.", it.span);
           }
           if (!st.base) throw new EvalError(`${callee.name}() needs a body first`, it.span);
           const pos: Value[] = [];
@@ -2417,10 +3335,17 @@ class Evaluator {
               const about = a.value("about") === undefined ? undefined : a.vec3("about");
               this.pushOp(st, { op: "move_faces", faces, by, turn, axis: a.dir("axis", [0, 0, 1]), about, copy: a.bool("copy", false) }, it.span);
             }
+          } else if (callee.name === "full_round") {
+            const fv = a.value("faces");
+            if (fv === undefined) ctx.error("full_round(): faces: picks the face to round right over, such as the top of a rib: faces: in_plane(Z, 16) or near((x, y, z), 0.2)");
+            const faces = toSel(fv, ctx, "full_round(): faces");
+            this.checkSelFeatures(st, faces, it.call.span);
+            this.pushOp(st, { op: "full_round", faces }, it.span);
           } else {
             const edges = toSel(a.value("edges") ?? "all", ctx, `${callee.name}(): edges`);
             this.checkSelFeatures(st, edges, it.call.span);
-            this.pushOp(st, { op: callee.name as "fillet" | "chamfer", r: a.positive("r"), edges }, it.span);
+            if (callee.name === "fillet") this.pushOp(st, { op: "fillet", ...filletSize(a, ctx), edges }, it.span);
+            else this.pushOp(st, { op: "chamfer", ...chamferSize(a, ctx, (v) => this.checkSelFeatures(st, v, it.call.span)), edges }, it.span);
           }
           break;
         }
@@ -3072,8 +3997,12 @@ class Evaluator {
       this.callOverride = saved;
     }
     if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), or a joint: revolute(), slider(), cylindrical(), planar() or ball()", s.call.span);
-    for (const r of [v.a, v.b]) this.current?.add(r.ref.body);
-    const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: v.a.label ?? v.a.ref.body, b: v.b.label ?? v.b.ref.body, bodies: [v.a.ref.body, v.b.ref.body], span: s.span, status: "waiting" };
+    for (const r of [v.a, v.b]) this.current?.add(this.memberOf.get(r.ref.body) ?? r.ref.body);
+    // the faces come from the part named; the body moved is the placed design it belongs to, if any
+    const bodyA = this.mateBody(v.a.ref.body);
+    const bodyB = this.mateBody(v.b.ref.body);
+    if (bodyA === bodyB) throw new EvalError(`${v.kind}(): a mate joins two different bodies, and both are parts of ${bodyA}, which moves as one`, s.call.span);
+    const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: v.a.label ?? v.a.ref.body, b: v.b.label ?? v.b.ref.body, bodies: [bodyA, bodyB], span: s.span, status: "waiting" };
     const ga = this.mateGeom(v.a, s.call.span);
     const gb = this.mateGeom(v.b, s.call.span);
     if (!ga || !gb) {
@@ -3082,7 +4011,7 @@ class Evaluator {
     }
     const fit = mateFits(v.kind, ga, gb, v.value);
     if (fit) throw new EvalError(fit, s.call.span);
-    const spec: MateSpec = { name, kind: v.kind, a: { body: v.a.ref.body, geom: ga, label: v.a.label ?? v.a.ref.body }, b: { body: v.b.ref.body, geom: gb, label: v.b.label ?? v.b.ref.body } };
+    const spec: MateSpec = { name, kind: v.kind, a: { body: bodyA, geom: ga, label: v.a.label ?? v.a.ref.body }, b: { body: bodyB, geom: gb, label: v.b.label ?? v.b.ref.body } };
     if (v.value !== undefined) spec.value = v.value;
     if (v.min !== undefined) spec.min = v.min;
     if (v.max !== undefined) spec.max = v.max;
@@ -3093,7 +4022,7 @@ class Evaluator {
   /** What a mate holds by, where the parts are drawn; null while a solid's faces are not listed yet. */
   mateGeom(r: MateRefV, span: Span): MateGeom | null {
     const ref = r.ref;
-    const solids = this.parts.filter((p) => p.name === ref.body);
+    const solids = this.partsNamed(ref.body);
     if (!solids.length) throw new EvalError(`${ref.body} is not a part or component defined above this mate (mates come after the parts they join)`, span);
     switch (ref.t) {
       case "body":
@@ -3128,7 +4057,7 @@ class Evaluator {
     const names = new Set(specs.flatMap((s) => [s.a.body, s.b.body]));
     const lookup = this.opts.faces ?? evalFaces();
     const bodies: MateBody[] = [...names].map((name) => {
-      const solids = this.parts.filter((p) => p.name === name).flatMap((p) => {
+      const solids = this.partsNamed(name).flatMap((p) => {
         const cat = lookup(p.hash, p.name);
         return cat ? [{ cat, xf: p.xf }] : [];
       });
@@ -3189,10 +4118,16 @@ class Evaluator {
         return k;
       },
       members: (name) => {
-        if (this.defKind.get(name) !== "frame") return undefined;
+        const pieces = this.parts.filter((p) => p.split?.part === name && p.split.piece !== undefined && p.name !== name);
+        if (pieces.length) {
+          this.current?.add(name);
+          return pieces.map((p) => p.name);
+        }
+        if (this.defKind.get(name) !== "frame" && !this.inserts.some((i) => i.name === name)) return undefined;
         this.current?.add(name);
         return [...this.memberOf].filter(([, f]) => f === name).map(([m]) => m);
       },
+      designOf: (name) => this.inserts.find((i) => i.name === name)?.design,
       param: (name) => this.params.find((p) => p.name === name),
     });
     // the parts it reads are dependencies, so the graph and incremental reruns see them
@@ -3301,7 +4236,7 @@ class Evaluator {
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
     for (const p of this.params) p.usedBy = usedBy.get(p.name) ?? [];
     for (const g of this.brief?.givens ?? []) g.usedBy = usedBy.get(g.name) ?? [];
-    for (const p of this.parts) p.deps = [...(this.deps.get(p.frame ?? p.name) ?? [])];
+    for (const p of this.parts) p.deps = [...(this.deps.get(p.insert?.block ?? p.frame ?? p.name) ?? [])];
     // an option may name only parameters (defined anywhere in the file)
     const paramNames = new Set(this.params.map((p) => p.name));
     this.assignRefs();
@@ -3317,6 +4252,7 @@ class Evaluator {
         this.machine.firmware.map((f) => f.name),
       ))
         this.diags.push({ message: d.message, start: d.span.start, end: Math.max(d.span.end, d.span.start + 1), severity: d.severity });
+    const schematic = this.schematic ? this.schematicChecked() : undefined;
     const model: Model = {
       name: this.name,
       notes: this.notes,
@@ -3339,6 +4275,11 @@ class Evaluator {
       ...(this.frames.length ? { frames: this.frames } : {}),
       ...(this.mateResult ? { mates: this.mateResult } : {}),
       ...(this.mateQueries.size ? { mateQueries: [...this.mateQueries] } : {}),
+      ...(this.configTable ? { configs: this.configTable } : {}),
+      ...(schematic ? { schematic } : {}),
+      ...(this.splits.length ? { splits: this.splits } : {}),
+      ...(this.splitQueries.length ? { splitQueries: this.splitQueries } : {}),
+      ...(this.inserts.length ? { inserts: this.inserts } : {}),
     };
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
@@ -3373,6 +4314,58 @@ function explodeProp(v: Value | undefined, ctx: CallCtx, span: Span | undefined)
 /** held: is plain words for how a part is held where the model cannot show it. */
 function checkHeld(v: Value | undefined, span: Span | undefined) {
   if (v !== undefined && (typeof v !== "string" || !v.trim())) throw new EvalError('held: says how the part is held where the model cannot show it, e.g. held: "glued with epoxy" or held: "hook-and-loop strap"', span ?? { start: 0, end: 0 });
+}
+
+/** fillet()'s size: one radius, or a list that changes along each run of edges (at: how far along, from: which end). */
+function filletSize(a: Args, ctx: CallCtx): { r: number; vary?: FilletLaw } {
+  const rv = a.value("r");
+  if (!Array.isArray(rv)) {
+    if (a.has("at") || a.has("from")) ctx.error("fillet(): at: and from: go with a list of radii that changes along the edges, like fillet([1, 4], edges: …, from: (x, y, z))");
+    return { r: a.positive("r") };
+  }
+  if (rv.length < 2 || rv.length > 12) ctx.error(`fillet(): a list of radii needs 2 to 12 of them, from one end of the edges to the other (got ${rv.length})`);
+  const radii = rv.map((v, i) => (typeof v === "number" && v > 0 && Number.isFinite(v) ? v : ctx.error(`fillet(): radius ${i + 1} in the list should be a size in mm above 0, got ${typeName(v)}`)));
+  let at = radii.map((_, i) => i / (radii.length - 1));
+  const atV = a.value("at");
+  if (atV !== undefined) {
+    const list = Array.isArray(atV) ? atV : atV instanceof Vec ? atV.v : null;
+    if (!list || list.length !== radii.length) ctx.error(`fillet(): at: gives how far along the edges each radius is, from 0 (the start) to 1 (the end): ${radii.length} numbers, one for each radius`);
+    at = list.map((v, i) => (typeof v === "number" && v >= 0 && v <= 1 ? v : ctx.error(`fillet(): at: ${i + 1} should be a fraction of the way along, 0 to 1, got ${typeName(v)}`)));
+    if (at.some((u, i) => i > 0 && u <= at[i - 1])) ctx.error("fillet(): at: should go up along the edges, like [0, 0.3, 1]");
+  }
+  const r = [...radii];
+  // the ends are held level past the first and last points
+  if (at[0] > 0) {
+    at = [0, ...at];
+    r.unshift(r[0]);
+  }
+  if (at[at.length - 1] < 1) {
+    at = [...at, 1];
+    r.push(r[r.length - 1]);
+  }
+  const from = a.has("from") ? a.vec3("from") : undefined;
+  return { r: Math.min(...r), vary: { r, at, ...(from ? { from } : {}) } };
+}
+
+/** chamfer()'s size: one, two (the first along the face on: picks at each edge), or one and angle: from that face. */
+function chamferSize(a: Args, ctx: CallCtx, check: (sel: Sel) => void): { r: number | V2; on?: Sel; angle?: number } {
+  const rv = a.value("r");
+  const onV = a.value("on");
+  const on = onV === undefined ? undefined : toSel(onV, ctx, "chamfer(): on");
+  if (on) check(on);
+  const hasAngle = a.has("angle");
+  if (rv instanceof Vec) {
+    if (rv.v.length !== 2 || !rv.v.every((x) => x > 0 && Number.isFinite(x))) ctx.error("chamfer(): two sizes go as (d1, d2) in mm, both above 0");
+    if (hasAngle) ctx.error("chamfer(): give two sizes, or one size and angle:, not both");
+    if (!on) ctx.error("chamfer(): two sizes need on: to say which face the first runs along at each edge, like chamfer((3, 1), edges: …, on: facing(Z))");
+    return { r: [rv.v[0], rv.v[1]], on };
+  }
+  const r = a.positive("r");
+  if (!hasAngle) return on ? { r, on } : { r };
+  const angle = a.num("angle");
+  if (!(angle > 0 && angle < 90)) ctx.error("chamfer(): angle: is the slope from the on: face in degrees, between 0 and 90 (45 is an even chamfer)");
+  if (!on) ctx.error("chamfer(): angle: needs on: to say which face the size runs along and the angle is measured from, like on: facing(Z)");
+  return { r, on, angle };
 }
 
 function truthy(v: Value): boolean {
@@ -3540,7 +4533,8 @@ export type { V2 };
 export function moveParts(parts: EvalPart[], moves: Map<string, BodyMove>) {
   const remap = new Map<Motion, Motion>();
   for (const p of parts) {
-    const mv = moves.get(p.name);
+    // the pieces and pins of a part made in pieces move with it, and what a placed design brought with the design
+    const mv = moves.get(p.name) ?? (p.split ? moves.get(p.split.part) : undefined) ?? (p.insert ? moves.get(p.insert.block) : undefined);
     if (!mv) continue;
     p.xf = [...p.xf, ...moveXforms(mv)];
     const pt = (q: V3) => movePoint(mv, q);

@@ -129,6 +129,24 @@ describe("cloud projects", () => {
     expect(full.project).toMatchObject({ name: "AB", source: "ok" });
   });
 
+  it("keeps the branch each version was made on, and the project's branches", async () => {
+    const { app } = setup();
+    const c = await signedIn(app);
+    const branches = [
+      { id: "main", name: "main", from: "", base: "", head: "one", createdAt: 1, updatedAt: 1 },
+      { id: "brn_abcd1234", name: "lighter", from: "main", base: "one", head: "two", createdAt: 2, updatedAt: 3 },
+    ];
+    await c.put("/api/projects/prj_a", { baseRev: 0, name: "A", source: "two", versions: [v("ver_1", 1, "one"), { ...v("ver_2", 3, "two"), branch: "brn_abcd1234" }], extra: { branches, branch: "brn_abcd1234" } });
+    const full = await c.json<{ versions: { id: string; branch?: string }[] }>(await c.get("/api/projects/prj_a"));
+    expect(full.versions.map((x) => x.branch ?? "main")).toEqual(["main", "brn_abcd1234"]);
+    expect("branch" in full.versions[0]).toBe(false);
+    const backup = await c.json<{ projects: { versions: { branch?: string }[]; branches: unknown[]; branch: string }[] }>(await c.get("/api/projects/export"));
+    expect(backup.projects[0].versions[1].branch).toBe("brn_abcd1234");
+    expect(backup.projects[0].branches).toHaveLength(2);
+    expect(backup.projects[0].branch).toBe("brn_abcd1234");
+    expect((await c.put("/api/projects/prj_a", { baseRev: 1, versions: [{ ...v("ver_3", 4), branch: "../etc" }] })).status).toBe(400);
+  });
+
   it("exports every project as a Kerf backup file", async () => {
     const { app } = setup();
     const c = await signedIn(app);

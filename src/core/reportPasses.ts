@@ -12,6 +12,8 @@ import { fitItems } from "../analysis/fits/report";
 import { springItems } from "../analysis/springs/report";
 import { bandItems } from "../analysis/bands";
 import { hotSoakItems } from "../analysis/hotSoak";
+import { splitItems } from "./splitChecks";
+import { configItems } from "./configs";
 import type { ProcessResult } from "../mfg/types";
 
 export interface ReportContext {
@@ -26,6 +28,10 @@ export interface ReportContext {
   process: Record<string, ProcessResult> | null;
   /** the user's machines the process checks ran against */
   machines?: MachineContext;
+  /** the source the model was read from, for passes that read it again (each configuration) */
+  src?: string;
+  /** compose the report again soon: for a pass that has more to add than it had time for */
+  refresh?: () => void;
 }
 
 /** Takes the items so far and returns them with this pass's items added (or some removed). */
@@ -34,6 +40,8 @@ export type ReportPass = (items: CheckItem[], ctx: ReportContext) => CheckItem[]
 const passes: { id: string; order: number; run: ReportPass }[] = [
   // stateless passes live here; modules with state of their own (the analysis runtime) register theirs
   { id: "process", order: 10, run: (items, ctx) => [...items, ...processItems(ctx.model, ctx.process, ctx.buildErrors, ctx.machines)] },
+  { id: "split", order: 11, run: (items, ctx) => [...items, ...splitItems(ctx.model)] },
+  { id: "configs", order: 11.5, run: (items, ctx) => [...items, ...configItems(ctx.model, ctx.src, ctx.refresh)] },
   { id: "fits", order: 12, run: fitItems },
   { id: "springs", order: 13, run: springItems },
   { id: "bands", order: 13.5, run: bandItems },

@@ -4,7 +4,8 @@
 
 import { create } from "zustand";
 import * as db from "../persist/db";
-import type { ProjectRecord, VersionRecord } from "../persist/db";
+import type { BranchRecord, ProjectRecord, VersionRecord } from "../persist/db";
+import { MAIN, branchList, branchNameProblem, branchOf, cleanBranchName, mainSource, merge3, mergeBase, mergedText, type MergeResult } from "../core/branches";
 import { loadSource, setSource, useDesign } from "../core/engine";
 import { describeChange } from "../core/sourceEdit";
 import type { Model } from "../core/model";
@@ -13,6 +14,7 @@ import { backupFile, download, projectFile, readImportFile, safeFileName, type P
 import { copyAssets, exportAssets, importAssets, releaseAssetUrls } from "../persist/assets";
 import { collectUnusedBlobs, getPackedBlob, putBlob, toBase64 } from "../persist/blobs";
 import { onImportsChanged, setImports } from "../core/imports";
+import { designTable, designsUsed, evalDesigns, setEvalDesigns } from "../lang/designs";
 import type { ProjectImport } from "../kernel/imports";
 import { go, toast, errorText } from "./ui";
 import { resetView, useView } from "./view";
@@ -78,17 +80,37 @@ export async function refreshProjects() {
   const persistent = await db.ensureOpen();
   const projects = (await db.getAll<ProjectRecord>("projects")).sort((a, b) => b.updatedAt - a.updatedAt);
   set({ projects, loaded: true, save: persistent ? get().save : "memory" });
+  publishDesigns(true);
 }
 
-export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[]): Promise<ProjectRecord> {
+/**
+ * Give the evaluator the other designs a design can place (component mount = design("Motor mount")), and read
+ * the open design again when one it places has changed (an import, a sync, a project renamed).
+ */
+function publishDesigns(reread: boolean) {
+  const open = get().current;
+  const before = evalDesigns().table;
+  // a design placed in another is its main branch, so trying something on a branch changes nothing that places it
+  const table = designTable(get().projects.map((p) => (p.branch ? { ...p, source: mainSource(p) } : p)));
+  setEvalDesigns(table, open?.id);
+  if (!reread || !open) return;
+  const src = useDesign.getState().source;
+  if (!src || !/\bdesign\s*\(/.test(src)) return;
+  const was = designsUsed(before, src);
+  const now = designsUsed(table, src);
+  const same = Object.keys(was).length === Object.keys(now).length && Object.values(now).every((d) => was[d.id]?.source === d.source && was[d.id]?.name === d.name);
+  if (!same) setSource(src, { force: true });
+}
+
+export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[], branches: Pick<ProjectRecord, "branch" | "branches"> = {}): Promise<ProjectRecord> {
   const t = templateById(templateId);
   const src = source ?? t?.source ?? "";
   const now = Date.now();
   const nameFromSrc = /design\s+"([^"]{1,120})"/.exec(src)?.[1];
-  const p: ProjectRecord = { id: db.newId("prj"), name: name ?? (templateId === "blank" ? "Untitled design" : nameFromSrc ?? t?.name ?? "Untitled design"), source: src, template: templateId, createdAt: now, updatedAt: now };
+  const p: ProjectRecord = { id: db.newId("prj"), name: name ?? (templateId === "blank" ? "Untitled design" : nameFromSrc ?? t?.name ?? "Untitled design"), source: src, template: templateId, createdAt: now, updatedAt: now, ...branches };
   if (imports?.length) p.imports = imports;
   await db.put("projects", p);
-  await db.addVersion({ id: db.newId("ver"), projectId: p.id, ts: now, author: "system", message: t ? `Created from “${t.name}”` : "Created", source: src });
+  await db.addVersion({ id: db.newId("ver"), projectId: p.id, ts: now, author: "system", message: t ? `Created from “${t.name}”` : "Created", source: src, ...(p.branch ? { branch: p.branch } : {}) });
   await refreshProjects();
   return p;
 }
@@ -101,13 +123,16 @@ export async function openProject(id: string) {
     await refreshProjects();
     return;
   }
+  // a branch that has gone (deleted on another device) leaves its design open on main
+  if (p.branch && !p.branches?.some((b) => b.id === p.branch)) delete p.branch;
   const versions = await db.versionsFor(id);
   resetView();
   releaseAssetUrls();
   previewBase = null;
   set({ current: p, versions, undo: [], redo: [], save: db.persistent ? "saved" : "memory", preview: null });
-  // the evaluator needs the imported files' analysis before it reads the source
+  // the evaluator needs the imported files' analysis, and the other designs it may place, before it reads the source
   setImports(p.imports ?? []);
+  publishDesigns(false);
   loadSource(p.source);
   committed = { source: p.source, model: useDesign.getState().model };
   // an empty design starts on its brief
@@ -170,7 +195,7 @@ async function saveNow() {
 async function addVersion(author: VersionRecord["author"], message: string, source: string) {
   const cur = get().current;
   if (!cur) return;
-  const v: VersionRecord = { id: db.newId("ver"), projectId: cur.id, ts: Date.now(), author, message, source };
+  const v: VersionRecord = { id: db.newId("ver"), projectId: cur.id, ts: Date.now(), author, message, source, ...(cur.branch ? { branch: cur.branch } : {}) };
   set((s) => ({ versions: [...s.versions, v].slice(-300) }));
   try {
     await db.addVersion(v);
@@ -278,6 +303,194 @@ export function restoreVersion(v: VersionRecord) {
   const when = new Date(v.ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
   commitSource(v.source, "you", `Restored the version from ${when}`);
   toast({ kind: "success", title: "Version restored", detail: "Undo brings back what you had before." });
+}
+
+// ---------- branches ----------
+
+/** Each branch's undo and redo while another is open, for this session (by project and branch). */
+const stacks = new Map<string, { undo: string[]; redo: string[] }>();
+const when = (ts: number) => new Date(ts).toLocaleString(undefined, { month: "short", day: "numeric", hour: "2-digit", minute: "2-digit" });
+
+/** The id of the branch open now. */
+export const openBranch = (p: ProjectRecord | null = get().current) => branchOf(p);
+
+/** The open project's branches, main first, each with its latest design (the open one's is the design as it is). */
+export function projectBranches(p: ProjectRecord | null = get().current): BranchRecord[] {
+  if (!p) return [];
+  const open = openBranch(p);
+  const live = p.id === get().current?.id ? realSource() : p.source;
+  return branchList(p).map((b) => (b.id === open ? { ...b, head: live } : b));
+}
+
+/** A branch of the open project by id or name (any case). */
+export function findBranch(key: string): BranchRecord | undefined {
+  const list = projectBranches();
+  const k = cleanBranchName(key).toLowerCase();
+  return list.find((b) => b.id === key) ?? list.find((b) => b.name.toLowerCase() === k);
+}
+
+/** Make `id` the open branch with this design; the branch left keeps its design, and each keeps its undo. */
+function enterBranch(id: string, branches: BranchRecord[], source: string) {
+  const cur = get().current!;
+  const was = openBranch(cur);
+  const live = useDesign.getState().source;
+  stacks.set(`${cur.id}|${was}`, { undo: get().undo, redo: get().redo });
+  const now = Date.now();
+  const list = branches.map((b) => (b.id === was ? { ...b, head: live, updatedAt: b.head === live ? b.updatedAt : now } : b));
+  const back = stacks.get(`${cur.id}|${id}`) ?? { undo: [], redo: [] };
+  const next: ProjectRecord = { ...cur, branches: list.length > 1 ? list : undefined, source };
+  if (id === MAIN) delete next.branch;
+  else next.branch = id;
+  set({ current: next, undo: back.undo, redo: back.redo });
+  const model = setSource(source);
+  committed = { source, model };
+  scheduleSave();
+}
+
+/** Things that stop a branch being made, opened or merged now, as a message; null when it can go ahead. */
+function branchBlocked(): string | null {
+  if (!get().current) return "No design is open.";
+  return undoGuard();
+}
+
+/**
+ * Start a branch from the design as it is, or from an earlier version, and open it: changes made there stay off
+ * the branch it came from until it is merged back. Returns why it couldn't, or null.
+ */
+export async function createBranch(name: string, opts: { from?: VersionRecord } = {}): Promise<string | null> {
+  const blocked = branchBlocked();
+  if (blocked) return blocked;
+  const clean = cleanBranchName(name);
+  const problem = branchNameProblem(clean, projectBranches());
+  if (problem) return problem;
+  endPreview();
+  await flushPending();
+  const list = projectBranches();
+  const now = Date.now();
+  const from = opts.from && list.some((b) => b.id === branchOf(opts.from)) ? branchOf(opts.from) : openBranch();
+  const source = opts.from?.source ?? realSource();
+  const b: BranchRecord = { id: db.newId("brn"), name: clean, from, base: source, head: source, createdAt: now, updatedAt: now };
+  enterBranch(b.id, [...list, b], source);
+  const parent = list.find((x) => x.id === from)?.name ?? MAIN;
+  void addVersion("system", opts.from ? `Branched from ${parent} at the version from ${when(opts.from.ts)}` : `Branched from ${parent}`, source);
+  return null;
+}
+
+/** Open another branch: the design becomes that branch's latest. Returns why it couldn't, or null. */
+export async function switchBranch(id: string): Promise<string | null> {
+  const blocked = branchBlocked();
+  if (blocked) return blocked;
+  if (id === openBranch()) return null;
+  if (!projectBranches().some((b) => b.id === id)) return "That branch no longer exists.";
+  endPreview();
+  await flushPending();
+  const list = projectBranches();
+  enterBranch(id, list, list.find((b) => b.id === id)!.head);
+  return null;
+}
+
+/** What merging one branch into the other would do; one must have been made from the other. */
+export interface MergePlan {
+  /** the ids of the branch whose changes go in and of the branch they go into */
+  from: string;
+  into: string;
+  /** where the two last met, and each one's design now */
+  base: string;
+  ours: string;
+  theirs: string;
+  result: MergeResult;
+  /** the branch has nothing the other lacks */
+  upToDate: boolean;
+}
+
+/** Plan merging branch `from` into branch `into` (a branch into its parent, or the parent's changes into it), or say why not. */
+export function planMerge(from: string, into: string): MergePlan | string {
+  const list = projectBranches();
+  const a = list.find((b) => b.id === from);
+  const b = list.find((x) => x.id === into);
+  if (!a || !b) return "That branch no longer exists.";
+  if (a.id === b.id) return "A branch can't be merged into itself.";
+  // the one made from the other keeps where they met
+  const child = a.from === b.id ? a : b.from === a.id ? b : null;
+  if (!child) return `“${a.name}” and “${b.name}” weren't made one from the other. Merge each into the branch it came from.`;
+  const parent = child === a ? b : a;
+  const base = mergeBase(child, parent.head, child.head);
+  const result = merge3(base, b.head, a.head);
+  const upToDate = !result.conflicts.length && mergedText(result, () => "ours") === b.head;
+  return { from, into, base, ours: b.head, theirs: a.head, result, upToDate };
+}
+
+/**
+ * Carry out a merge with the design it settles on (the plan's result with each conflict chosen), as one change on the
+ * branch merged into, which opens if it isn't already. Undo takes it back. Returns why it couldn't, or null.
+ */
+export async function applyMerge(plan: MergePlan, text: string): Promise<string | null> {
+  const blocked = branchBlocked();
+  if (blocked) return blocked;
+  endPreview();
+  await flushPending();
+  const list = projectBranches();
+  const a = list.find((b) => b.id === plan.from);
+  const b = list.find((x) => x.id === plan.into);
+  if (!a || !b) return "That branch no longer exists.";
+  if (a.head !== plan.theirs || b.head !== plan.ours) return "The design changed while the merge was being set up. Merge again to see it as it is now.";
+  if (openBranch() !== b.id) enterBranch(b.id, list, b.head);
+  // the branch made from the other notes where they met: its design went into its parent, or it took its parent's
+  const childId = a.from === b.id ? a.id : b.id;
+  const kind = childId === a.id ? "merged" : "took";
+  const meet = { kind, source: plan.theirs, base: plan.base, ts: Date.now() } as const;
+  set((s) => (s.current ? { current: { ...s.current, branches: s.current.branches?.map((x) => (x.id === childId ? { ...x, meets: [...(x.meets ?? []), meet].slice(-20) } : x)) } } : {}));
+  commitSource(text, "you", kind === "merged" ? `Merged “${a.name}” into ${b.name}` : `Took ${a.name}'s changes into “${b.name}”`);
+  return null;
+}
+
+/** Delete a branch and its versions; branches made from it now come from where it did. Main stays. */
+export async function deleteBranch(id: string): Promise<string | null> {
+  const blocked = branchBlocked();
+  if (blocked) return blocked;
+  if (id === MAIN) return "main can't be deleted.";
+  const cur = get().current!;
+  const gone = projectBranches().find((b) => b.id === id);
+  if (!gone) return null;
+  endPreview();
+  await flushPending();
+  const parent = gone.from || MAIN;
+  if (openBranch() === id) {
+    const list = projectBranches();
+    enterBranch(parent, list, list.find((b) => b.id === parent)?.head ?? list[0].head);
+  }
+  // a branch made from it was made from its parent too, at or after where it was
+  const after = projectBranches()
+    .filter((b) => b.id !== id)
+    .map((b) => (b.from === id ? { ...b, from: parent, base: gone.base, meets: [] } : b));
+  set((s) => ({ current: s.current && { ...s.current, branches: after.length > 1 ? after : undefined }, versions: s.versions.filter((v) => branchOf(v) !== id) }));
+  stacks.delete(`${cur.id}|${id}`);
+  for (const v of await db.versionsFor(cur.id)) if (branchOf(v) === id) await db.remove("versions", v.id).catch(() => undefined);
+  scheduleSave();
+  return null;
+}
+
+/** Branches another device made join the open project's (account sync), without changing the design open here. */
+export function adoptBranches(id: string, list: BranchRecord[]) {
+  const cur = get().current;
+  if (!cur || cur.id !== id) return;
+  const open = openBranch(cur);
+  // the open branch's latest design is the one here, whatever the list says
+  set({ current: { ...cur, branches: list.map((b) => (b.id === open ? { ...b, head: cur.source } : b)) } });
+}
+
+/** Rename a branch (main keeps its name). Returns why it couldn't, or null. */
+export function renameBranch(id: string, name: string): string | null {
+  if (!get().current) return "No design is open.";
+  if (id === MAIN) return "main keeps its name.";
+  const clean = cleanBranchName(name);
+  const list = projectBranches();
+  const problem = branchNameProblem(clean, list, id);
+  if (problem) return problem;
+  if (!list.some((b) => b.id === id)) return "That branch no longer exists.";
+  set((s) => (s.current ? { current: { ...s.current, branches: s.current.branches?.map((b) => (b.id === id ? { ...b, name: clean } : b)) } } : {}));
+  scheduleSave();
+  return null;
 }
 
 // ---------- previews ----------
@@ -406,14 +619,20 @@ export async function exportProject(id: string) {
   await flushPending();
   const p = await db.getOne<ProjectRecord>("projects", id);
   if (!p) return;
-  const versions = (await db.versionsFor(id)).map((v) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source }));
-  const assets = await exportAssets(id, [p.source, ...versions.map((v) => v.source)]);
+  const versions = (await db.versionsFor(id)).map(fileVersion);
+  const assets = await exportAssets(id, [p.source, ...versions.map((v) => v.source), ...(p.branches ?? []).map((b) => b.head)]);
   const imports = p.imports ?? [];
   const { files, missing } = await packImportFiles(imports);
   const kept = imports.filter((i) => files.some((a) => a.hash === i.hash));
-  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, { assets, imports: kept, importFiles: files }), safeFileName(p.name, "kerfproj"), "application/json");
+  download(projectFile(p.name, p.source, p.template, p.createdAt, versions, { assets, imports: kept, importFiles: files, ...fileBranches(p) }), safeFileName(p.name, "kerfproj"), "application/json");
   if (missing.length) toast({ kind: "warn", title: "Some imported files were left out", detail: `This browser does not have ${missing.join(", ")}.` }, 9000);
 }
+
+/** A version as a project file keeps it. */
+const fileVersion = (v: VersionRecord) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
+
+/** A project's branches as a project file keeps them. */
+const fileBranches = (p: ProjectRecord) => (p.branches?.length ? { branches: p.branches, ...(p.branch ? { branch: p.branch } : {}) } : {});
 
 /** Imports a file; returns the project to open when the file held exactly one. */
 export async function importProject(file: File): Promise<ProjectRecord | null> {
@@ -423,9 +642,9 @@ export async function importProject(file: File): Promise<ProjectRecord | null> {
     if (warnings.length) toast({ kind: "warn", title: "Part of the file could not be used", detail: [...new Set(warnings)].slice(0, 3).join(" ") }, 9000);
     let last: ProjectRecord | null = null;
     for (const imp of imported) {
-      last = await createProject("imported", imp.name, imp.source, imp.imports);
+      last = await createProject("imported", imp.name, imp.source, imp.imports, imp.branches ? { branches: imp.branches, ...(imp.branch ? { branch: imp.branch } : {}) } : {});
       if (imp.template !== "imported") await db.put("projects", { ...last, template: imp.template });
-      for (const v of imp.versions) await db.addVersion({ id: db.newId("ver"), projectId: last.id, ts: v.ts, author: v.author, message: v.message, source: v.source });
+      for (const v of imp.versions) await db.addVersion({ id: db.newId("ver"), projectId: last.id, ts: v.ts, author: v.author, message: v.message, source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
       await importAssets(last.id, imp.assets);
     }
     await refreshProjects();
@@ -450,10 +669,10 @@ export async function exportAllProjects() {
   const { files: importFiles } = await packImportFiles(projects.flatMap((p) => p.imports ?? []));
   const have = new Set(importFiles.map((a) => a.hash));
   for (const p of projects) {
-    const versions = (await db.versionsFor(p.id)).map((v) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source }));
-    const assets = await exportAssets(p.id, [p.source, ...versions.map((v) => v.source)]);
+    const versions = (await db.versionsFor(p.id)).map(fileVersion);
+    const assets = await exportAssets(p.id, [p.source, ...versions.map((v) => v.source), ...(p.branches ?? []).map((b) => b.head)]);
     const imports = (p.imports ?? []).filter((i) => have.has(i.hash));
-    files.push({ format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}) });
+    files.push({ format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...fileBranches(p) });
   }
   const stamp = new Date().toISOString().slice(0, 10);
   download(backupFile(files, importFiles), `kerf-backup-${stamp}.kerfbackup`, "application/json");

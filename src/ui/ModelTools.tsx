@@ -69,6 +69,9 @@ interface Form {
   fit: "clearance" | "tap" | "insert" | "thread";
   r: number;
   edges: "picked" | EdgePreset;
+  /** fillet: the same radius all along, one that changes to r2 from the end clicked, or the face clicked rounded right over */
+  roundKind: "even" | "grow" | "full";
+  r2: number;
   t: number;
   open: "picked" | "Z" | "-Z" | "-Y" | "Y" | "-X" | "X" | "closed";
   dx: number;
@@ -90,7 +93,7 @@ interface Form {
   cutTool: string;
 }
 
-const START: Form = { w: 40, d: 30, h: 10, cd: 20, ch: 20, size: "M3", holeD: 5, through: true, depth: 8, fit: "clearance", r: 1, edges: "picked", t: 2, open: "picked", dx: 0, dy: 0, dz: 10, angle: 90, axis: 2, newPart: false, patKind: "line", count: 3, gap: 30, patAxis: 0, spread: 360, cx: 0, cy: 0, cz: 0, mAxis: 0, mAt: 0, cutTool: "" };
+const START: Form = { w: 40, d: 30, h: 10, cd: 20, ch: 20, size: "M3", holeD: 5, through: true, depth: 8, fit: "clearance", r: 1, edges: "picked", roundKind: "even", r2: 3, t: 2, open: "picked", dx: 0, dy: 0, dz: 10, angle: 90, axis: 2, newPart: false, patKind: "line", count: 3, gap: 30, patAxis: 0, spread: 360, cx: 0, cy: 0, cz: 0, mAxis: 0, mAt: 0, cutTool: "" };
 
 type Done = Extract<QuickOutcome, { ok: true }> & { failed?: string };
 
@@ -351,6 +354,8 @@ function commandFor(tool: ToolId, f: Form, pick: SpotRef | null): QuickCommand |
     }
     case "fillet":
     case "chamfer":
+      if (tool === "fillet" && f.roundKind === "full") return { k: "full_round" };
+      if (tool === "fillet" && f.roundKind === "grow") return pos(f.r) && pos(f.r2) ? { k: "fillet", r: f.r, to: f.r2, edges: f.edges === "picked" ? (pick ? undefined : "all") : f.edges } : null;
       return pos(f.r) ? { k: tool, r: f.r, edges: f.edges === "picked" ? (pick ? undefined : "all") : f.edges } : null;
     case "shell":
       return pos(f.t) ? { k: "shell", t: f.t, open: f.open === "picked" ? (pick ? "here" : "Z") : f.open === "closed" ? null : f.open } : null;
@@ -426,6 +431,11 @@ const EDGE_OPTIONS: { value: Form["edges"]; label: string }[] = [
   { value: "vertical", label: "Vertical edges (corners)" },
   { value: "convex", label: "Outside edges" },
   { value: "concave", label: "Inside corners" },
+];
+const ROUND_KINDS: { value: Form["roundKind"]; label: string }[] = [
+  { value: "even", label: "Same radius all along" },
+  { value: "grow", label: "Radius changes along the edge" },
+  { value: "full", label: "Full round (the face I click)" },
 ];
 const OPEN_OPTIONS: { value: Form["open"]; label: string }[] = [
   { value: "picked", label: "The face I click (else the top)" },
@@ -559,8 +569,11 @@ function ToolForm({ tool, form: f, set, pick, others, cutTool }: { tool: ToolId;
     case "chamfer":
       return (
         <div className="mt-form">
-          <Num label={tool === "fillet" ? "R" : "Size"} value={f.r} onChange={(v) => set("r", v)} step={0.25} />
-          <Pick label="Edges" value={f.edges} options={EDGE_OPTIONS} onChange={(v) => set("edges", v)} />
+          {tool === "fillet" && <Pick label="Kind" value={f.roundKind} options={ROUND_KINDS} onChange={(v) => set("roundKind", v)} />}
+          {(tool !== "fillet" || f.roundKind !== "full") && <Num label={tool === "fillet" ? (f.roundKind === "grow" ? "R at the end clicked" : "R") : "Size"} value={f.r} onChange={(v) => set("r", v)} step={0.25} />}
+          {tool === "fillet" && f.roundKind === "grow" && <Num label="R at the far end" value={f.r2} onChange={(v) => set("r2", v)} step={0.25} />}
+          {(tool !== "fillet" || f.roundKind !== "full") && <Pick label="Edges" value={f.edges} options={EDGE_OPTIONS} onChange={(v) => set("edges", v)} />}
+          {tool === "fillet" && f.roundKind === "full" && <div className="dim" style={{ fontSize: 11.5 }}>Click the face to round over: the top of a rib or wall, a rim, a plate&apos;s edge. It becomes a half-round between its two long sides.</div>}
         </div>
       );
     case "shell":

@@ -11,12 +11,17 @@
 
 export type V3 = [number, number, number];
 
-/** A layer of isotropic material lying between z0 and z1 along the triangle's normal, from its reference surface. */
+/**
+ * A layer of isotropic material lying between z0 and z1 along the triangle's normal, from its reference surface; or,
+ * with abd, a composite wall there whose plies give its own stiffness.
+ */
 export interface ShellSection {
   E: number;
   nu: number;
   z0: number;
   z1: number;
+  /** a laminate's stretching, coupling and bending stiffness about the reference surface (3 × 3 each, rows ε_x ε_y γ_xy, in the triangle's axes) */
+  abd?: { A: Float64Array; B: Float64Array; D: Float64Array };
 }
 
 /** the triangle in its own plane, and its axes in the world */
@@ -236,6 +241,7 @@ function strainOp(T: Tri, Tm: Float64Array, Sb: Float64Array, L: [number, number
 
 /** membrane, coupling and bending stiffness of the section: A, B, D (3 × 3 each) */
 export function abd(sec: ShellSection): { A: Float64Array; B: Float64Array; D: Float64Array } {
+  if (sec.abd) return { A: sec.abd.A, B: sec.abd.B, D: sec.abd.D };
   const Q = planeQ(sec.E, sec.nu);
   const { z0, z1 } = sec;
   const a = z1 - z0,
@@ -309,8 +315,9 @@ export function shellLocalK(xy: ArrayLike<number>, sec: ShellSection): ShellLoca
     const g = new Float64Array(18);
     for (let q = 0; q < 9; q++) g[MEM[q]] -= w0[q];
     for (let a = 0; a < 3; a++) g[6 * a + 5] += 1 / 3;
-    const G = sec.E / (2 * (1 + sec.nu));
-    const k = DRILL * G * (sec.z1 - sec.z0) * T.A;
+    // the wall's in-plane shear stiffness per width: G·t, or a laminate's A66
+    const Gt = sec.abd ? sec.abd.A[8] : (sec.E / (2 * (1 + sec.nu))) * (sec.z1 - sec.z0);
+    const k = DRILL * Gt * T.A;
     for (let i = 0; i < 18; i++) for (let j = 0; j < 18; j++) K[i * 18 + j] += k * g[i] * g[j];
   }
   return { K, T, Tm, Sb };

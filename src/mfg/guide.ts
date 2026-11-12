@@ -144,7 +144,7 @@ export function processGuideText(spec: ProcessSpec, material?: string, machine: 
     "",
     "## Source",
     `process: ${specToSource(spec)}`,
-    `Settings (* = set by the machine profile unless the part sets it): ${def.settings.map((s) => `${s.key}${s.machine ? "*" : ""} (${s.doc}; default ${s.def === null ? (s.kind === "tools" ? "standard sizes" : "from the geometry") : Array.isArray(s.def) ? (Array.isArray(s.def[0]) ? (s.def as [number, number, number][]).map(axisName).join(", ") : s.kind === "dir" ? axisName(s.def as [number, number, number]) : (s.def as number[]).join(" × ")) : String(s.def)})`).join("; ") || "none, only material:"}.`,
+    `Settings (* = set by the machine profile unless the part sets it): ${def.settings.map((s) => `${s.key}${s.machine ? "*" : ""} (${s.doc}; default ${s.def === null ? (s.kind === "tools" ? "standard sizes" : s.kind === "plies" ? "none: an even laminate wall: thick" : "from the geometry") : Array.isArray(s.def) ? (Array.isArray(s.def[0]) ? (s.def as [number, number, number][]).map(axisName).join(", ") : s.kind === "dir" ? axisName(s.def as [number, number, number]) : (s.def as number[]).join(" × ")) : String(s.def)})`).join("; ") || "none, only material:"}.`,
     `Numbers a requirement can read from the process value: ${Object.entries(fields)
       .map(([k, v]) => `.${k} = ${fmt(v)}`)
       .join(", ")}.`,

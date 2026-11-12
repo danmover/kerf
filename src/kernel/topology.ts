@@ -245,6 +245,12 @@ export class Topo {
     return fs.length >= 2 && new Set(fs).size === 1;
   }
 
+  /** The edges round a face, seams left out. */
+  faceEdges(fi: number): number[] {
+    const adj = this.adj();
+    return this.edges.map((_, i) => i).filter((i) => adj[i].includes(fi) && !this.isSeam(i));
+  }
+
   private convexity(e: EdgeInfo): Convexity {
     const fs = [...new Set(e.faces)];
     if (e.faces.length >= 2 && fs.length === 1) return "seam";
@@ -462,6 +468,14 @@ export class Topo {
           return fs.length === 2 && ((on(sel.a, fs[0]) && on(sel.b, fs[1])) || (on(sel.a, fs[1]) && on(sel.b, fs[0])));
         });
       }
+      case "meet": {
+        const fa = this.selectFaces(sel.a);
+        const fb = this.selectFaces(sel.b);
+        return pick((i) => {
+          const fs = [...new Set(this.adj()[i])];
+          return fs.length === 2 && ((fa.has(fs[0]) && fb.has(fs[1])) || (fa.has(fs[1]) && fb.has(fs[0])));
+        });
+      }
       case "near": {
         const v = R.makeVertex(sel.p);
         const out = pick((i) => {
@@ -552,7 +566,8 @@ export class Topo {
         const es = this.selectEdges(sel);
         return pick((i) => this.onFeature(sel.f, i) && [...es].some((e) => this.edge(e).faces.includes(i)));
       }
-      case "between": {
+      case "between":
+      case "meet": {
         const es = this.selectEdges(sel);
         return pick((i) => [...es].some((e) => this.edge(e).faces.includes(i)));
       }
@@ -682,6 +697,7 @@ function selCost(sel: Sel): number {
   switch (sel.s) {
     case "feat":
     case "between":
+    case "meet":
       return 10;
     case "near":
       return 2;
@@ -706,6 +722,8 @@ export function describeSel(sel: Sel): string {
       return `${sel.f}.${sel.part}`;
     case "between":
       return `between(${sel.a}, ${sel.b})`;
+    case "meet":
+      return `between(${describeSel(sel.a)}, ${describeSel(sel.b)})`;
     case "near":
       return `near(${p3(sel.p)}, ${sel.r})`;
     case "plane":

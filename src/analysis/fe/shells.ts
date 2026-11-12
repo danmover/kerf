@@ -15,6 +15,7 @@ import { principal, vonMises } from "./element";
 import { BlockSystem, factorBlocks, nodeLinks, type BlockMatrix } from "./sparse";
 import { planeQ, shellFrame, shellLocalK, shellLocalKg, shellStrains, toLocal18, toWorld18, type ShellFrame, type ShellLocal } from "./shellElement";
 import { findPatches, remesh, sizeField, subSurface, TriBVH, wallSide, weld, type SurfaceMesh } from "./shellMesh";
+import { failureStrength, fibreField, laminate, newPlyCheck, plyCheck, PLY_FAILURES, qBar, type FibreField, type FibreRule, type Laminate, type PlyFailure, type PlyMaterial } from "./laminate";
 import { FeaError, type BucklingResult, type PartField, type Progress, type SafetyAt, type StructuralInput, type StructuralResult } from "./structural";
 import type { V3 } from "./voxel";
 
@@ -30,6 +31,48 @@ export interface ShellPart {
   kind: "laminate" | "sheet" | "wall";
   /** the laminate's or the sheet's thickness, mm (a wall's is measured) */
   t?: number;
+  /** a composite wall's plies, in place of an even quasi-isotropic laminate */
+  plies?: ShellPlies;
+}
+
+/** One ply of a stack: its angle from 0° (degrees, counterclockwise seen from outside), material and thickness, mm. */
+export interface ShellPly {
+  angle: number;
+  m: PlyMaterial;
+  t: number;
+}
+
+/** A wall's plies: a stack laid from the outer surface inward, and more plies inside it over zones. */
+export interface ShellPlies {
+  plies: ShellPly[];
+  /** plies added inside the stack over a region: reinforcement at joints, bearing seats and bolts */
+  patches: { region: RegionSpec; plies: ShellPly[]; label: string }[];
+  /** the layup as written, for the report: "[0/±45/90]s of T700-class carbon UD" */
+  label: string;
+  /** where 0° runs (default "auto": along the tubes on a part made of tubes, else along its length) */
+  fibre?: FibreRule;
+}
+
+/** How a wall's plies came out: the first ply to fail and how, and the factor that breaks fibres. */
+export interface ShellPliesResult {
+  label: string;
+  /** where 0° runs, in words: "along its tubes", "along its length (X)", "along (0, 0, 1)" */
+  fibre: string;
+  /** the plies through the wall from the outside in (the zones' plies after the stack) */
+  stack: { angle: number; material: string; t: number; zone?: string }[];
+  /** the base stack's thickness, mm */
+  t: number;
+  /** first-ply failure (Tsai–Wu): the factor on the loads that cracks the first ply, which ply (from 1), how, where */
+  first: { safety: number; ply: number; angle: number; material: string; failure: PlyFailure; at: V3; strength: number };
+  /** the factor on the loads at which stress along the fibres reaches their strength, and where */
+  fibreSafety: number;
+  fibreAt: V3;
+  /** each ply's own lowest Tsai–Wu factor and how it would fail */
+  perPly: { ply: number; angle: number; material: string; safety: number; failure: PlyFailure; zone?: string }[];
+  /** share of the wall's area squeezed thinner than its plies (where two walls meet inside the part) */
+  squeezed: number;
+  /** share of the area where the 0° direction asked for runs nearly square to the wall, so 0° follows the part there */
+  fallback: number;
 }
 
 export interface ShellPartResult {
@@ -46,6 +89,8 @@ export interface ShellPartResult {
   stress: number;
   at: V3;
   safety: number;
+  /** a composite wall's plies, when it was given them */
+  plies?: ShellPliesResult;
 }
 
 export interface ShellResult {
@@ -81,6 +126,17 @@ const norm = (a: V3): V3 => {
   return [a[0] / l, a[1] / l, a[2] / l];
 };
 const AXIS = ["X", "Y", "Z"];
+/** a line's direction in words: an axis when it is one */
+const lineText = (d: V3) => {
+  const k = [0, 1, 2].reduce((b, i) => (Math.abs(d[i]) > Math.abs(d[b]) ? i : b), 0);
+  const u = d[k] < 0 ? scale(d, -1) : d;
+  return Math.abs(u[k]) > 0.999 ? AXIS[k] : `(${u.map((x) => fmt(x, 2)).join(", ")})`;
+};
+function fibreWords(f: FibreField): string {
+  return f.how === "tubes" ? "along its tubes" : f.how === "length" ? `along its length (${lineText(f.dir)})` : `along ${lineText(f.dir)}`;
+}
+/** a triangle's stiffness before it is built */
+const NO_LOCAL = { K: new Float64Array(0) } as ShellLocal;
 const fmt = (x: number, d = 1) => (Math.round(x * 10 ** d) / 10 ** d).toString();
 
 interface ShellEl {
@@ -93,6 +149,23 @@ interface ShellEl {
   Kw: Float64Array;
   /** outward unit normal of the face the shell lies on (the material is behind it) */
   nrm: V3;
+  /** how thick the part leaves room for (a laminate meets the one from the other side in the middle), mm */
+  room: number;
+  /** a composite wall's plies through this triangle */
+  lam?: ElPlies;
+}
+
+/** the plies through one triangle, from the outside in */
+interface ElPlies {
+  L: Laminate;
+  m: PlyMaterial[];
+  /** each ply's angle in the triangle's axes, radians */
+  a: Float64Array;
+  /** each ply's number in its part's list (the stack, then the zones' plies) */
+  idx: Int32Array;
+  /** the outer and inner plies' stiffness in the triangle's axes, for the stresses on the faces */
+  qTop: Float64Array;
+  qBot: Float64Array;
 }
 
 interface PartSurf {
@@ -103,6 +176,8 @@ interface PartSurf {
   /** the face kept, before and after remeshing */
   side: SurfaceMesh;
   sideT: number[];
+  /** each side triangle's room for the wall, mm (Infinity where nothing is behind it) */
+  sideRoom: number[];
   mesh: SurfaceMesh;
   meshBvh: TriBVH;
   node0: number;
@@ -156,11 +231,16 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     const full = new TriBVH(m.P, m.T);
     let tris: number[];
     let tt: number[];
+    let room: number[];
     if (sp.kind === "laminate") {
       // the whole outside, the plies behind it; where the part is thinner than two laminates they meet in the middle
-      const wall = sp.t ?? 1.2;
+      const plyT = (list: ShellPly[]) => list.reduce((x, q) => x + q.t, 0);
+      const wall = sp.plies ? plyT(sp.plies.plies) : (sp.t ?? 1.2);
+      // as thick as it gets: with every zone's plies inside the stack
+      const reach = wall + (sp.plies?.patches.reduce((x, z) => x + plyT(z.plies), 0) ?? 0);
       tris = [];
       tt = [];
+      room = [];
       for (let t = 0; t < m.T.length / 3; t++) {
         const a: V3 = [m.P[3 * m.T[3 * t]], m.P[3 * m.T[3 * t] + 1], m.P[3 * m.T[3 * t] + 2]];
         const b: V3 = [m.P[3 * m.T[3 * t + 1]], m.P[3 * m.T[3 * t + 1] + 1], m.P[3 * m.T[3 * t + 1] + 2]];
@@ -169,9 +249,10 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
         if (!(len(nn) > 0)) continue;
         const n = norm(nn);
         const g = scale(add(add(a, b), c), 1 / 3);
-        const hit = full.ray(add(g, scale(n, -1e-7 * size)), scale(n, -1), 2 * wall + 1e-6, (o) => o === t);
+        const hit = full.ray(add(g, scale(n, -1e-7 * size)), scale(n, -1), 2 * reach + 1e-6, (o) => o === t);
         tris.push(t);
         tt.push(hit ? Math.min(wall, hit.s / 2) : wall);
+        room.push(hit ? hit.s / 2 : Infinity);
       }
     } else {
       const side = wallSide(m, full, size, sp.t);
@@ -179,6 +260,7 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
       tris = side.tris;
       // a sheet is as thick as the sheet it is cut from; a wall as thick as it measures
       tt = sp.kind === "sheet" && sp.t ? side.t.map(() => sp.t!) : side.t;
+      room = tt.map(() => Infinity);
     }
     const { mesh: sideMesh } = subSurface(m, tris);
     let area = 0;
@@ -188,7 +270,7 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
       const c: V3 = [sideMesh.P[3 * sideMesh.T[3 * t + 2]], sideMesh.P[3 * sideMesh.T[3 * t + 2] + 1], sideMesh.P[3 * sideMesh.T[3 * t + 2] + 2]];
       area += len(cross(sub(b, a), sub(c, a))) / 2;
     }
-    surfs.push({ pi, kind: sp.kind, full, side: sideMesh, sideT: tt, mesh: sideMesh, meshBvh: full, node0: 0, el0: 0, elN: 0, elOfTri: new Int32Array(0), area, size, h: 0 });
+    surfs.push({ pi, kind: sp.kind, full, side: sideMesh, sideT: tt, sideRoom: room, mesh: sideMesh, meshBvh: full, node0: 0, el0: 0, elN: 0, elOfTri: new Int32Array(0), area, size, h: 0 });
   }
 
   // ---- triangles of about the size the resolution asks for (a few thousand corners in all) ----
@@ -216,7 +298,6 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     for (let i = 0; i < s.mesh.P.length; i++) nodeP.push(s.mesh.P[i]);
     for (let v = 0; v < s.mesh.P.length / 3; v++) nodePart.push(s.pi);
     const sideBvh = new TriBVH(s.side.P, s.side.T);
-    const mat = mats[s.pi];
     s.elOfTri = new Int32Array(s.mesh.T.length / 3).fill(-1);
     for (let t = 0; t < s.mesh.T.length / 3; t++) {
       const n: [number, number, number] = [s.node0 + s.mesh.T[3 * t], s.node0 + s.mesh.T[3 * t + 1], s.node0 + s.mesh.T[3 * t + 2]];
@@ -228,9 +309,10 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
       const g = scale(add(add(pa, pb), pc), 1 / 3);
       const hit = sideBvh.nearest(g);
       const tEl = hit ? s.sideT[hit.tri] : s.sideT[0];
-      const loc = shellLocalK(fr.xy, { E: mat.E, nu: mat.nu, z0: -tEl, z1: 0 });
+      const room = hit ? s.sideRoom[hit.tri] : s.sideRoom[0];
       s.elOfTri[t] = els.length;
-      els.push({ n, part: s.pi, t: tEl, fr, loc, Kw: toWorld18(loc.K, fr.R), nrm: [fr.R[6], fr.R[7], fr.R[8]] });
+      // the stiffness follows once the plies' fibre directions are known
+      els.push({ n, part: s.pi, t: tEl, fr, loc: NO_LOCAL, Kw: NO_LOCAL.K, nrm: [fr.R[6], fr.R[7], fr.R[8]], room });
     }
     s.elN = els.length - s.el0;
     if (!s.elN) throw new FeaError(`${inp.parts[s.pi].name} has no surface left to model as a shell.`);
@@ -424,6 +506,109 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     return sel;
   };
 
+  // ---- composite walls: where each ply's fibres run, the zones' extra plies, then every wall's stiffness ----
+  interface PartPlies {
+    /** the part's plies in order (the stack, then each zone's), each with its zone and nominal depth to its middle */
+    list: { angle: number; m: PlyMaterial; t: number; zone?: string; depth: number }[];
+    field: FibreField;
+    /** the stack's own thickness, mm */
+    t: number;
+    squeezedA: number;
+    /** how far the plies were stretched or squeezed to fit a measured wall: the mean of |factor − 1| */
+    fitted: number;
+  }
+  const partPlies = new Map<number, PartPlies>();
+  for (const s of surfs) {
+    const sp = inp.parts[s.pi].shell?.plies;
+    if (!sp) continue;
+    // 0° on each triangle
+    const ids = Array.from({ length: s.elN }, (_, k) => s.el0 + k);
+    const field = fibreField(
+      {
+        corners: Int32Array.from(ids.flatMap((e) => els[e].n)),
+        R: Float64Array.from(ids.flatMap((e) => [...els[e].fr.R])),
+        xy: Float64Array.from(ids.flatMap((e) => [...els[e].fr.xy])),
+        area: Float64Array.from(ids.map((e) => els[e].fr.area)),
+        nodeP,
+        nodeN: nNrm,
+      },
+      sp.fibre ?? "auto",
+    );
+    const list: PartPlies["list"] = [];
+    let depth = 0;
+    for (const q of sp.plies) {
+      list.push({ ...q, depth: depth + q.t / 2 });
+      depth += q.t;
+    }
+    const stackT = depth;
+    // the zones' plies, inside the stack: which triangles each covers
+    const extra: number[][] = ids.map(() => []);
+    const zoneFirst: number[] = [];
+    sp.patches.forEach((z, zi) => {
+      zoneFirst.push(list.length);
+      for (const q of z.plies) {
+        list.push({ ...q, zone: z.label, depth: depth + q.t / 2 });
+        depth += q.t;
+      }
+      let sel: Sel;
+      try {
+        sel = select(z.region);
+      } catch (err) {
+        if (err instanceof FeaError) throw new FeaError(`The plies of ${z.label} reach none of the walls, so they add nothing. Put their zone around a place on ${inp.parts[s.pi].name}'s wall.`);
+        throw err;
+      }
+      let got = 0;
+      for (const { e } of sel.els)
+        if (e >= s.el0 && e < s.el0 + s.elN) {
+          extra[e - s.el0].push(zi);
+          got++;
+        }
+      if (!got) warnings.push(`The plies of ${z.label} reach none of ${inp.parts[s.pi].name}'s wall, so they add nothing there.`);
+    });
+    let squeezedA = 0,
+      fit = 0;
+    ids.forEach((ei, k) => {
+      const e = els[ei];
+      const mine: { q: ShellPly; idx: number }[] = sp.plies.map((q, i) => ({ q, idx: i }));
+      for (const zi of extra[k]) sp.patches[zi].plies.forEach((q, i) => mine.push({ q, idx: zoneFirst[zi] + i }));
+      const total = mine.reduce((x, p) => x + p.q.t, 0);
+      // a laminate is as thick as its plies, but meets the one from the other side in the middle; a measured wall
+      // (or a sheet) keeps its thickness, and the plies are taken to fill it
+      let f: number;
+      if (s.kind === "laminate") {
+        e.t = Math.min(total, e.room);
+        f = e.t / total;
+        if (f < 0.999) squeezedA += e.fr.area;
+      } else {
+        f = e.t / total;
+        fit += Math.abs(f - 1) * e.fr.area;
+      }
+      const laid = mine.map((p) => ({ m: p.q.m, t: p.q.t * f, a: field.phi[k] + (p.q.angle * Math.PI) / 180 }));
+      const L = laminate(laid);
+      e.lam = {
+        L,
+        m: laid.map((p) => p.m),
+        a: Float64Array.from(laid.map((p) => p.a)),
+        idx: Int32Array.from(mine.map((p) => p.idx)),
+        qTop: qBar(laid[0].m, laid[0].a),
+        qBot: qBar(laid[laid.length - 1].m, laid[laid.length - 1].a),
+      };
+    });
+    const areaPart = ids.reduce((x, e) => x + els[e].fr.area, 0);
+    partPlies.set(s.pi, { list, field, t: stackT, squeezedA, fitted: areaPart > 0 ? fit / areaPart : 0 });
+  }
+  for (const e of els) {
+    const mat = mats[e.part];
+    e.loc = shellLocalK(e.fr.xy, { E: mat.E, nu: mat.nu, z0: -e.t, z1: 0, ...(e.lam ? { abd: e.lam.L } : {}) });
+    e.Kw = toWorld18(e.loc.K, e.fr.R);
+  }
+  if (partPlies.size) {
+    // the zones' plies thicken the wall
+    nT.fill(0);
+    for (const e of els) for (const v of e.n) nT[v] += (e.fr.area / 3) * e.t;
+    for (let v = 0; v < nn; v++) if (nArea[v] > 0) nT[v] /= nArea[v];
+  }
+
   // ---- loads ----
   const F = new Float64Array(6 * nn);
   const loadsOut: StructuralResult["loads"] = [];
@@ -475,6 +660,7 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     if (len(rest) > 1e-6 * (len(M) + 1e-30)) for (const n of sel.nodes) for (let k = 0; k < 3; k++) F[6 * n + 3 + k] += rest[k] / sel.nodes.length;
   };
   for (const ld of inp.loads) {
+    if (ld.t === "air") throw new FeaError(`air("${ld.analysis}") loads solid parts; it does not go on thin walls analysed as shells yet. Analyse the parts as solids for the air's loads.`);
     const sel = select(ld.region);
     const c = centroid(sel);
     if (ld.t === "force") {
@@ -523,7 +709,7 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
   let gravity: StructuralResult["gravity"] = null;
   let massKg = 0;
   let volume = 0;
-  const elMass = els.map((e) => mats[e.part].density * 1e-6 * e.t * e.fr.area);
+  const elMass = els.map((e) => (e.lam ? e.lam.L.rhoT : mats[e.part].density * e.t) * 1e-6 * e.fr.area);
   els.forEach((e, ei) => {
     massKg += elMass[ei];
     volume += e.t * e.fr.area;
@@ -869,21 +1055,57 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     out[o + 4] += w * comp(1, 2);
     out[o + 5] += w * comp(2, 0);
   };
+  // composite walls: per node and ply (the part's own list), the Tsai–Wu utilisation and the stress along the fibres
+  // over their strength, each the worse of the ply's top and bottom, averaged over the triangles round the node
+  const plyOff = new Int32Array(nn + 1);
+  for (let v = 0; v < nn; v++) plyOff[v + 1] = plyOff[v] + (partPlies.get(nodePart[v])?.list.length ?? 0);
+  const plyU = new Float64Array(plyOff[nn]),
+    plyF = new Float64Array(plyOff[nn]),
+    plyW = new Float64Array(plyOff[nn]),
+    plyTop = new Float64Array(plyOff[nn]);
+  const plyMode = new Uint8Array(plyOff[nn]);
+  const pc = newPlyCheck();
   els.forEach((e, ei) => {
     const mat = mats[e.part];
     const Q = planeQ(mat.E, mat.nu);
     const nuz = mat.nu / (1 - mat.nu);
+    const lam = e.lam;
     for (let a = 0; a < 3; a++) {
       shellStrains(e.loc, CORNER_L[a], ql[ei], st);
       const v = e.n[a];
       const w = e.fr.area;
       nW[v] += w;
+      if (lam)
+        for (let k = 0; k < lam.m.length; k++) {
+          let u = 0,
+            f = 0,
+            mode = 0;
+          for (let side = 0; side < 2; side++) {
+            const z = lam.L.z[k + side];
+            plyCheck(lam.m[k], st[0] + z * st[3], st[1] + z * st[4], st[2] + z * st[5], lam.a[k], pc);
+            if (pc.u > u) {
+              u = pc.u;
+              mode = pc.mode;
+            }
+            f = Math.max(f, pc.f);
+          }
+          const j = plyOff[v] + lam.idx[k];
+          plyU[j] += w * u;
+          plyF[j] += w * f;
+          plyW[j] += w;
+          if (u > plyTop[j]) {
+            plyTop[j] = u;
+            plyMode[j] = mode;
+          }
+        }
       for (let face = 0; face < 2; face++) {
         const z = face ? -e.t : 0;
         const ex = st[0] + z * st[3],
           ey = st[1] + z * st[4],
           gxy = st[2] + z * st[5];
-        const s: [number, number, number] = [Q[0] * ex + Q[1] * ey, Q[3] * ex + Q[4] * ey, Q[8] * gxy];
+        // a laminate's faces are its outer and inner plies, at their own angles
+        const q = lam ? (face ? lam.qBot : lam.qTop) : Q;
+        const s: [number, number, number] = [q[0] * ex + q[1] * ey + q[2] * gxy, q[3] * ex + q[4] * ey + q[5] * gxy, q[6] * ex + q[7] * ey + q[8] * gxy];
         tensor(e.fr.R, s, nS, 12 * v + 6 * face, w);
         const ez = -nuz * (ex + ey);
         tensor(e.fr.R, [ex, ey, gxy], nE, 12 * v + 6 * face, w, 2);
@@ -901,6 +1123,13 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     }
     // membrane forces per width at the centre, for buckling
     shellStrains(e.loc, [1 / 3, 1 / 3, 1 / 3], ql[ei], st);
+    if (lam) {
+      const { A, B } = lam.L;
+      const N = new Float64Array(3);
+      for (let r = 0; r < 3; r++) for (let c = 0; c < 3; c++) N[r] += A[3 * r + c] * st[c] + B[3 * r + c] * st[3 + c];
+      memN.push(N);
+      return;
+    }
     const t = e.t;
     const a1 = t,
       b1 = -(t * t) / 2;
@@ -916,6 +1145,21 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
       nE[12 * v + k] /= nW[v];
     }
   }
+  // per node: its worst ply's utilisation (and which ply, and how it fails) and its worst stress along the fibres
+  const nodeU = new Float64Array(nn),
+    nodeF = new Float64Array(nn);
+  const nodePly = new Int32Array(nn);
+  for (let v = 0; v < nn; v++)
+    for (let j = plyOff[v]; j < plyOff[v + 1]; j++) {
+      if (!(plyW[j] > 0)) continue;
+      const u = plyU[j] / plyW[j],
+        f = plyF[j] / plyW[j];
+      if (u > nodeU[v]) {
+        nodeU[v] = u;
+        nodePly[v] = j - plyOff[v];
+      }
+      nodeF[v] = Math.max(nodeF[v], f);
+    }
   const cycles = inp.cycles;
   const allow = inp.materials.map((m) => allowableStress(m, cycles));
   const vmN = new Float64Array(2 * nn);
@@ -943,7 +1187,49 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     const area = els.slice(s.el0, s.el0 + s.elN).reduce((x, e) => x + e.fr.area, 0);
     const tMean = els.slice(s.el0, s.el0 + s.elN).reduce((x, e) => x + e.t * e.fr.area, 0) / area;
     const al = allow[inp.parts[s.pi].material].value;
-    return { part: inp.parts[s.pi].name, kind: s.kind, t: tMean, tMin: Math.min(...ts), tMax: Math.max(...ts), area, elements: s.elN, stress, at, safety: stress > 0 ? Math.min(al / stress, 1e6) : 1e6 };
+    const out: ShellPartResult = { part: inp.parts[s.pi].name, kind: s.kind, t: tMean, tMin: Math.min(...ts), tMax: Math.max(...ts), area, elements: s.elN, stress, at, safety: stress > 0 ? Math.min(al / stress, 1e6) : 1e6 };
+    const pp = partPlies.get(s.pi);
+    if (!pp) return out;
+    // the first ply to fail, each ply's own worst, and the worst stress along the fibres
+    let worst = 0,
+      wv = s.node0,
+      fWorst = 0,
+      fv = s.node0;
+    const per = pp.list.map(() => ({ u: 0, mode: 0 }));
+    for (let v = s.node0; v < s.node0 + s.mesh.P.length / 3; v++) {
+      if (nodeU[v] > worst) {
+        worst = nodeU[v];
+        wv = v;
+      }
+      if (nodeF[v] > fWorst) {
+        fWorst = nodeF[v];
+        fv = v;
+      }
+      for (let k = 0; k < pp.list.length; k++) {
+        const j = plyOff[v] + k;
+        if (!(plyW[j] > 0)) continue;
+        const u = plyU[j] / plyW[j];
+        if (u > per[k].u) per[k] = { u, mode: plyMode[j] };
+      }
+    }
+    const k = nodePly[wv];
+    const q = pp.list[k];
+    const failure = PLY_FAILURES[per[k].mode];
+    const sf = (u: number) => (u > 0 ? Math.min(1 / u, 1e6) : 1e6);
+    out.safety = sf(worst);
+    out.plies = {
+      label: inp.parts[s.pi].shell!.plies!.label,
+      fibre: fibreWords(pp.field),
+      stack: pp.list.map((p) => ({ angle: p.angle, material: p.m.label, t: p.t, ...(p.zone ? { zone: p.zone } : {}) })),
+      t: pp.t,
+      first: { safety: out.safety, ply: k + 1, angle: q.angle, material: q.m.label, failure, strength: failureStrength(q.m, failure), at: sub(posOf(wv), scale(normalOf(wv), Math.min(q.depth, nT[wv]))) },
+      fibreSafety: sf(fWorst),
+      fibreAt: posOf(fv),
+      perPly: pp.list.map((p, i) => ({ ply: i + 1, angle: p.angle, material: p.m.label, safety: sf(per[i].u), failure: PLY_FAILURES[per[i].mode], ...(p.zone ? { zone: p.zone } : {}) })),
+      squeezed: area > 0 ? pp.squeezedA / area : 0,
+      fallback: pp.field.fallback,
+    };
+    return out;
   });
 
   // ---- fields on the parts' own surfaces ----
@@ -994,6 +1280,7 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
       strain = new Float32Array(nv),
       safety = new Float32Array(nv).fill(1e6);
     const al = allow[p.material].value;
+    const plied = partPlies.has(pi);
     const sp: Spot[] = [];
     for (let v = 0; v < nv; v++) {
       const q: V3 = [P[3 * v], P[3 * v + 1], P[3 * v + 2]];
@@ -1041,7 +1328,10 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
       }
       stress[v] = vm;
       strain[v] = ep;
-      safety[v] = vm > 0 ? Math.min(al / vm, 1e6) : 1e6;
+      if (plied) {
+        const u = w[0] * nodeU[verts[0]] + w[1] * nodeU[verts[1]] + w[2] * nodeU[verts[2]];
+        safety[v] = u > 0 ? Math.min(1 / u, 1e6) : 1e6;
+      } else safety[v] = vm > 0 ? Math.min(al / vm, 1e6) : 1e6;
       const q: V3 = [P[3 * v], P[3 * v + 1], P[3 * v + 2]];
       const dm = len(u);
       if (dm > maxDisp.value) maxDisp = { value: dm, at: q };
@@ -1064,7 +1354,10 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
     if (po.stress > maxStress.value) maxStress = { value: po.stress, at: po.at };
     if (po.safety < minSafety.value) {
       const mi = inp.parts[pi].material;
-      minSafety = { value: po.safety, at: po.at, mode: allow[mi].basis, allowable: allow[mi].value, material: inp.materials[mi].name };
+      const f = po.plies?.first;
+      minSafety = f
+        ? { value: po.safety, at: f.at, mode: "ply", allowable: f.strength, material: f.material, ply: { index: f.ply, angle: f.angle, failure: f.failure } }
+        : { value: po.safety, at: po.at, mode: allow[mi].basis, allowable: allow[mi].value, material: inp.materials[mi].name };
     }
   }
   for (let n = 0; n < nn; n++) {
@@ -1076,13 +1369,18 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
   // hot spots: the highest stresses, at least a few elements apart
   const hotSpots: StructuralResult["hotSpots"] = [];
   {
-    const cand = [...Array(nn).keys()].map((v) => ({ v, s: Math.max(vmN[2 * v], vmN[2 * v + 1]) })).sort((a, b) => b.s - a.s);
+    // how hard each node is worked: its stress over the allowable, or a composite wall's worst ply
+    const utilOf = (v: number, sv: number) => (partPlies.has(nodePart[v]) ? nodeU[v] : sv / allow[inp.parts[nodePart[v]].material].value);
+    const cand = [...Array(nn).keys()].map((v) => {
+      const sv = Math.max(vmN[2 * v], vmN[2 * v + 1]);
+      return { v, s: sv, u: utilOf(v, sv) };
+    });
+    cand.sort((a, b) => (partPlies.size ? b.u - a.u : b.s - a.s));
     for (const c of cand) {
-      if (hotSpots.length >= 5 || !(c.s > 0)) break;
+      if (hotSpots.length >= 5 || !(c.s > 0) || !(c.u > 0)) break;
       const p = vmN[2 * c.v] >= vmN[2 * c.v + 1] ? posOf(c.v) : backOf(c.v);
       if (hotSpots.some((h) => len(sub(h.at, p)) < 4 * hMean)) continue;
-      const mi = inp.parts[nodePart[c.v]].material;
-      hotSpots.push({ at: p, stress: c.s, safety: Math.min(allow[mi].value / c.s, 1e6) });
+      hotSpots.push({ at: p, stress: c.s, safety: Math.min(1 / c.u, 1e6) });
     }
   }
   let maxTurn = 0;
@@ -1173,13 +1471,48 @@ export function runShells(inp: StructuralInput, progress: Progress = () => undef
   const lam = partOut.filter((p) => p.kind === "laminate");
   const sheets = partOut.filter((p) => p.kind !== "laminate");
   const tText = (p: ShellPartResult) => (p.tMax - p.tMin > 0.05 * p.t ? `${fmt(p.tMin, 2)} to ${fmt(p.tMax, 2)} mm` : `${fmt(p.t, 2)} mm`);
-  for (const p of lam) notes.push(`${p.part} as a ${tText(p)} laminate under its outer surface (${p.elements.toLocaleString("en")} shell triangles)`);
-  for (const p of sheets) notes.push(`${p.part} as its ${tText(p)} ${p.kind === "sheet" ? "sheet" : "wall"} on one face (${p.elements.toLocaleString("en")} shell triangles)`);
-  if (lam.length) notes.push("the laminate is taken as even and quasi-isotropic: its plies' directions are not modelled, and the factory builds it up at joints and bearing seats, so stresses there come out higher than in the real part");
+  const tris = (p: ShellPartResult) => `${p.elements.toLocaleString("en")} shell triangles`;
+  const zoneWords = (p: ShellPliesResult) => {
+    const zones = [...new Set(p.stack.filter((q) => q.zone).map((q) => q.zone!))];
+    return zones.length ? `, with more plies in ${zones.join(", ")}` : "";
+  };
+  for (const p of lam)
+    notes.push(
+      p.plies
+        ? `${p.part} as its plies under its outer surface: ${p.plies.label}, ${fmt(p.plies.t, 2)} mm, 0° ${p.plies.fibre}${zoneWords(p.plies)} (${tris(p)})`
+        : `${p.part} as a ${tText(p)} laminate under its outer surface (${tris(p)})`,
+    );
+  for (const p of sheets)
+    notes.push(
+      p.plies
+        ? `${p.part} as its ${tText(p)} ${p.kind === "sheet" ? "sheet" : "wall"} on one face, laid as ${p.plies.label} with 0° ${p.plies.fibre}${zoneWords(p.plies)} (${tris(p)})`
+        : `${p.part} as its ${tText(p)} ${p.kind === "sheet" ? "sheet" : "wall"} on one face (${tris(p)})`,
+    );
+  if (lam.some((p) => !p.plies))
+    notes.push("the laminate is taken as even and quasi-isotropic: its plies' directions are not modelled (give them with layup:), and the factory builds it up at joints and bearing seats, so stresses there come out higher than in the real part");
+  if (partOut.some((p) => p.plies))
+    notes.push(
+      "each ply is checked at its top and bottom by Tsai–Wu against typical strengths for its material: its first crack (first-ply failure), usually in the resin and well before fibres break. A data sheet's values for the prepreg bought replace them for sign-off. Stress between the plies (interlaminar shear, and peel at edges and joints) and the cure's own stresses are not modelled",
+    );
+  for (const p of partOut) {
+    const q = p.plies;
+    if (!q) continue;
+    if (q.squeezed > 0.01) notes.push(`where ${p.part}'s walls meet inside it (${fmt(q.squeezed * 100, 0)} % of its area) its plies are taken thinner, to fit`);
+    const pp = partPlies.get(inp.parts.findIndex((x) => x.name === p.part));
+    if (p.kind !== "laminate" && pp && pp.fitted > 0.1) notes.push(`${p.part}'s plies add to ${fmt(pp.t, 2)} mm; they are taken as thick as its ${tText(p)} wall`);
+    if (q.fallback > 0.02)
+      warnings.push(`The 0° direction asked for runs nearly square to ${p.part}'s wall over ${fmt(q.fallback * 100, 0)} % of it; its 0° plies follow the part there instead. Give fibre: a direction that lies along the wall.`);
+  }
   if (ties.length) notes.push(`the parts are joined where they touch (${ties.length} points), as if bonded`);
   if (residual > 1e-6) warnings.push(`The shell solve left a residual of ${residual.toExponential(1)}; a part may be close to moving freely somewhere.`);
 
-  const materials = inp.materials.map((m: MechMaterial, i) => ({ name: m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed }));
+  // a material only plied walls use is their plies
+  const plyNames = (i: number) => {
+    const users = inp.parts.flatMap((p, pi) => (p.material === i ? [pi] : []));
+    if (!users.length || !users.every((pi) => partPlies.has(pi))) return null;
+    return `plies of ${[...new Set(users.flatMap((pi) => partPlies.get(pi)!.list.map((q) => q.m.label)))].join(" and ")}`;
+  };
+  const materials = inp.materials.map((m: MechMaterial, i) => ({ name: plyNames(i) ?? m.name, E: m.E, yield: m.yield, allowable: allow[i].value, basis: allow[i].basis, layerFactor: m.layerFactor, assumed: !!m.assumed }));
   if (inp.parts.some((p) => p.print)) warnings.push("Printed layers are not modelled in shells: the walls are taken as solid material.");
   const tEnd = now();
   progress("Shells: done", 1);

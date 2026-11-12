@@ -15,7 +15,8 @@ import { joulePower, solveCurrent, type CurrentGrid, type CurrentSolve } from ".
 import { rhoAt, type ElectricMaterial } from "../electricMaterials";
 import { amps, ohms } from "../thermalSummary";
 export type { ResultVolume } from "./volume";
-import type { BoltResult, ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec, TouchingSpec, TouchResult } from "../spec";
+import type { AirLoadResult, AirLoadSpec, BoltResult, ContactResult, FloorSpec, LoadSpec, MassSpec, RegionSpec, SupportSpec, TopologySpec, TouchingSpec, TouchResult } from "../spec";
+import { airSamples, airScale, nearestSample } from "./airLoads";
 import { isoSurface, optimise, profileLoops, smoothSurface, surfaceStats, TopologyError, type Loop, type TopologyRun } from "./topology";
 import { lowestModes } from "./modal";
 import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
@@ -25,8 +26,10 @@ import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, t
 import { bucklingModes } from "./buckling";
 import { corotate, elementFrame, internalForce, largeEffect, maxTurn, solveLarge, turnVoigt } from "./large";
 import { runBeams, type BeamMember, type BeamResult } from "./beams";
+import type { PlyFailure } from "./laminate";
 import { runShells, ShellFallback, type ShellPart, type ShellResult } from "./shells";
-import { FINISHES, criticalStress, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
+import { FINISHES, criticalStress, cyclesAt, damageOf, damageShares, peakScale, snCurve, strengthAt as snStrengthAt, type FatigueInput, type Finish, type LoadCycle, type MeanStress, type SnCurve } from "./fatigue";
+import { shakeResponse, type ShakeAnswer } from "./vibration";
 
 export class FeaError extends Error {}
 
@@ -136,6 +139,50 @@ export interface StructuralInput {
   elementsAuto?: boolean;
   /** warnings the input step found (a carbon layup solved as solid), put in front of the result's own */
   inputWarnings?: string[];
+  /**
+   * a sine sweep from lo to hi Hz: the supports shaken at accel g along dir, or (no accel) the loads going up and
+   * down at every frequency; needs modes
+   */
+  shake?: { lo: number; hi: number; accel?: number; dir?: V3 };
+  /** random shaking of the supports along dir: base acceleration spectrum points (Hz, g²/Hz); needs modes */
+  random?: { points: [number, number][]; dir: V3 };
+  /** damping ratio of the modes when shaken (default 0.02) */
+  damping?: number;
+  /** how long it is shaken, s: the stresses are judged for that many cycles (unset: 10⁷, running for good) */
+  duration?: number;
+  /** the shaking's S-N curves: each material's surface finish (default machined) and the reliability (default 50 %) */
+  shakeLife?: { finishes: Finish[]; reliability: number };
+}
+
+/** A sine sweep or random shaking, answered from the modes. */
+export interface VibrationResult {
+  kind: "sine" | "random";
+  /** the base's shaking direction (none: the loads go up and down) */
+  dir?: V3;
+  /** sine: the base acceleration amplitude, g (or 1 for the loads as written); random: the overall level, g rms */
+  level: number;
+  lo: number;
+  hi: number;
+  damping: number;
+  /** modes used, the highest one's frequency, and the share of the mass they move along the shaking */
+  modes: number;
+  topFreq: number;
+  massShare: number;
+  /** sine: amplitude across the band (largest movement and stress anywhere) at each frequency */
+  curve?: { f: number[]; disp: number[]; stress: number[] };
+  /** sine: the frequency the stresses are shown at (the worst one), and how many times the slow answer it shakes */
+  at?: number;
+  gain?: number;
+  /** random: 1σ (RMS) largest movement and von Mises stress; the stresses shown are 3σ */
+  rms?: { disp: number; stress: number; at: V3 };
+  /** random: how often the worst stress swings, Hz (zero crossings upward) */
+  nu0?: number;
+  /** cycles the stresses are judged for, and the fatigue life at the worst spot, s (Infinity: it does not wear out) */
+  cycles: number;
+  life: number;
+  lifeAt: V3;
+  /** the worst spot's material, for the life's words */
+  lifeMaterial: string;
 }
 
 /** The large-deflection solve: how far the parts turned, and how it went. */
@@ -342,6 +389,14 @@ export interface DropResult {
   com: V3;
 }
 
+/** The result of a sine sweep or random shaking: what vibration.ts answered, less the fields (they are the result's). */
+function vibrationOf(v: ShakeAnswer, cycles: number): VibrationResult {
+  const { u: _u, S: _S, ...rest } = v;
+  void _u;
+  void _S;
+  return { ...rest, cycles };
+}
+
 /**
  * Peak response of an undamped oscillator to a half-sine pulse, relative to the same acceleration held
  * still (the shock response spectrum), for a pulse lasting tau of the oscillator's periods. About 4·tau
@@ -413,7 +468,7 @@ export interface StructuralResult {
   volume: number;
   /** at: centroid of the loaded surface (a torque's centre for torques); vector: net force; axis: a torque's axis */
   /** pressure: for a bearing load, the peak of its cosine spread (in the middle of the side it presses), MPa */
-  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3; pressure?: number }[];
+  loads: { kind: LoadSpec["t"]; region: string; at: V3; vector: V3; magnitude: number; area: number; nodes: number; axis?: V3; pressure?: number; air?: AirLoadResult }[];
   supports: {
     region: string;
     dir?: V3;
@@ -467,6 +522,8 @@ export interface StructuralResult {
   beams?: BeamResult;
   /** the walls as shells, when the analysis used shell elements */
   shells?: ShellResult;
+  /** a sine sweep or random shaking: the stresses and movement shown are its amplitude (sine) or 3σ (random) */
+  vibration?: VibrationResult;
 }
 
 /** The same analysis solved twice, the second time with smaller elements. */
@@ -495,10 +552,17 @@ export interface ConvergencePoint {
 }
 
 export type SafetyAt = Located & {
-  /** what it is judged against: yield, the strength between print layers, fatigue (in the bulk or between layers) */
-  mode: "yield" | "fatigue" | "layers" | "layer fatigue";
+  /**
+   * what it is judged against: yield, the strength between print layers, fatigue (in the bulk or between layers), or a
+   * composite ply's own strengths (Tsai–Wu: the factor on the loads that cracks it)
+   */
+  mode: "yield" | "fatigue" | "layers" | "layer fatigue" | "ply";
+  /** the strength it fails against, MPa (a ply: its strength in the way it fails) */
   allowable: number;
+  /** the material there (a ply: the ply's material) */
   material: string;
+  /** the composite ply that fails first: its number from the outside (1 is the outer ply), its angle and how it fails */
+  ply?: { index: number; angle: number; failure: PlyFailure };
   /** the temperature there, °C, when the analysis has heat (the allowable is derated for it) */
   tempC?: number;
   /** in a printed part's sparse infill, whose strength is a share of the solid's (the allowable is lowered for it) */
@@ -663,6 +727,18 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (inp.drop && (temps || inp.buckling)) throw new FeaError(`A drop works out its own forces from the fall; check ${temps ? "heat and temperatures" : "buckling"} in a separate analysis.`);
   if (inp.fatigue && (inp.drop || temps || inp.modes)) throw new FeaError(`Check fatigue in a separate analysis from the ${inp.drop ? "drop" : temps ? "heat and temperatures" : "natural frequencies"}.`);
   if (inp.fatigue && !inp.fatigue.cycles.length) throw new FeaError("The fatigue history has no load cycles in it.");
+  // shaking is answered from the modes, with the parts as they are (glued, small deflection, no other loads)
+  const shaking = !!(inp.shake || inp.random);
+  if (shaking) {
+    if (inp.shake && inp.random) throw new FeaError("Give a sine sweep (shake:) or random shaking (random:), not both; check each in an analysis of its own.");
+    if (!inp.modes) throw new FeaError("Shaking is answered from the natural frequencies: give modes: (up to 12).");
+    const other = inp.drop ? "a drop" : temps ? "temperatures" : inp.fatigue ? "a fatigue history" : inp.buckling ? "buckling" : inp.topology ? "topology optimisation" : inp.touching ? "touching parts" : inp.preload?.length ? "tightened bolts" : inp.large ? "large deflection" : moved ? "a support moved a set distance (displace)" : null;
+    if (other) throw new FeaError(`Shaking is answered from the natural frequencies with the parts glued and bending a little, which ${other} cannot follow; check ${other} in an analysis of its own.`);
+    const base = !!inp.random || inp.shake?.accel !== undefined;
+    if (base && (inp.loads.length || inp.accel)) throw new FeaError("Shaking the supports moves the parts by their own inertia, so leave out load:, gravity and accel:; check the loads in an analysis of their own.");
+    if (!base && !inp.loads.length) throw new FeaError("A sweep without an acceleration makes the loads go up and down at every frequency, so it needs load:; or give the supports' shaking, like sine(10Hz, 500Hz, 2g, Z).");
+    if (!base && inp.accel) throw new FeaError("A sweep of the loads makes them go up and down at every frequency; gravity does not, so leave out gravity and accel: here.");
+  }
   if (inp.topology) {
     const other = temps ? "heat and temperatures" : inp.drop ? "a drop" : inp.modes ? "natural frequencies" : inp.buckling ? "buckling" : inp.fatigue ? "fatigue" : inp.converge ? "an accuracy check" : null;
     if (other) throw new FeaError(`Optimise the shape (topology:) in an analysis of its own, apart from ${other}; then check the shape you make from it with those.`);
@@ -1232,7 +1308,75 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const f = new Float64Array(3 * nn);
   const loadInfo: StructuralResult["loads"] = [];
   const loadNodes: number[] = [];
+  // the air on the parts from an airflow run: each face of the grid's surface takes the pressure and friction nearest it
+  const faceArea = [hy * hz, hy * hz, hx * hz, hx * hz, hx * hy, hx * hy];
+  const halfStep = [hx / 2, hx / 2, hy / 2, hy / 2, hz / 2, hz / 2];
+  const airLoad = (ld: AirLoadSpec, i: number) => {
+    const fld = ld.field;
+    if (!fld) throw new FeaError(`Load ${i + 1} (air from "${ld.analysis}") has no airflow result to take its pressures from: the airflow analysis "${ld.analysis}" has to run first.`);
+    const R: V3 = [0, 0, 0];
+    const at: V3 = [0, 0, 0];
+    let atW = 0;
+    let area = 0;
+    const touched = new Set<number>();
+    const parts: AirLoadResult["parts"] = [];
+    for (const ap of fld.parts) {
+      const idx = partsByName.get(ap.name);
+      if (!idx) continue;
+      const mine = new Set(idx);
+      const S = airSamples(ap, hmax, 2.5 * hmax);
+      const nodeF = new Map<number, V3>();
+      const got: V3 = [0, 0, 0];
+      let wet = 0;
+      for (let k = 0; k < faces.fe.length; k++) {
+        const e = faces.fe[k];
+        if (!mine.has(owner[e])) continue;
+        const d = faces.fd[k];
+        const nrm = FACE_NORMAL[d];
+        const ei = e % nx,
+          ej = Math.floor(e / nx) % ny,
+          ek = Math.floor(e / (nx * ny));
+        const c: V3 = [origin[0] + (ei + 0.5) * hx + nrm[0] * halfStep[d], origin[1] + (ej + 0.5) * hy + nrm[1] * halfStep[d], origin[2] + (ek + 0.5) * hz + nrm[2] * halfStep[d]];
+        const s = nearestSample(S, c, nrm);
+        if (s < 0) continue;
+        const A = faceArea[d];
+        // pressure pushes into the surface; friction drags along it over the true surface's share of the stepped face
+        const share = Math.abs(S.nrm[3 * s] * nrm[0] + S.nrm[3 * s + 1] * nrm[1] + S.nrm[3 * s + 2] * nrm[2]);
+        const cp = S.cp[s];
+        const F: V3 = [fld.q * A * (-cp * nrm[0] + share * S.cf[3 * s]), fld.q * A * (-cp * nrm[1] + share * S.cf[3 * s + 1]), fld.q * A * (-cp * nrm[2] + share * S.cf[3 * s + 2])];
+        for (let q = 0; q < 3; q++) got[q] += F[q];
+        wet += A * share;
+        const n0 = elemNode0(e);
+        for (const a of FACE_CORNERS[d]) {
+          const n = n0 + off[a];
+          let v = nodeF.get(n);
+          if (!v) nodeF.set(n, (v = [0, 0, 0]));
+          for (let q = 0; q < 3; q++) v[q] += F[q] / 4;
+        }
+      }
+      // surface pressures read low next to the force the run measured from the flow: scale them to it
+      const sc = airScale(got, ap.force);
+      for (const [n, v] of nodeF) {
+        for (let q = 0; q < 3; q++) {
+          f[3 * n + q] += v[q] * sc;
+          R[q] += v[q] * sc;
+        }
+        const m = Math.hypot(v[0], v[1], v[2]) * sc;
+        const p = nodePos(n);
+        for (let q = 0; q < 3; q++) at[q] += p[q] * m;
+        atW += m;
+        touched.add(n);
+        loadNodes.push(n);
+      }
+      area += wet;
+      parts.push({ name: ap.name, force: [got[0] * sc, got[1] * sc, got[2] * sc], measured: ap.force, scale: sc, area: wet });
+    }
+    if (!touched.size) throw new FeaError(`Load ${i + 1} (air from "${ld.analysis}"): none of the analysed parts' surface was in that run's air. Analyse the parts it puts in the air.`);
+    const centre: V3 = atW > 0 ? [at[0] / atW, at[1] / atW, at[2] / atW] : nodePos(touched.values().next().value as number);
+    loadInfo.push({ kind: "air", region: `the air from ${ld.analysis}`, at: centre, vector: R, magnitude: Math.hypot(...R), area, nodes: touched.size, air: { analysis: ld.analysis, yaw: fld.yaw, speed: fld.speed, runSpeed: fld.runSpeed, q: fld.q, parts, left: fld.left } });
+  };
   inp.loads.forEach((ld, i) => {
+    if (ld.t === "air") return airLoad(ld, i);
     const sel = select(ld.region);
     if (!sel.nodes.length) throw new FeaError(`Load ${i + 1} (${ld.t} on ${describeRegion(ld.region)}) does not touch the part's surface. Move the zone onto the part.`);
     const tot = sel.w.reduce((s, v) => s + v, 0);
@@ -1785,6 +1929,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   };
   let modal: ModalResult | undefined;
   let shapes: Float64Array[] = [];
+  /** the free mass along X, Y and Z, t (what shaking the supports pushes on) */
+  let freeMass: V3 = [0, 0, 0];
   if (inp.modes) {
     progress("Finding natural frequencies", 0.25);
     const tm = now();
@@ -1824,6 +1970,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     });
     if (!sol.converged) warnings.push(`The frequency solver stopped at a residual of ${sol.residual.toExponential(1)}; frequencies may be off by a few percent.`);
     modal = { modes, mass: ((mtot[0] + mtot[1] + mtot[2]) * 1e6) / 3, iterations: sol.iterations, residual: sol.residual, converged: sol.converged, ms: now() - tm };
+    freeMass = mtot;
   }
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
@@ -2158,6 +2305,94 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     };
     if (felt > 0 && felt < 1) warnings.push("The landing is soft enough that the drop barely loads the parts.");
   }
+  // ---------- shaking: a sine sweep or random vibration, answered from the modes ----------
+  // Each node's stress is averaged over the elements round it like any other result, so the modes' stresses add up
+  // with the modes: worked out once per mode, then combined at every frequency (vibration.ts).
+  let vib: ShakeAnswer | undefined;
+  let vibCurves: SnCurve[] | null = null;
+  if (shaking && modal && shapes.length) {
+    progress("Shaking it", 0.88);
+    const life = inp.shakeLife;
+    const curves = inp.materials.map((m, i) => snCurve(m, life?.finishes[i] ?? "machined", life?.reliability ?? 0.5));
+    vibCurves = curves;
+    // each node's material: that of the element filling most of it
+    const matN = new Int16Array(nn);
+    const fillN = new Float32Array(nn);
+    for (let e = 0; e < ne; e++) {
+      if (!active[e]) continue;
+      const n0 = elemNode0(e);
+      for (let a = 0; a < 8; a++) {
+        const n = n0 + off[a];
+        if (fill[e] > fillN[n]) {
+          fillN[n] = fill[e];
+          matN[n] = matOf(e);
+        }
+      }
+    }
+    const wN = new Float64Array(nn);
+    const ueV = new Float64Array(24);
+    const egV = new Float64Array(6);
+    const sgV = new Float64Array(48);
+    const stressOf = (v: Float64Array, out: Float64Array) => {
+      out.fill(0);
+      wN.fill(0);
+      for (let e = 0; e < ne; e++) {
+        if (!active[e]) continue;
+        const n0 = elemNode0(e);
+        for (let a = 0; a < 8; a++) {
+          const d = 3 * (n0 + off[a]);
+          ueV[3 * a] = v[d];
+          ueV[3 * a + 1] = v[d + 1];
+          ueV[3 * a + 2] = v[d + 2];
+        }
+        const Ee = inp.materials[matOf(e)].E * kfac[e] * kPrint[e];
+        const me = emOf(e);
+        for (let g = 0; g < 8; g++) {
+          const T = me.strainGauss[g];
+          for (let r = 0; r < 6; r++) {
+            let s = 0;
+            for (let j = 0; j < 24; j++) s += T[r * 24 + j] * ueV[j];
+            egV[r] = s;
+          }
+          for (let r = 0; r < 6; r++) {
+            let s = 0;
+            for (let c = 0; c < 6; c++) s += me.D[r * 6 + c] * egV[c];
+            sgV[6 * g + r] = Ee * s;
+          }
+        }
+        const w = fill[e];
+        for (let a = 0; a < 8; a++) {
+          const n = n0 + off[a];
+          for (let r = 0; r < 6; r++) {
+            let s = 0;
+            for (let g = 0; g < 8; g++) s += em.extrap[a * 8 + g] * sgV[6 * g + r];
+            out[6 * n + r] += w * s;
+          }
+          wN[n] += w;
+        }
+      }
+      for (let n = 0; n < nn; n++) if (wN[n] > 0) for (let r = 0; r < 6; r++) out[6 * n + r] /= wN[n];
+    };
+    vib = shakeResponse(
+      {
+        nn,
+        shapes,
+        w: modal.modes.map((md) => 2 * Math.PI * md.freq),
+        gamma: modal.modes.map((md) => md.gamma),
+        massAlong: freeMass,
+        stressOf,
+        nodePos,
+        fatigueAt: (n) => curves[matN[n]].se,
+        cyclesAt: (n, sv) => cyclesAt(curves[matN[n]], sv),
+        materialAt: (n) => inp.materials[matN[n]].name,
+        ...(inp.shake && inp.shake.accel === undefined ? { force: fs } : {}),
+        progress: (fr) => progress("Shaking it", 0.88 + 0.04 * fr),
+      },
+      { shake: inp.shake, random: inp.random, damping: inp.damping, duration: inp.duration },
+      warnings,
+    );
+    u = vib.u;
+  }
   progress("Recovering stresses", 0.92);
 
   // reactions: full K·u at held dofs (with large deflection, the force the turned elements push back with)
@@ -2248,6 +2483,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   /** the part that has the most of each node, and the share of the solid's strength there (a printed part's infill is weaker) */
   const nodePart = new Int16Array(nn).fill(-1);
   const nodeStr = new Float64Array(nn);
+  /** shaking: each node's stiffness (the elements' moduli, weighted like the stresses), for its strains */
+  const nodeEe = vib ? new Float64Array(nn) : null;
   const ue = new Float64Array(24);
   const sg = new Float64Array(48);
   const eg = new Float64Array(48);
@@ -2324,12 +2561,32 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       }
       nodeW[n] += w;
       if (nodeWE && !loose) nodeWE[n] += w;
+      if (nodeEe) nodeEe[n] += w * Ee;
       nodeStr[n] += w * sPrint[e];
       if (w > nodeMatW[n]) {
         nodeMatW[n] = w;
         nodeMat[n] = matOf(e);
         nodePart[n] = owner[e];
       }
+    }
+  }
+
+  // shaking: the stress shown at each node is its own peak over a cycle (sine) or 3σ (random), not the movement's
+  // snapshot; the strains follow from it (the weights are taken off with the rest below)
+  if (vib && nodeEe) {
+    const S = vib.S;
+    for (let n = 0; n < nn; n++) {
+      const w = nodeW[n];
+      if (!(w > 0)) continue;
+      const wE = nodeWE ? nodeWE[n] || 1 : w;
+      const o = 6 * n;
+      const E = Math.max(nodeEe[n] / w, 1e-9);
+      for (let r = 0; r < 6; r++) nodeS[o + r] = S[o + r] * w;
+      const [a, b, c] = [S[o], S[o + 1], S[o + 2]];
+      nodeE[o] = ((a - nu * (b + c)) / E) * wE;
+      nodeE[o + 1] = ((b - nu * (a + c)) / E) * wE;
+      nodeE[o + 2] = ((c - nu * (a + b)) / E) * wE;
+      for (let r = 3; r < 6; r++) nodeE[o + r] = ((2 * (1 + nu) * S[o + r]) / E) * wE;
     }
   }
 
@@ -2368,7 +2625,17 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   // ---------- nodal results ----------
   const fat = inp.fatigue ? fatigueSetup(inp.fatigue) : null;
   // with fatigue, the static check is against yield at the history's peak, and fatigue gets its own life and safety
-  const allow = inp.materials.map((m) => (fat ? { value: m.yield, basis: "yield" as const } : allowableStress(m, inp.cycles)));
+  /** shaking: the cycles its stresses are judged for (a count given in cycles:, the duration's, or for good) */
+  const vibCycles = vib ? (inp.cycles ?? vib.cycles) : 0;
+  const allow = inp.materials.map((m, i) =>
+    fat
+      ? { value: m.yield, basis: "yield" as const }
+      : vibCurves
+        ? vibCycles <= 1e3
+          ? { value: m.yield, basis: "yield" as const }
+          : { value: Math.min(snStrengthAt(vibCurves[i], vibCycles), m.yield), basis: "fatigue" as const }
+        : allowableStress(m, inp.cycles),
+  );
   /** the largest and smallest scale of the loads over the history (1 and 1 for a static load) */
   const sHi = fat ? fat.hi : 1,
     sLo = fat ? fat.lo : 1;
@@ -2746,7 +3013,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       `Peak stress (${fmt(vm[iS], 1)} MPa) is above the yield strength of ${yieldNode.name} (${fmt(yieldThere, 1)} MPa${nodeT ? ` at ${fmt(nodeT[iS], 0)} °C` : ""}): the part would bend permanently or break, and stresses beyond yield are not physical.`,
     );
   for (const m of inp.materials) if (m.assumed && matCount[inp.materials.indexOf(m)] > 0) warnings.push(m.note ?? `No strength data for ${m.name}.`);
-  if (Math.hypot(...applied) > 0 && equilibrium > 0.02) warnings.push(`Reactions balance the loads only to ${fmt(equilibrium * 100, 1)}%.`);
+  if (!vib && Math.hypot(...applied) > 0 && equilibrium > 0.02) warnings.push(`Reactions balance the loads only to ${fmt(equilibrium * 100, 1)}%.`);
 
   const pos = (n: number): V3 => (n >= 0 ? nodePos(n) : [0, 0, 0]);
   /** a node's safety factor and what it is judged against: the lowest of all, the static one or the fatigue one */
@@ -2773,7 +3040,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     };
   };
   const safetyNearBC = iF >= 0 && !!nearBC[iF];
-  if (!fat && iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
+  if (!fat && !vib && iF >= 0 && sfMode[iF] !== 1 && allow[nodeMat[iF]].basis === "fatigue")
     warnings.push("Fatigue strengths are for polished test pieces. Rough, printed or machined surfaces, notches and threads lower them, often by half, so keep a generous margin.");
   let fatigue: FatigueResult | undefined;
   let staticSafety: StructuralResult["staticSafety"];
@@ -2899,6 +3166,7 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     ...(touching ? { touching } : {}),
     ...(boltResults ? { bolts: boltResults } : {}),
     ...(largeResult ? { large: largeResult } : {}),
+    ...(vib ? { vibration: vibrationOf(vib, vibCycles) } : {}),
   };
 
   // ----- helpers that need the closure -----
@@ -3122,6 +3390,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       );
     // every load still has the shape under it
     inp.loads.forEach((ld, i) => {
+      // the air presses on whatever surface the shape has
+      if (ld.t === "air") return;
       const nodes = select(ld.region).nodes;
       const touches = nodes.some((n) => {
         const ii = n % NX,

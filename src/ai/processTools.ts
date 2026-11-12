@@ -143,7 +143,9 @@ function parseSettings(id: ProcessId, raw: Record<string, unknown>): { settings:
                     ? `one of ${sd.options?.join(", ")}`
                     : sd.kind === "tools"
                       ? `up to ${MAX_TOOLS} [diameter, reach] pairs in mm`
-                      : "a non-negative number"
+                      : sd.kind === "plies"
+                        ? 'plies written in the design, like process: mfg.carbon_layup(plies: [plies("[0/±45/90]s")]) (edit the part\'s source)'
+                        : "a non-negative number"
         }`,
       );
   }

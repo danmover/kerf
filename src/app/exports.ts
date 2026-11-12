@@ -5,7 +5,8 @@ import { detailKernel, kernel } from "../kernel/client";
 import { meshes, useDesign, whenChecked, whenRefined } from "../core/engine";
 import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
-import { buildDirection, buildPack, orientForPrint } from "../machine/pack";
+import { configVerdict, familyTableCsv, readConfig, type ConfigVerdict } from "../core/configs";
+import { buildPack } from "../machine/pack";
 import { boardSpecs } from "../machine/boards";
 import { boardProblems, gerberZip, routeBoards } from "../machine/boardPack";
 import { safeName } from "../machine/pcb/gerber";
@@ -23,8 +24,10 @@ import type { MeshData } from "../kernel/build";
 import { xformMatrix } from "../kernel/recipe";
 // as zipFiles, so it can sit beside the build pack's own zip() from machine/zip
 import { zip as zipFiles } from "../persist/zip";
-import { layoutPlate, meshBounds, threeMfFiles, translation, writeObj, type PlacedMesh } from "../persist/meshFormats";
-import { briefData, processInfo } from "../core/brief";
+import { threeMfFiles, writeObj, type PlacedMesh } from "../persist/meshFormats";
+import { platePrinter, printJob } from "./printPlates";
+import { fmtGrams, fmtPrintTime, plateMatrix } from "../mfg/printPlan";
+import { userMachines } from "../mfg/userMachines";
 import { appearanceFor } from "../ui/viewport/render/appearance";
 import { markSvg } from "../ui/logoGeometry";
 import { briefSummary, designStats, massText, sizeText } from "./designStats";
@@ -250,44 +253,143 @@ function uniqueMade(items: Placed[]) {
   return [...byHash.values()];
 }
 
-/** Every made part on one print plate, turned the way it prints and repeated as many times as the design uses it. */
+/** Every printed part on as many print plates as it takes, turned the way it prints and repeated as many times as the design uses it. */
 export async function export3mfPlate(selectionOnly = false) {
-  const items = await placedMeshes(selectionOnly, madePart);
-  if (!items) return;
-  const unique = uniqueMade(items);
-  const brief = briefData(useDesign.getState().model?.brief);
-  const bed = brief?.buildVolume ?? processInfo(brief?.process)?.volume ?? [220, 220, 250];
-  // each part turned the way the build pack prints it: onto its largest flat face, or along its process's build direction
-  const copies = unique.flatMap((u) => {
-    const o = orientForPrint(u.mesh, buildDirection(u.part));
-    const mesh: MeshData = { positions: o.positions, indices: o.indices, normals: new Float32Array(0), edges: new Float32Array(0) };
-    const box = meshBounds(mesh);
-    return Array.from({ length: u.qty }, () => ({ ...u, mesh, box }));
+  return exportPlates({ selectionOnly });
+}
+
+const listNames = (xs: string[]) => (xs.length <= 3 ? xs.join(", ") : `${xs.slice(0, 3).join(", ")} and ${xs.length - 3} more`);
+
+/**
+ * The printed parts (visible ones, or the selection) packed onto print plates for the printer from Settings → Making
+ * (or `printer`), each turned the way it prints and repeated as many times as the design uses it: one .3mf for a
+ * single plate (or `plate`), a .zip with a .3mf a plate for more. They open in PrusaSlicer, Bambu Studio, Cura and Orca.
+ */
+export async function exportPlates(opts: { selectionOnly?: boolean; all?: boolean; plate?: number; nozzles?: number; printer?: string } = {}) {
+  const selectionOnly = !!opts.selectionOnly && !opts.all;
+  // all: every printed part, shown or hidden in the view (the Make panel's plates)
+  const parts = opts.all ? null : visibleParts(selectionOnly);
+  if (parts && !parts.length) return toast({ kind: "warn", title: "Nothing to export", detail: selectionOnly ? "Select one or more parts first." : "The design has no visible parts." });
+  await whenRefined();
+  const model = useDesign.getState().model;
+  const keep = parts && new Set(parts.map((p) => p.id));
+  const printer = platePrinter(userMachines(), model, opts.printer);
+  const job = printJob(model, printer, { only: keep ? (p) => keep.has(p.id) : undefined, nozzles: opts.nozzles });
+  const { plan } = job;
+  if (!plan.copies.length) {
+    return toast(
+      job.waiting.length
+        ? { kind: "warn", title: "The geometry is still building", detail: "Try again in a moment." }
+        : { kind: "warn", title: "Nothing to print", detail: job.other.length ? `${listNames(job.other.map((p) => p.label))} print on a resin or powder printer, not on plates.` : selectionOnly ? "The selection has no parts to make." : "The design has no parts to make." },
+    );
+  }
+  const plates = opts.plate !== undefined ? plan.plates.filter((_, i) => i === opts.plate) : plan.plates;
+  if (!plates.length) return toast({ kind: "warn", title: "No such plate", detail: `The design prints on ${plan.plates.length} plate${plan.plates.length === 1 ? "" : "s"}.` });
+  // one mesh a part, so its copies are one 3MF object placed several times
+  const meshOf = new Map<number, MeshData>();
+  const meshFor = (k: number) => {
+    let m = meshOf.get(k);
+    if (!m) {
+      const c = plan.copies.find((x) => x.part === k)!;
+      meshOf.set(k, (m = { positions: c.positions, indices: c.indices, normals: new Float32Array(0), edges: new Float32Array(0) }));
+    }
+    return m;
+  };
+  const files: { name: string; data: Uint8Array<ArrayBuffer> }[] = [];
+  for (const pl of plates) {
+    const n = plan.plates.indexOf(pl) + 1;
+    const placed: PlacedMesh[] = pl.places.map((q) => {
+      const c = plan.copies[q.item];
+      // copies share one object, named for the part they all are
+      return { name: plan.parts[c.part].name, color: c.color, material: c.material, mesh: meshFor(c.part), matrix: plateMatrix(c, q) };
+    });
+    files.push({ name: safeFileName(`${baseName()} plate ${n} ${pl.materials.join(" + ")}`, "3mf"), data: await zipFiles(threeMfFiles(placed, `${baseName()} plate ${n}`)) });
+  }
+  const one = plates.length === 1;
+  if (one) download(files[0].data, plan.plates.length === 1 ? safeFileName(baseName() + " print plate" + suffix(selectionOnly), "3mf") : files[0].name, "model/3mf");
+  else download(await zipFiles(files, { compress: false }), safeFileName(baseName() + " print plates" + suffix(selectionOnly), "zip"), "application/zip");
+  const copies = plates.reduce((a, p) => a + p.places.length, 0);
+  const grams = plates.reduce((a, p) => a + p.grams, 0);
+  const hours = plates.reduce((a, p) => a + p.hours, 0);
+  const notes: string[] = [];
+  const big = plan.tooBig.filter((i) => plates.some((p) => p.places.some((q) => q.item === i)));
+  if (big.length) notes.push(`${listNames(big.map((i) => plan.copies[i].name))} ${big.length === 1 ? "is" : "are"} bigger than the bed: split ${big.length === 1 ? "it" : "them"} or use a bigger printer.`);
+  if (job.waiting.length) notes.push(`Still building, left off: ${listNames(job.waiting)}.`);
+  if (job.other.length) notes.push(`${listNames(job.other.map((p) => p.label))} print on a resin or powder printer, not here.`);
+  if (job.allMade) notes.push("No part names a printing process or a filament, so every made part is on the plates in its own material.");
+  toast({
+    kind: big.length ? "warn" : "success",
+    title: one ? (plan.plates.length === 1 ? "Print plate exported" : `Plate ${plan.plates.indexOf(plates[0]) + 1} exported`) : `${plates.length} print plates exported`,
+    detail:
+      `${copies} part${copies === 1 ? "" : "s"} on ${one ? "a" : `${plates.length}`} ${printer.bed[0]} × ${printer.bed[1]} mm bed${one ? "" : "s"} (${printer.name}), each turned to print on a flat face, in their colours: about ${fmtGrams(grams)} g of filament and ${fmtPrintTime(hours)}.` +
+      (notes.length ? " " + notes.join(" ") : " Opens in PrusaSlicer, Bambu Studio, Cura and Orca."),
   });
-  const spots = layoutPlate(
-    copies.map((c) => ({ w: c.box.max[0] - c.box.min[0], d: c.box.max[1] - c.box.min[1] })),
-    bed[0],
+}
+
+/** Final meshes for parts of another reading of the design (a configuration): the ones built already, the rest built now. */
+async function meshesFor(parts: EvalPart[]): Promise<Map<string, MeshData>> {
+  const out = new Map<string, MeshData>();
+  const need: EvalPart[] = [];
+  for (const p of parts) {
+    const have = meshes.get(p.hash)?.final;
+    if (have) out.set(p.hash, have);
+    else if (!need.some((q) => q.hash === p.hash)) need.push(p);
+  }
+  if (!need.length) return out;
+  const job = kernel.build(
+    need.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
+    "final",
+    (r) => out.set(r.hash, r.mesh),
+    () => undefined,
   );
-  // centre the layout on the bed
-  const extentX = Math.max(...copies.map((c, i) => spots[i].x + c.box.max[0] - c.box.min[0]));
-  const extentY = Math.max(...copies.map((c, i) => spots[i].y + c.box.max[1] - c.box.min[1]));
-  const ox = Math.max(0, (bed[0] - extentX) / 2);
-  const oy = Math.max(0, (bed[1] - extentY) / 2);
-  const placed: PlacedMesh[] = copies.map((c, i) => ({
-    name: c.part.name,
-    color: c.part.color,
-    material: c.part.material,
-    mesh: c.mesh,
-    matrix: translation(ox + spots[i].x - c.box.min[0], oy + spots[i].y - c.box.min[1], -c.box.min[2]),
-  }));
-  const data = await zipFiles(threeMfFiles(placed, baseName()));
-  download(data, safeFileName(baseName() + " print plate" + suffix(selectionOnly), "3mf"), "model/3mf");
-  const tooBig = extentX > bed[0] + 0.5 || extentY > bed[1] + 0.5;
-  toast(
-    tooBig
-      ? { kind: "warn", title: "Print plate exported, but it is bigger than the bed", detail: `${copies.length} parts need ${Math.round(extentX)} × ${Math.round(extentY)} mm. Split them across plates in your slicer.` }
-      : { kind: "success", title: "Print plate exported", detail: `${copies.length} part${copies.length === 1 ? "" : "s"}, each turned to print on a flat face, on a ${bed[0]} × ${bed[1]} mm bed in their colours. Opens in PrusaSlicer, Bambu Studio, Cura and Orca.` },
-  );
+  await job.done;
+  return out;
+}
+
+const configBusy = { on: false };
+
+/**
+ * Every configuration at once: a folder each with an STL per part to make (named with how many) and its parts list,
+ * and the family table (configurations.csv) with how each reads against the requirements.
+ */
+export async function exportConfigurations() {
+  const { model, source } = useDesign.getState();
+  const table = model?.configs;
+  if (!model || !table?.rows.length) return toast({ kind: "warn", title: "No configurations to export", detail: 'Add a configs block (configs { config "Large" { width: 80 } }) or save the current values as one in the Parameters tab.' });
+  if (configBusy.on) return;
+  configBusy.on = true;
+  const t = toast({ kind: "info", title: "Exporting every configuration…", detail: `Reading and building ${table.rows.length} configurations.` }, 0);
+  try {
+    const files: { name: string; data: Uint8Array | string }[] = [];
+    const results = new Map<string, ConfigVerdict>();
+    const broken: string[] = [];
+    let stls = 0;
+    for (const row of table.rows) {
+      const m = row.label === table.active ? model : readConfig(source, row.label);
+      const verdict = configVerdict(m, row.label);
+      results.set(row.label, verdict);
+      const folder = safeFileName(row.label, "x").replace(/\.x$/, "");
+      if (verdict.errors.length) {
+        broken.push(row.label);
+        files.push({ name: `${folder}/DOES NOT BUILD.txt`, data: `Read as ${row.label}, the design stops at:\n\n${verdict.errors.join("\n")}\n` });
+        continue;
+      }
+      const made = m.parts.filter((p) => madePart(p) && !p.hidden);
+      const built = await meshesFor(made);
+      const unique = uniqueMade(made.flatMap((part) => (built.has(part.hash) ? [{ part, mesh: built.get(part.hash)! }] : [])));
+      for (const u of unique) files.push({ name: `${folder}/${u.part.name}${u.qty > 1 ? ` x${u.qty}` : ""}.stl`, data: new Uint8Array(writeStl([{ mesh: u.mesh, xf: [] }], `Kerf: ${u.part.label} (${row.label})`)) });
+      stls += unique.length;
+      files.push({ name: `${folder}/parts list.csv`, data: bomCsv(m) });
+    }
+    files.push({ name: "configurations.csv", data: familyTableCsv(model, results) });
+    download(await zipFiles(files), safeFileName(`${baseName()} configurations`, "zip"), "application/zip");
+    toast({ kind: broken.length ? "warn" : "success", title: "Configurations exported", detail: `${table.rows.length} configurations, ${stls} STL files and the family table (configurations.csv).${broken.length ? ` ${broken.join(", ")} did not build: see its folder.` : ""}` }, broken.length ? 9000 : undefined);
+  } catch (e) {
+    toast({ kind: "error", title: "Could not export the configurations", detail: errorText(e) }, 9000);
+  } finally {
+    configBusy.on = false;
+    dismissToast(t);
+  }
 }
 
 /** One STL per made part, in the part's own coordinates, named with how many to print. */

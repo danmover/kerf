@@ -11,6 +11,7 @@ import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
 import { smoothFaceted } from "./meshSmooth";
 import { deleteFaces, moveFaces, pushPull, replaceFaces, targetPlane } from "./direct";
+import { fullRound, unevenChamfer, variableFillet } from "./rounds";
 
 export class BuildError extends Error {}
 
@@ -205,8 +206,32 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     case "mould":
       return buildMould(r, buildPart(r.part), (s) => applyXf(s, r.xf));
     case "part":
-      return applyXf(applyXf(buildPart(r.part, { detail }), r.xf), r.into ?? []);
+      return applyXf(applyXf(r.hash ? sharedPart(r.hash, r.part, detail) : buildPart(r.part, { detail }), r.xf), r.into ?? []);
   }
+}
+
+/**
+ * A part built once for the shapes made from it (the pieces of a split part): the last few, by geometry hash and
+ * detail. Each use gets its own handle on the same solid.
+ */
+const shared = new Map<string, Shape3D>();
+function sharedPart(hash: string, part: PartRecipe, detail: boolean): Shape3D {
+  const key = `${hash}|${detail ? "d" : "f"}`;
+  let s = shared.get(key);
+  if (!s) {
+    s = buildPart(part, { detail });
+    shared.set(key, s);
+    while (shared.size > 4) {
+      const [k, old] = shared.entries().next().value as [string, Shape3D];
+      shared.delete(k);
+      old.delete();
+    }
+  } else {
+    // most recently used last
+    shared.delete(key);
+    shared.set(key, s);
+  }
+  return s.clone() as Shape3D;
 }
 
 /** The flat pattern of a sheet-metal part, from the part as built: every hole and cut-out on its flat regions comes along. */
@@ -361,7 +386,7 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
     if (isTrap(e) || e instanceof BuildError) throw e;
     throw new BuildError(`The kernel could not build the body ${p.base.t}${p.baseName ? ` as ${p.baseName}` : ""} (step 1): ${errMsg(e)}.`);
   }
-  if (p.baseName) features.set(p.baseName, { name: p.baseName, kind: "body", tools: [shape] });
+  if (p.baseName) recordTool(features, p.baseName, "body", shape);
   let topo: Topo | null = null;
   const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
   const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && !runsUntil(op.shape) && (kind === "add" || !(detail && threadEnvelope(op.shape)));
@@ -393,7 +418,9 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
       const hint =
         op.op === "fillet" || op.op === "chamfer"
           ? " Try a smaller radius, pick fewer edges, or round the edges before cutting features that cross them."
-          : op.op === "shell"
+          : op.op === "full_round"
+            ? " A full round needs a wall or rim with two long sides the same distance apart; round it before cutting holes across it."
+            : op.op === "shell"
             ? " Shell needs a simple body; apply it before adding bosses or cutting holes."
             : op.op === "draft"
               ? " Draft planar or cylindrical faces before rounding their edges, and keep the angle small."
@@ -410,6 +437,21 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
 type BoolOp = PartOp & { op: "add" | "cut"; shape: ShapeRecipe; name?: string };
 
 /** Several adds or several cuts in one go. If the kernel balks, they are applied one at a time so the error names the step. */
+/**
+ * Keep a named step's tool for picking its edges and faces later. A step inside a use of the design's own feature is
+ * named for where it sits (boss#1.post: the post of the first boss), and counts toward each name it sits in (boss#1).
+ */
+function recordTool(features: Map<string, FeatureTools>, name: string, kind: string, tool: Shape3D) {
+  for (let n = name; ; ) {
+    const f = features.get(n);
+    if (f) f.tools.push(tool);
+    else features.set(n, { name: n, kind, tools: [tool] });
+    const dot = n.lastIndexOf(".");
+    if (dot <= 0) return;
+    n = n.slice(0, dot);
+  }
+}
+
 function applyBatch(shape: Shape3D, ops: BoolOp[], first: number, detail: boolean, features: Map<string, FeatureTools>): Shape3D {
   const tools = ops.map((op, k) => {
     try {
@@ -420,10 +462,7 @@ function applyBatch(shape: Shape3D, ops: BoolOp[], first: number, detail: boolea
     }
   });
   ops.forEach((op, k) => {
-    if (!op.name) return;
-    const f = features.get(op.name);
-    if (f) f.tools.push(tools[k]);
-    else features.set(op.name, { name: op.name, kind: op.op, tools: [tools[k]] });
+    if (op.name) recordTool(features, op.name, op.op, tools[k]);
   });
   const oc = R.getOC();
   const args = new oc.NCollection_List_TopoDS_Shape();
@@ -462,8 +501,12 @@ function opLabel(op: PartOp): string {
     case "shell":
       return `shell(${op.t})`;
     case "fillet":
-    case "chamfer":
-      return `${op.op}(${Array.isArray(op.r) ? `(${op.r.join(", ")})` : op.r}, edges: ${describeSel(op.edges)})`;
+    case "chamfer": {
+      const size = op.op === "fillet" && op.vary ? `[${op.vary.r.join(", ")}]` : Array.isArray(op.r) ? `(${op.r.join(", ")})` : String(op.r);
+      return `${op.op}(${size}${op.angle !== undefined ? `, angle: ${op.angle}` : ""}, edges: ${describeSel(op.edges)}${op.on ? `, on: ${describeSel(op.on)}` : ""})`;
+    }
+    case "full_round":
+      return `full_round(faces: ${describeSel(op.faces)})`;
     case "draft":
       return `draft(${op.angle}, faces: ${describeSel(op.faces)})`;
     case "push_pull":
@@ -485,11 +528,7 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
     case "cut":
     case "intersect": {
       const tool = runsUntil(op.shape) ? upToNext(shape, op.shape, op.op) : buildShape(op.shape, detail);
-      if (op.name) {
-        const f = features.get(op.name);
-        if (f) f.tools.push(tool);
-        else features.set(op.name, { name: op.name, kind: op.op, tools: [tool] });
-      }
+      if (op.name) recordTool(features, op.name, op.op, tool);
       if (op.op === "add") return shape.fuse(tool);
       if (op.op === "cut") {
         const env = detail ? threadEnvelope(op.shape) : null;
@@ -526,11 +565,20 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       for (const e of chosen) byHash.set(e.hashCode, [...(byHash.get(e.hashCode) ?? []), e]);
       const has = (e: R.Edge) => !!byHash.get(e.hashCode)?.some((x) => x.isSame(e));
       if (op.op === "fillet") {
+        if (op.vary) return checked(variableFillet(shape, chosen, op.vary));
         const r = op.r;
         return checked(shape.fillet((e) => (has(e) ? r : null)));
       }
+      if (op.on && (Array.isArray(op.r) || op.angle !== undefined)) return checked(unevenChamfer(shape, t, [...idx], op.r, op.on, op.angle));
       const r = Array.isArray(op.r) ? op.r[0] : op.r;
       return checked(shape.chamfer((e) => (has(e) ? r : null)));
+    }
+    case "full_round": {
+      const t = topo();
+      const idx = t.selectFaces(op.faces);
+      if (!idx.size) throw new BuildError(`faces: ${describeSel(op.faces)} matched no faces`);
+      if (idx.size > MAX_FULL_ROUNDS) throw new BuildError(`faces: ${describeSel(op.faces)} picks ${idx.size} faces, more than the ${MAX_FULL_ROUNDS} Kerf rounds over in one step`);
+      return checked(fullRound(shape, t, [...idx]));
     }
     case "draft": {
       const t = topo();
@@ -672,6 +720,8 @@ export function solidVolume(s: Shape3D): number {
 
 /** Most edges one fillet or chamfer takes: a knurl's 720 ridge edges take over a minute. */
 const MAX_ROUNDED_EDGES = 200;
+/** Most faces one full_round() rounds over. */
+const MAX_FULL_ROUNDS = 40;
 
 /** Fillet, chamfer, draft and shell can return a solid that looks right but is broken (later booleans fail). */
 function checked(s: Shape3D): Shape3D {

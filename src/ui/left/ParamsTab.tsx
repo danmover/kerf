@@ -19,6 +19,7 @@ import { Icon } from "../icons";
 import { G } from "./glyphs";
 import { autoRange, clampParam, displayUnit, isLiteral, paramImpacts, paramSections, roundTo, stepFor, type ParamImpact } from "./insights";
 import { CodeSample, Highlight } from "./bits";
+import { ConfigStrip } from "./ConfigStrip";
 
 export function ParamsTab({ filter }: { filter: string }) {
   const model = useDesign((s) => s.model);
@@ -49,6 +50,7 @@ export function ParamsTab({ filter }: { filter: string }) {
 
   return (
     <div className="lp-params">
+      {!filter && <ConfigStrip model={model} />}
       {filter && !shown.length && <div className="lp-nomatch">No parameters match “{filter}”.</div>}
       {shown.map((s, si) => (
         <section key={`${s.title}-${si}`} className="lp-psection">
@@ -223,6 +225,11 @@ function ParamRow({ p, gap, impact, open, onToggle, filter }: { p: EvalParam; ga
             {p.desc && (
               <span className="lp-pname">
                 <Highlight text={p.name} q={filter} />
+              </span>
+            )}
+            {p.config && (
+              <span className="lp-pconfig" data-tip={`The configuration “${p.config}” sets this value: changing it here changes that configuration`} data-tip-pos="top">
+                {p.config}
               </span>
             )}
             {failing > 0 && (

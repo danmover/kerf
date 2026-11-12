@@ -80,7 +80,66 @@ export type LoadSpec =
    * a force in N pushed onto a bore by what turns in it (or onto a shaft by its bearing), the region a cylinder zone:
    * spread over the half it presses on with a cosine, none at the sides; a share along the axis is spread evenly
    */
-  | { t: "bearing"; region: RegionSpec; f: V3 };
+  | { t: "bearing"; region: RegionSpec; f: V3 }
+  /** the air's pressure and friction from an airflow analysis's run, on every analysed part that was in the air */
+  | AirLoadSpec;
+
+/**
+ * air("Aero at 45 km/h"): an airflow analysis's surface pressures and skin friction as loads. One-way: the flow is the
+ * one the run found round the unbent parts.
+ */
+export interface AirLoadSpec {
+  t: "air";
+  /** the airflow analysis's label */
+  analysis: string;
+  /** which of the run's yaw angles, degrees (unset: its first) */
+  yaw?: number;
+  /** the air speed to load at, mm/s (unset: the run's own); pressures go as the speed squared */
+  speed?: number;
+  /** a factor on the air's loads, such as a gust factor */
+  scale: number;
+  /** the run's pressures on the analysed parts, filled in from the run before the solve */
+  field?: AirField;
+}
+
+/** One airflow run's pressures and friction on the analysed parts, ready for the solver. */
+export interface AirField {
+  /** the run's yaw, degrees, and the air speed the loads are at, m/s */
+  yaw: number;
+  speed: number;
+  /** the air speed the run itself was at, m/s */
+  runSpeed: number;
+  /** dynamic pressure ½ρv² times the scale, N/mm² */
+  q: number;
+  parts: AirPartField[];
+  /** parts in the air that this analysis leaves out, with the force the air puts on each at this speed, N */
+  left: { name: string; force: number }[];
+}
+
+export interface AirPartField {
+  /** the analysed part's name */
+  name: string;
+  /** its surface in the run (world mm, outward normals) with the pressure coefficient and the skin friction coefficient (xyz) at each point */
+  positions: Float32Array;
+  indices: Uint32Array;
+  normals?: Float32Array;
+  cp: Float32Array;
+  cf: Float32Array;
+  /** the force the run measured on it from the flow, N, world axes, at this speed and scale */
+  force: V3;
+}
+
+/** How an air load went on: the force on each part, and the factor that matched it to what the run measured. */
+export interface AirLoadResult {
+  analysis: string;
+  yaw: number;
+  /** the air speed the loads are at and the one the run was at, m/s; dynamic pressure with the scale, N/mm² */
+  speed: number;
+  runSpeed: number;
+  q: number;
+  parts: { name: string; force: V3; measured: V3; scale: number; area: number }[];
+  left: { name: string; force: number }[];
+}
 
 export type Resolution = "draft" | "standard" | "fine" | { h: number };
 
@@ -105,6 +164,34 @@ export interface ModalSpec {
   damping: number;
   /** printer moves: acceleration in mm/s² that sets the frame ringing after each move */
   ringing?: number;
+  /** a sine sweep answered from the modes */
+  shake?: SineSpec;
+  /** random shaking of the supports answered from the modes */
+  random?: RandomSpec;
+  /** how long it is shaken, s: its stresses are judged for that many cycles (unset: running for good, 10⁷) */
+  duration?: number;
+  /** the shaking's fatigue: the surface (unset: from how each part is made) and the chance it lasts (default 50 %) */
+  finish?: Finish;
+  reliability?: number;
+}
+
+/**
+ * A sine sweep: the supports shaken back and forth at accel g along dir at every frequency from lo to hi Hz in turn,
+ * or, with no accel, the loads going up and down at every frequency.
+ */
+export interface SineSpec {
+  lo: number;
+  hi: number;
+  accel?: number;
+  dir?: V3;
+  label: string;
+}
+
+/** Random shaking of the supports along dir: a base acceleration spectrum, (Hz, g²/Hz) joined straight on log-log axes. */
+export interface RandomSpec {
+  points: [number, number][];
+  dir: V3;
+  label: string;
 }
 
 /** A floor: stiff ones by their elastic modulus, soft ones by how much they give per area. */
@@ -383,6 +470,13 @@ export interface StructuralSpec {
    * its own is analysed as beams, and carbon layups and sheet parts on their own as shells
    */
   elements?: "beams" | "solid" | "shells";
+  /**
+   * composite plies for the carbon layups analysed (as shells): stacks laid from the outer surface inward, each for
+   * every layup or one part, and more plies inside them over zones; in place of an even quasi-isotropic laminate
+   */
+  layup?: PliesSpec[];
+  /** where the plies' 0° runs: "auto" (along the tubes on a part made of tubes, else along its length), "tubes", or a direction */
+  fibre?: "auto" | "tubes" | V3;
   /** topology optimisation: find the stiffest shape for these loads that keeps a share of the parts' material */
   topology?: TopologySpec;
   /** touching parts as contacts (pressed, parting, sliding) instead of glued */
@@ -390,6 +484,26 @@ export interface StructuralSpec {
   /** bolts tightened before the loads */
   preload?: PreloadSpec;
   span: Span;
+}
+
+/** plies("[0/±45/90]s", "carbon"): a stack of composite plies, from the outside in. */
+/** What a plies() value is (its object's kind), wherever it is given: an analysis's layup: or a carbon layup's process. */
+export const PLIES_KIND = "ply stack";
+
+export interface PliesSpec {
+  /** each ply's angle from 0°, degrees, counterclockwise seen from outside; the first is the outer ply */
+  angles: number[];
+  /** ply material (PLY_MATERIALS key) */
+  material: string;
+  /** ply thickness, mm (unset: the material's) */
+  t?: number;
+  /** only this part (unset: every carbon layup analysed) */
+  part?: string;
+  /** added inside the stack over this region only: reinforcement at a joint, a bearing seat or a bolt */
+  zone?: RegionSpec;
+  /** the stack as written, like "[0/±45/90]s" */
+  code: string;
+  label: string;
 }
 
 /**

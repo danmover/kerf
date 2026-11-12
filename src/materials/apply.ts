@@ -26,7 +26,8 @@ export const blockPart = (model: Model, block: string) => model.parts.find((p) =
  */
 export function withMaterial(src: string, model: Model, block: string, choice: MaterialChoice): { src: string; changes: string[] } {
   const part = blockPart(model, block);
-  if (!part) return { src, changes: [] };
+  // a placed design's part takes its material in that design
+  if (!part || part.insert) return { src, changes: [] };
   const changes: string[] = [];
   let out = src;
   // the process first, while the model's spans still match the text; parts marked process: false keep that

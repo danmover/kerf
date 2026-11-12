@@ -18,9 +18,11 @@ import { useView, requestCamera, select, toggleCode, showGroups, soloGroup, type
 import { partGroups } from "../app/partGroups";
 import { useSettings, updateSettings, LIGHTING_IDS, SPEEDS } from "../app/settings";
 import { openSettings, useUi, toast, type SettingsTab } from "../app/ui";
-import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject } from "../app/project";
+import { undo, redo, closeProject, duplicateProject, flushPending, useProject, createProject, openProject, openBranch, projectBranches } from "../app/project";
+import { openBranchNamed, startMerge, startNewBranch } from "./left/Branches";
 import { currentTheme, setTheme } from "../app/theme";
 import { EXPORT_FORMATS, EXPORT_GROUPS, runExport } from "../app/exportFormats";
+import { showConfiguration } from "../app/configs";
 import { openFilmMaker } from "../film/store";
 import { openFrameDialog } from "./FrameDialog";
 import { openCam } from "../cam/job";
@@ -28,6 +30,7 @@ import { openSheets } from "../cam/sheetJob";
 import { startMatePick } from "./viewport/PickLayer";
 import { fastenFrames } from "../app/frameFasten";
 import { importStepFiles } from "../app/imports";
+import { placeDesignHere } from "../app/placeDesign";
 import { DXF_ACCEPT, importDxfFiles, insertDxfIntoSketch, pickDxf } from "../app/dxf";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
@@ -41,6 +44,8 @@ import { BUILD_APP_ASK } from "./apps/AppsPanel";
 import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
+import { openSchematic } from "./MachinePanel";
+import { openPrintPlates } from "./make/MakePanel";
 import { RulerIcon, toggleMeasure } from "./viewport/MeasureTool";
 import { FilterIcon, openSetNamer, recallSet } from "./viewport/PickLayer";
 import { toggleHandles, useHandles } from "./viewport/HandlesLayer";
@@ -88,7 +93,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   overview: { detail: "Status, the brief, the design at a glance and recent changes", keywords: "summary status dashboard home at a glance" },
   brief: { detail: "What it's for, where it's used and what it must survive: each becomes a check", keywords: "requirements uses spec specification purpose goals constraints" },
   checks: { detail: "Every check on the design, and why it passes or fails", keywords: "tests problems errors warnings failing issues interference validate verify" },
-  analysis: { detail: "Strength (frames as beams, carbon layups and sheet metal as shells), contact between touching parts, tightened bolts, fatigue life, drop, vibration, heat and current (Joule heating), buckling, topology optimisation, design studies, airflow, gear and bike rule runs", keywords: "preload bolt preload bolt tension pretension pre-tension tightened bolts tightening torque bolted joint clamp load clamping force joint separation joint opening joint slip slip resistance proof load vdi 2230 contact touching parts touch frictional frictionless friction coefficient mu sliding slip separation gap lift off no separation rough bonded glued contact pressure contact status nonlinear contact assembly contact topology optimisation optimization generative design lightweighting lighten remove material truss organic shape simp preserve min member dxf profile fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy design study optimise optimize sweep fatigue life cycles s-n sn curve endurance goodman rainflow load history miner durability infill walls perimeters print settings printed layers anisotropic orthotropic pin hinge pinned support bearing load bore spring elastic support rubber feet pad foundation set displacement prescribed displacement push snap fit clip force to push large deflection geometric nonlinearity nonlinear geometry big deflection flexure bending far corotational beam elements beams frame analysis truss weldment analysis member forces axial force bending moment euler buckling strut column shell elements shells thin wall thin-walled laminate carbon layup composite monocoque carbon frame stiffness sheet metal bracket stress panel buckling plate buckling skin ripple wrinkling joule heating electric current busbar bus bar resistance resistive heating heater element i2r i²r voltage drop current density ampacity fuse wire" },
+  analysis: { detail: "Strength (frames as beams, carbon layups and sheet metal as shells, composite plies checked by Tsai–Wu), contact between touching parts, tightened bolts, fatigue life, drop, vibration (sine sweeps and random shaking), heat and current (Joule heating), buckling, topology optimisation, design studies, airflow, air loads from an airflow run into strength, gear and bike rule runs", keywords: "air load air loads aero loads aerodynamic loads wind load from airflow pressure map fluid structure interaction fsi one-way fsi one way coupling cfd to fea cfd loads pressure mapping map pressures surface pressure loads gust factor downforce on wing spoiler load sign wind load fairing load preload bolt preload bolt tension pretension pre-tension tightened bolts tightening torque bolted joint clamp load clamping force joint separation joint opening joint slip slip resistance proof load vdi 2230 contact touching parts touch frictional frictionless friction coefficient mu sliding slip separation gap lift off no separation rough bonded glued contact pressure contact status nonlinear contact assembly contact topology optimisation optimization generative design lightweighting lighten remove material truss organic shape simp preserve min member dxf profile fea stress airflow aero wind results analyses thermal temperature heat buckling accuracy mesh convergence check accuracy design study optimise optimize sweep fatigue life cycles s-n sn curve endurance goodman rainflow load history miner durability infill walls perimeters print settings printed layers anisotropic orthotropic pin hinge pinned support bearing load bore spring elastic support rubber feet pad foundation set displacement prescribed displacement push snap fit clip force to push large deflection geometric nonlinearity nonlinear geometry big deflection flexure bending far corotational beam elements beams frame analysis truss weldment analysis member forces axial force bending moment euler buckling strut column shell elements shells thin wall thin-walled laminate carbon layup composite monocoque carbon frame stiffness sheet metal bracket stress panel buckling plate buckling skin ripple wrinkling joule heating electric current busbar bus bar resistance resistive heating heater element i2r i²r voltage drop current density ampacity fuse wire harmonic response frequency response sine sweep sine vibration shaker table shake test resonance dwell transmissibility base excitation random vibration psd power spectral density grms g rms navmat truck transport ride vibration test steinberg three band miles equation 3 sigma vibration fatigue composite plies ply layup lay-up stacking sequence ply book ply schedule ply angle fibre direction fiber direction fibre orientation fiber orientation tsai-wu tsai wu first ply failure first-ply failure lamination theory classical laminate theory clt abd matrix unidirectional ud prepreg woven twill 3k quasi-isotropic quasi isotropic 0/45/90 ply drop reinforcement patch t700 t800 m40j e-glass glass fibre fibreglass aramid kevlar matrix cracking fibre breakage" },
   build: {
     title: "Build: electronics and wiring",
     detail: "Wiring, boards, power, calculations, firmware and tests for a machine",
@@ -123,7 +128,7 @@ const TAB_FIND: Record<string, { title?: string; detail: string; keywords: strin
   params: { title: "Parameters", detail: "The sizes you can scrub, grouped as in the design", keywords: "params dimensions sizes variables sliders values" },
   sketches: { detail: "2D profiles with dimensions and constraints", keywords: "sketch profile 2d constraints outline" },
   decisions: { title: "Design decisions", detail: "The choices made, and the options not taken", keywords: "options alternatives choices tradeoffs trade offs" },
-  history: { detail: "Every version: compare and restore", keywords: "versions undo restore compare timeline revisions changes" },
+  history: { detail: "Every version: compare and restore, and branches to try things on and merge", keywords: "versions undo restore compare timeline revisions changes branch branches merge" },
 };
 
 const SETTINGS_FIND: { tab: SettingsTab; title: string; detail: string; keywords: string }[] = [
@@ -217,6 +222,35 @@ export function findItems(ctx: FindContext): FindItem[] {
       push({ id: `left:${t.id}`, group: "Panels", title: f?.title ?? cap(t.label), detail: f?.detail, keywords: f?.keywords, icon: t.icon, pane: "model", run: () => useView.setState({ leftTab: t.id }) });
     }
 
+    // ── branches ──
+    const proj = useProject.getState().current;
+    if (proj) {
+      const list = projectBranches(proj);
+      const open = openBranch(proj);
+      const here = list.find((b) => b.id === open);
+      const toHistory = () => useView.setState({ leftTab: "history" });
+      push({
+        id: "branch:new",
+        group: "Project",
+        title: "New branch",
+        detail: "Try something on a branch of its own: what you do there stays off this line until you merge it back",
+        keywords: "branch branches new branch fork try idea experiment alternative variant option workspace sandbox git version control what if",
+        icon: <Icon.Branch size={14} />,
+        pane: "model",
+        run: () => (toHistory(), startNewBranch()),
+      });
+      for (const b of list)
+        if (b.id !== open)
+          push({ id: `branch:open:${b.id}`, group: "Project", title: `Switch to the branch “${b.name}”`, detail: b.from ? `Made from ${list.find((x) => x.id === b.from)?.name ?? "main"}` : "The design's main line", keywords: "branch switch checkout open change branch", icon: <Icon.Branch size={14} />, pane: "model", run: () => (toHistory(), void openBranchNamed(b.id)) });
+      const parent = here?.from ? list.find((b) => b.id === here.from) : undefined;
+      if (here && parent) {
+        push(
+          { id: "branch:merge", group: "Project", title: `Merge “${here.name}” into ${parent.name}`, detail: "Bring what changed on this branch into the one it came from; places both changed ask which to keep", keywords: "merge branch merge into main combine bring back integrate pull request three way 3-way", icon: <Icon.Merge size={14} />, pane: "model", run: () => (toHistory(), void startMerge(here.id, parent.id)) },
+          { id: "branch:take", group: "Project", title: `Take ${parent.name}'s changes into “${here.name}”`, detail: "Bring what changed on the branch this came from into it, so it stays up to date", keywords: "update branch rebase sync pull merge from main catch up", icon: <Icon.Merge size={14} />, pane: "model", run: () => (toHistory(), void startMerge(parent.id, here.id)) },
+        );
+      }
+    }
+
     // ── modelling ──
     const sketching = useSketch.getState();
     push(
@@ -244,6 +278,31 @@ export function findItems(ctx: FindContext): FindItem[] {
       { id: "model:fasten-frames", group: "Model", title: "Fasten frame joints", detail: "Corner brackets with screws and T-nuts at every 2020 or 2040 frame joint nothing holds yet, without Claude", keywords: "fasten frame joints corner brackets gusset t-nuts tee nuts screws extrusion v-slot 2020 2040 join profiles", icon: <Icon.Screw size={14} />, run: () => void fastenFrames() },
       { id: "model:cutlist", group: "Model", title: "Cut list", detail: "Lengths to cut for every frame, their end cuts and the bars to buy (under the parts list)", keywords: "cut list cutting list saw lengths stock bars frame members weldment extrusion", icon: <Icon.List size={14} />, run: () => useView.setState({ dockTab: "bom", dockOpen: true }) },
       { id: "model:step", group: "Model", title: "Import a STEP file", detail: "Bring in a part from another CAD tool to design around", keywords: "import step stp cad file part load open", icon: <Icon.Upload size={14} />, run: pickStep },
+      // another of your designs, placed in this one as a subassembly
+      ...useProject
+        .getState()
+        .projects.filter((p) => p.id !== useProject.getState().current?.id)
+        .slice(0, 30)
+        .map(
+          (p): FindItem => ({
+            id: `model:place:${p.id}`,
+            group: "Model",
+            title: `Place ${p.name} in this design`,
+            detail: "As one subassembly that updates when you change it, read with the sizes you give it",
+            keywords: `place insert put add design project subassembly sub-assembly assembly reuse reused another existing derived part component module library ${p.name}`,
+            icon: <Icon.Layers size={14} />,
+            run: () => placeDesignHere(p.id),
+          }),
+        ),
+      ask(
+        "ask:place-design",
+        "Model",
+        "Make part of this a design of its own",
+        "Split out a subassembly you want to reuse (a motor mount, a wheel module) so other designs can place it",
+        "subassembly sub-assembly assembly module reuse reusable library derived part shared part split out extract another project design",
+        'Pick the subassembly in this design that would be worth reusing in other designs (say which and why), and tell me how to make it a design of its own: its parameters, what stays here, and the component mount = design("...") line that places it back here.',
+        <Icon.Layers size={14} />,
+      ),
       { id: "model:dxf", group: "Model", title: "Import a DXF drawing as a sketch", detail: "A laser-cut part, a flat pattern or an outline from another CAD tool: its lines, arcs, circles and curves come in joined and fixed, ready to make solid", keywords: "import dxf dwg drawing 2d outline profile sketch autocad librecad qcad inkscape illustrator laser cut cnc router waterjet plasma flat pattern sheet vector logo trace extrude plate", icon: <Icon.Upload size={14} />, run: pickDxfSketch },
       { id: "model:mesh", group: "Model", title: "Import a mesh (STL, OBJ or 3MF)", detail: "A downloaded model, a print or a scan: Kerf repairs the mesh, makes it a solid you can cut, fasten to and check, and finds its holes", keywords: "import mesh stl obj 3mf wavefront triangles printables thingiverse makerworld download scan scanned 3d scan photogrammetry bambu prusa slicer model print convert mesh to solid brep repair fix holes", icon: <Icon.Upload size={14} />, run: pickStep },
       ask("ask:fix-up", "Model", "Fix it up", "After modelling by hand: Claude makes it fit, build and pass the checks", "tidy clean repair hand made manual", FIX_IT_UP, <Icon.Sparkle size={14} />),
@@ -268,11 +327,17 @@ export function findItems(ctx: FindContext): FindItem[] {
     // ── making ──
     push(
       ask("ask:mould", "Make", "Make a mould", "A two-part printed mould made from the part with mould(): keys, bolts, pour hole and vents", "mould mold casting cast resin silicone urethane polyurethane", "Make a two-part mould for the part I want to cast (ask me which if it isn't clear) with mould(): registration keys, clamping bolts, a pour hole and vents, split where it releases cleanly, and check it opens.", <Icon.Factory size={14} />),
+      ask("ask:rounds", "Make", "Fillets that change, full rounds and uneven chamfers", "fillet([1, 4]) grows along an edge, full_round() rounds a rib or rim right over, between() rounds where two sets of faces meet, chamfer((3, 1), on:) or angle: cuts an uneven bevel", "variable radius fillet varying fillet changing radius taper fillet full round fillet round over bullnose rib top rounded rim face fillet between faces blend asymmetric chamfer unequal chamfer distance angle chamfer two distance chamfer setback", "Look at the parts' edges and rib tops: round rib tops, rims and handles right over with full_round(), make fillets grow where a load or flow needs it with a list of radii, blend face sets with between(), and use uneven chamfers where one face needs a longer lead-in.", <Icon.Fillet size={14} />),
+      ask("ask:configs", "Model", "Make sizes or variants of the design", "Keep S, M and L (or left and right, 2 or 4 bays) in one file as configurations, each checked and exported", "configurations configuration variants variant sizes size range family table family of parts design table small medium large versions options models S M L left hand right hand", "Turn this design into a family of configurations: pick the parameters that make the variants worth having (sizes, counts, hands), add a configs block with a row for each and a note on what each is for, show the main one, then check every configuration reads cleanly and fix any that fails.", <Icon.Layers size={14} />),
+      ask("ask:ownfeatures", "Model", "Make your own feature or function", "Write a detail you use again and again (a boss, a tab, a vent row) once, then use it in any part with its own sizes", "custom feature custom features user feature user defined feature library feature featurescript udf user defined function function functions fn macro reuse reusable repeat same detail template snippet boss tab mounting tab vent row helper formula", "Find the details this design repeats (screw bosses, tabs, ribs with their fillets, hole patterns) and write each once as a feature (or a value worked out the same way as a fn), with parameters for what changes, then use them in the parts where they go, keep each part's look and checks the same, and tell me what you made.", <Icon.Layers size={14} />),
+      ask("ask:split", "Make", "Split a part to fit the printer", "Cut a part too big for the bed into pieces with split:, lined up on dowel pins placed where it is solid", "split cut into pieces too big for the bed too large build volume print in pieces sections segments halves join dowel pins alignment pins glue together split body split part multi-body bodies", "Find the parts too big for their printer's bed and make each in pieces with split: (the fewest that fit, joined on dowel pins), choosing cuts where the part is solid and plain, then check every piece fits and every joint has its pins.", <Icon.Factory size={14} />),
       ask("ask:enclosure", "Make", "Make an enclosure", "Two printed shells with a lip and groove, screw posts, vents and openings for the connectors", "enclosure case box housing shell lid lip groove tongue joint parting line vents honeycomb fan grille", "Make a printed enclosure for the electronics in this design (ask me which board if it isn't clear): two shells split where it assembles easily, joined with lip_groove(), screw_boss posts with inserts, vents() where parts get warm, openings for every connector, and check every board mounts and fits.", <Icon.Cube size={14} />),
       ask("ask:sheet", "Make", "Make it from sheet metal", "Bent parts with sheet(): bend radii, reliefs, flat patterns and a laser DXF", "sheet metal bend fold brake laser flat pattern dxf aluminium steel chassis", "Rebuild the parts that suit it as bent sheet metal with sheet(): real bend radii and reliefs, flat patterns with bend tables and a DXF for laser cutting, and check every bend and flange.", <Icon.Layers size={14} />),
-      ask("ask:carbon", "Make", "Plan a carbon fibre layup", "Ply book, orientations, weights and how it comes out of the mould", "carbon fibre fiber composite layup ply prepreg monocoque", "Plan the carbon fibre layup for the carbon parts: a ply book with orientations and weights, where the mould splits, and how each part comes out of it.", <Icon.Layers size={14} />),
+      ask("ask:sheetforms", "Make", "Hem, roll, jog or add louvres to sheet metal", "Folded-back safe edges, curled edges, flanges stepped past a mating part, and vents pressed into the sheet", "hem hems hemmed edge folded edge safe edge teardrop hem open hem closed hem roll rolled edge curl curled edge hinge knuckle jog joggle offset flange stepped flange louvre louvres louver louvers vent vents pressed vent cooling slots enclosure ventilation turret punch form tool forming tool sheet metal", "Finish the sheet() parts' edges and vents as a fabricator would: hem or roll the exposed edges people handle, jog flanges that lap over a mating part, and give enclosures louvres instead of cut slots where they need air, then check the flat patterns and the room round every form.", <Icon.Layers size={14} />),
+      ask("ask:carbon", "Make", "Plan a carbon fibre layup", "Ply book, orientations, weights and how it comes out of the mould", "carbon fibre fiber composite layup ply prepreg monocoque ply schedule ply book plies stacking sequence reinforcement", "Plan the carbon fibre layup for the carbon parts: give each its ply schedule with plies: on its process (orientations, materials and the zones built up at joints and bearings), where the mould splits, and how each part comes out of it, then check the ply book, the weight and each ply's strength.", <Icon.Layers size={14} />),
       ask("ask:factory", "Make", "Get it ready for a factory", "Drawings, materials, tolerances and a list of what to send for a quote", "factory quote manufacturer production supplier rfq send order batch", "Get this design ready to send to a factory for a quote: the processes and materials, drawings with the tolerances that matter, quantities, and a list of what to send and what to ask them.", <Icon.Factory size={14} />),
       { id: "make:toolpaths", group: "Make", title: "CNC toolpaths", detail: "Plan the cuts for a part on a router or mill, watch them on the model and save G-code for GRBL, LinuxCNC or Mach", keywords: "cnc cam toolpath toolpaths tool path g-code gcode nc ngc tap mill milling router routing grbl linuxcnc mach3 mach4 shapeoko x-carve onefinity 3018 pocket pocketing facing roughing finishing contour profile cut out rest machining tabs vise spoilboard end mill feeds speeds post processor simulate simulation stock machining", icon: <Icon.EndMill size={14} />, run: () => openCam() },
+      { id: "make:plates", group: "Make", title: "Print plates", detail: "Your printed parts packed onto as many plates as your printer takes, by material, with the supports they need, their filament and time; a 3MF a plate", keywords: "print plate plates build plate bed arrange auto arrange autoarrange pack packing nest nesting multi plate multiple plates 3mf slicer bambu studio orca orcaslicer prusaslicer cura supports support material support volume overhang overhangs bridge bridging filament grams weight print time how long to print estimate cost two nozzles dual nozzle second nozzle idex multi material h2d x2d x1c p1s a1 prusa ender voron", icon: <Icon.Grid size={14} />, run: () => openPrintPlates() },
       { id: "make:sheets", group: "Make", title: "Laser, plasma or waterjet sheets", detail: "Nest the flat parts on sheets with kerf offset and lead-ins, watch the cut and save DXF, SVG or G-code", keywords: "laser cut cutting lasercut nest nesting sheet sheets plate plates plasma waterjet water jet fiber fibre co2 diode kerf lead-in lead in pierce dxf svg g-code gcode lightburn xtool glowforge lasergrbl sheetcam flat pattern sheet metal plywood acrylic offcut layout true shape", icon: <Icon.LaserCut size={14} />, run: () => void openSheets() },
       { id: "make:tools", group: "Make", title: "Tools you have", detail: "Your printer, laser, CNC and the processes you can order, so the checks fit what you can really make", keywords: "workshop machines processes own printer 3d printer cnc laser parts on hand inventory", icon: <Icon.Wrench size={14} />, run: () => openSettings("making") },
     );
@@ -384,6 +449,16 @@ export function findItems(ctx: FindContext): FindItem[] {
           },
         },
       );
+    if (model?.machine?.components.length)
+      push({
+        id: "build:schematic",
+        group: "Machines",
+        title: "Schematic",
+        detail: "The circuit as a schematic sheet: drag symbols, click two pins to wire them, save as SVG",
+        keywords: "schematic circuit diagram symbols schematic capture ecad eda electrical drawing netlist draw wire connect pins kicad",
+        icon: <Icon.Chip size={14} />,
+        run: () => openSchematic(),
+      });
     if (model && hasFitting(model)) push({ id: "view:fitting", group: "View", title: "How it goes on", detail: "Watch it fitted, and what keeps it there", keywords: "fit fitting mount install clip band attach", icon: <Icon.Assemble size={14} />, tag: useFitView.getState().on ? "on" : undefined, run: () => (useFitView.getState().on ? useFitView.setState({ on: false }) : playFitting()) });
 
     // ── exports ──
@@ -395,6 +470,12 @@ export function findItems(ctx: FindContext): FindItem[] {
       const g = EXPORT_GROUPS.find((x) => x.id === f.group)?.label ?? "";
       push({ id: `export:${f.id}`, group: "Export", title: `Export ${f.label.replace(/^[A-Z](?=[a-z])/, (c) => c.toLowerCase())}`, detail: `${f.detail} · ${f.ext}`, keywords: `export download save file ${f.ext.replace(".", "")} ${g}`, icon: <I size={14} />, run: () => void runExport(f.id) });
     }
+
+    // ── the design's configurations ──
+    const configs = model?.configs;
+    for (const r of configs?.rows ?? [])
+      push({ id: `config:${r.label}`, group: "Model", title: `Show configuration “${r.label}”`, detail: r.note ?? (r.sets.map((s) => `${s.param} ${s.text}`).join(", ") || "No values of its own"), keywords: `configuration variant size ${configs!.title} ${r.label}`, icon: <Icon.Layers size={14} />, tag: r.label === configs!.active ? "on" : undefined, run: () => showConfiguration(r.label) });
+    if (configs?.active !== undefined) push({ id: "config:none", group: "Model", title: "Show the parameters as written", detail: "No configuration: every parameter's own value", keywords: "configuration variant as written default no configuration", icon: <Icon.Layers size={14} />, run: () => showConfiguration(null) });
 
     // ── the design's parts ──
     const seen = new Set<string>();
