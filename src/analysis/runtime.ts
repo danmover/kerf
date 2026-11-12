@@ -483,8 +483,9 @@ export function structuralInput(
     const sh = shells ? shellOf(p) : undefined;
     const plies = plied.get(p.name);
     const shell = sh && plies ? { ...sh, plies } : sh;
-    // face(frame, ...) and face(bar, ...) take every member of the frame or piece of the part made in pieces
-    const group = p.frame ?? (p.split?.piece ? p.split.part : undefined);
+    // face(frame, ...), face(bar, ...) and face(mount, ...) take every member of the frame, piece of the part made in
+    // pieces, or part of the placed design
+    const group = p.insert?.block ?? p.frame ?? (p.split?.piece ? p.split.part : undefined);
     fea.push({ id: p.id, name: p.name, ...(group ? { group } : {}), ...(beam ? { beam } : {}), ...(shell ? { shell } : {}), mesh: { positions: pos, indices: Uint32Array.from(data.indices) }, normals: nrm, material: mi, ...(print ? { print } : {}), ...(joining ? { joining } : {}), ...(bolt ? { bolt } : {}), ...(threads ? { threads } : {}) });
   }
   // bolts tightened before the loads: the ones named, and with all every other screw and bolt analysed

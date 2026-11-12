@@ -290,7 +290,8 @@ export function partMaterial(material: string | undefined, spec: ProcessSpec | u
  */
 export function applyDefaultProcess(model: Model, spec: ProcessSpec | null, opts: { buildVolume?: V3; material?: string } = {}): void {
   for (const p of model.parts) {
-    if (p.kind !== "part" || p.processNone) continue;
+    // a placed design's parts are made as that design says
+    if (p.kind !== "part" || p.processNone || p.insert) continue;
     const own = !!p.process;
     if (!own && spec && (!p.materialSpan || suits(p.material, spec.id))) {
       p.process = { ...spec, settings: { ...spec.settings } };

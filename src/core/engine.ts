@@ -20,6 +20,7 @@ import { useSettings } from "../app/settings";
 import type { ProcessResult } from "../mfg/types";
 import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged, recipeUsesImport, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
+import { designsUsed, evalDesigns } from "../lang/designs";
 import { setEvalFaces } from "../lang/mates";
 import type { FaceCatalogue } from "./mates";
 import { setEvalSplits } from "../lang/split";
@@ -508,7 +509,8 @@ class SolverChannel {
     this.busy = true;
     return new Promise((resolve) => {
       this.waiter = (conflict, error) => resolve({ conflict, error });
-      this.w!.postMessage({ id, src, hold, imports: evalImports() } satisfies SolveRequest);
+      const { table, open } = evalDesigns();
+      this.w!.postMessage({ id, src, hold, imports: evalImports(), designs: designsUsed(table, src), open } satisfies SolveRequest);
     });
   }
 }

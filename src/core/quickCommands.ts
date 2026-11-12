@@ -704,11 +704,19 @@ export function applyQuick(cmd: QuickCommand, ctx: QuickContext): QuickResult {
   let part = ctx.model.parts.find((p) => p.name === target && !p.id.startsWith(`${target}.`)) ?? ctx.model.parts.find((p) => p.name === target);
   const stmt = blockStmt(ctx.src, target);
   // a piece of a part made in pieces, or its pins, is changed through that part
-  if (part?.split && !stmt) return applyQuick({ ...cmd, target: part.split.part } as QuickCommand, { ...ctx, target: part.split.part });
-  // the part made in pieces itself: its pieces stand for it
+  if (part?.split && !part.insert && !stmt) return applyQuick({ ...cmd, target: part.split.part } as QuickCommand, { ...ctx, target: part.split.part });
+  // a part another design brought moves, copies and goes with that design; the rest of it is changed in the design itself
+  if (part?.insert && !stmt) {
+    const ins = part.insert;
+    if (cmd.k === "move" || cmd.k === "rotate" || cmd.k === "copy" || cmd.k === "delete") return applyQuick({ ...cmd, target: ins.block } as QuickCommand, { ...ctx, target: ins.block });
+    return fail(`${part.label} comes from ${ins.design}, placed here as ${ins.block}: open ${ins.design} to change it, or change the parameters design(...) gives it.`);
+  }
+  // the part made in pieces itself: its pieces stand for it; a placed design, the parts it brought
   if (!part && stmt) {
     const piece = ctx.model.parts.find((p) => p.split?.part === target && p.split.piece !== undefined);
     if (piece) part = { ...piece, name: target, label: ctx.model.splits?.find((r) => r.name === target)?.label ?? target };
+    const brought = ctx.model.parts.find((p) => p.insert?.block === target);
+    if (!piece && brought) part = { ...brought, name: target, label: ctx.model.inserts?.find((i) => i.name === target)?.label ?? target, kind: "component" };
   }
   if (part?.frame && !stmt) return applyFrameMember(cmd, part, ctx);
   if (!part || !stmt) return fail(`There is no part called ${target}.`);

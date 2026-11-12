@@ -13,13 +13,14 @@ import { TubeV, type AeroTube } from "./aero";
 import { Args, toThread, toV3 } from "./args";
 import { LIBRARY, type CompDef, type LibArgs } from "../library/components";
 import { ImportFn, STEP_FN, evalImports, findImport, importDef, importFields, missingImportMessage, type ImportOrigin } from "./imports";
+import { DESIGN_FN, DesignFn, evalDesigns, findDesign, missingDesignMessage, placeDesign, placementMove, type DesignEntry, type DesignTable } from "./designs";
 import type { ImportRef, ImportTable } from "../kernel/imports";
-import { frameFor, hasDetail, recipeHash, rotateAbout, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type FilletLaw, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
+import { frameFor, hasDetail, hashString, recipeHash, rotateAbout, stableStringify, vadd, vdot, vlen, vnorm, vscale, vsub, vcross, type FilletLaw, type OpenSpec, type PartOp, type PartRecipe, type Sel, type ShapeRecipe, type V2, type V3, type Xform, applyXforms, applyXformsToDir } from "../kernel/recipe";
 import { meshPhase } from "../library/gears";
 import { FINISHES, MATERIAL_LIST, materialDef } from "../library/materials";
 import { materialDensity } from "../library/standards";
 import { materialRecord, pricePerKg } from "../library/materialDb";
-import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, Link, Model, Motion, SplitRecord } from "../core/model";
+import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, InsertInfo, Link, Model, Motion, SplitRecord } from "../core/model";
 import { absRate } from "../core/model";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
@@ -54,8 +55,8 @@ import { GDT_KINDS, type GdtKind } from "../drawing/gdt";
 const PROCESS_CALLS: Record<string, Fn> = { plies: ANALYSIS_FNS.plies, zone: ANALYSIS_FNS.zone };
 
 export interface EvalOptions {
-  /** param name -> replacement number (used by the feasibility solver) */
-  overrides?: Record<string, number>;
+  /** param name -> replacement value (the feasibility solver's numbers; the sizes a design(...) insert gives) */
+  overrides?: Record<string, number | string | boolean>;
   /** skip part geometry (fast path for requirement-only evaluation) */
   skipGeometry?: boolean;
   /** resolved geometric quantities, keyed by geoKey() */
@@ -70,6 +71,10 @@ export interface EvalOptions {
   splits?: SplitLookup;
   /** read the design as this configuration (a configs row's label) instead of the one show: names */
   config?: string;
+  /** other designs design("name") can insert, by project id (defaults to the table set with setEvalDesigns) */
+  designs?: DesignTable;
+  /** the projects being read, outermost first, so a design never ends up inside itself */
+  designStack?: string[];
 }
 
 /** Most configurations one design keeps. */
@@ -170,6 +175,13 @@ const GRAVITY = 9.81;
 
 const DEFAULT_COLORS = ["#5b8cff", "#7f6cf2", "#3fb6a8", "#e0a84e", "#d9706a", "#8aa2b8", "#9ac46a"];
 
+/** what a design(...) insert takes: where it goes, and what is said of all of it */
+const INSERT_PROPS = ["at", "rotate", "group", "label", "held", "explode"];
+/** fields of an insert that its own parts' names do not take */
+const INSERT_FIELDS = new Set(["name", "kind", "design", "config", "at", "params", "parts", "place", "turn"]);
+/** how deep designs may sit inside designs */
+const MAX_INSERT_DEPTH = 6;
+
 const FRAME_PROPS = ["profile", "box", "path", "levels", "top", "bottom", "at", "rotate", "ends", "material", "finish", "color", "group", "label", "held", "explode"];
 /** short lengths of stock section from a hardware store or a metal merchant's offcuts cost about this many times the bulk price per kg */
 const SECTION_PRICE_FACTOR = 4;
@@ -200,6 +212,17 @@ interface CompInfo {
   gear?: GearInfo;
   value: Obj;
 }
+
+/** Another design as read for a design(...) insert: its model, its plain values and its components. */
+interface InnerRead {
+  model: Model;
+  values: Record<string, number | string | boolean>;
+  comps: Map<string, CompInfo>;
+}
+
+/** Settled readings of inserted designs, by design, parameters and where they sit, newest last. */
+const INNER_READS = new Map<string, InnerRead>();
+const INNER_READS_MAX = 32;
 
 interface PartState {
   base: ShapeRecipe | null;
@@ -366,6 +389,8 @@ class Evaluator {
   featStack: string[] = [];
   /** the named steps of the part being read (or those a selector is read against), so big.post finds a step named inside a use */
   stepNames: Map<string, string> | null = null;
+  /** other designs placed in this one (component x = design("name")) */
+  inserts: InsertInfo[] = [];
 
   constructor(
     private src: string,
@@ -388,6 +413,7 @@ class Evaluator {
     this.builtins.set("calc", calcNamespace());
     this.builtins.set("sim", simNamespace());
     this.builtins.set("mfg", mfgNamespace());
+    this.builtins.set("design", DESIGN_FN);
   }
 
   ctx(): CallCtx {
@@ -769,7 +795,9 @@ class Evaluator {
         this.blocks.push({ name: s.name, kind: "param", span: s.span, locked: s.locked });
         let v = this.expr(s.value, null);
         const own = v;
-        const ov = this.opts.overrides?.[s.name];
+        let ov = this.opts.overrides?.[s.name];
+        // a value of another type (text for a number) is not taken: the parameter keeps its own, and the one setting it says so
+        if (ov !== undefined && (typeof own === "number" || typeof own === "string" || typeof own === "boolean") && typeof ov !== typeof own) ov = undefined;
         // the configuration the design is read as gives the value, and owns its edits
         let row = ov === undefined ? this.configValues.get(s.name) : undefined;
         if (row && typeof row.value !== typeof v) {
@@ -1405,8 +1433,9 @@ class Evaluator {
 
   component(s: Extract<Stmt, { k: "component" }>) {
     const callee = this.expr(s.call.callee, null);
+    if (callee instanceof DesignFn) return this.insertDesign(s);
     if (!(callee instanceof LibFn) && !(callee instanceof ImportFn)) {
-      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), or from an imported file (STEP, STL, OBJ or 3MF) with step("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
+      throw new EvalError(`Components are created from the library, e.g. lib.bearing("608"), from an imported file (STEP, STL, OBJ or 3MF) with step("name"), or from another of your designs with design("name"). Available: ${Object.keys(LIBRARY).map((k) => "lib." + k).join(", ")}`, s.call.callee.span);
     }
     const key = callee instanceof ImportFn ? "step" : callee.libKey;
     const pos: Value[] = [];
@@ -1782,6 +1811,242 @@ class Evaluator {
         });
       });
     });
+  }
+
+  // ---------------- other designs inside this one ----------------
+
+  /**
+   * component mount = design("Motor mount", width: 80) { at:, rotate: }: another of the user's designs, read with
+   * the parameters given and placed here as one subassembly (src/lang/designs.ts). What it makes becomes part of
+   * this design, named after the component (mount_base), where the component puts it; its own requirements are
+   * checked with the sizes given. Mates and analyses take the component as one body.
+   */
+  insertDesign(s: Extract<Stmt, { k: "component" }>) {
+    this.callSpan = s.call.span;
+    const own = evalDesigns();
+    const table = this.opts.designs ?? own.table;
+    // the projects being read, outermost first: this one (its id, when the engine says it) and the ones it is inside
+    const stack = this.opts.designStack ?? [own.open ?? ""];
+    // the design's name, then its parameters by name, and config: for one of its configurations
+    let name: string | undefined;
+    let config: string | undefined;
+    let configSpan: Span | undefined;
+    const sets: { name: string; value: number | string | boolean; span: Span }[] = [];
+    for (const [i, a] of s.call.args.entries()) {
+      const v = this.expr(a.value, null);
+      if (v instanceof Pending) throw new EvalError("A design's parameters cannot depend on measured geometry", a.span);
+      if (!a.name || a.name === "name") {
+        if (i > 0 && !a.name) throw new EvalError(`design(): give the design's parameters by name, like design("${name ?? "Motor mount"}", width: 80)`, a.span);
+        if (typeof v !== "string") throw new EvalError(`design("name") names another of your designs, like design("Motor mount"); got ${typeName(v)}`, a.span);
+        name = v;
+      } else if (a.name === "config") {
+        if (typeof v !== "string") throw new EvalError(`config: names one of the design's configurations, like config: "Small"; got ${typeName(v)}`, a.span);
+        config = v;
+        configSpan = a.span;
+      } else {
+        if (typeof v !== "number" && typeof v !== "string" && typeof v !== "boolean") throw new EvalError(`${a.name}: a design's parameter is a number, text or true/false; got ${typeName(v)}`, a.value.span);
+        if (sets.some((x) => x.name === a.name)) throw new EvalError(`${a.name}: is given twice`, a.span);
+        sets.push({ name: a.name, value: v, span: a.span });
+      }
+    }
+    const nameSpan = s.call.args[0]?.span ?? s.call.span;
+    if (name === undefined) throw new EvalError('design("name") names another of your designs, like design("Motor mount")', s.call.span);
+    const { entry, twins } = findDesign(table, name);
+    if (!entry) throw new EvalError(missingDesignMessage(table, name, stack[0]), nameSpan);
+    if (entry.id === stack[0]) throw new EvalError(`"${entry.name}" is this design: a design can't be placed inside itself`, nameSpan);
+    if (stack.includes(entry.id)) throw new EvalError(`"${entry.name}" is already being read further out (a design it places places it back), so it can't go in here`, nameSpan);
+    if (stack.length > MAX_INSERT_DEPTH + 1) throw new EvalError(`Designs sit ${MAX_INSERT_DEPTH} deep inside each other here, the most Kerf reads`, nameSpan);
+    if (twins) this.diags.push({ message: `${twins + 1} projects are called "${entry.name}": this places the one changed last. Rename the others to choose.`, start: nameSpan.start, end: nameSpan.end, severity: "warning" });
+
+    // where it goes, and what is said of all of it
+    const props: Record<string, Value> = {};
+    const propSpans: Record<string, Span> = {};
+    const flags = new Set<string>();
+    for (const it of s.items) {
+      if (it.k === "prop") {
+        if (!INSERT_PROPS.includes(it.name)) throw new EvalError(`${it.name}: is not for a placed design: it takes ${INSERT_PROPS.map((p) => `${p}:`).join(", ")} and the flags locked, hidden and removable. Its parts' own properties are set in ${entry.name} itself.`, it.span);
+        props[it.name] = this.expr(it.value, null);
+        propSpans[it.name] = it.span;
+      } else if (it.k === "flag") {
+        if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". A placed design takes locked, hidden and removable.`, it.span);
+        flags.add(it.name);
+      } else throw new EvalError(`A placed design takes properties (${INSERT_PROPS.map((p) => `${p}:`).join(", ")}) and flags (locked, hidden, removable)`, it.span);
+    }
+    checkHeld(props.held, propSpans.held);
+    if (props.group !== undefined && typeof props.group !== "string") throw new EvalError('group: expected a name in quotes, like group: "Drive"', propSpans.group);
+    if (props.label !== undefined && typeof props.label !== "string") throw new EvalError('label: expected a name in quotes, like label: "Left motor mount"', propSpans.label);
+    const label = typeof props.label === "string" ? props.label : entry.name;
+    this.blocks.push({ name: s.name, kind: "component", span: s.span, locked: flags.has("locked") });
+    const ctx = this.ctx();
+    if (Array.isArray(props.at)) throw new EvalError(`at: places the design once: give each copy a component of its own, like component ${s.name}_2 = design("${entry.name}") { at: (x, y, z) }`, propSpans.at);
+    const at: V3 = props.at !== undefined ? toV3(props.at, ctx, "at") : [0, 0, 0];
+    const rot: Xform[] = [];
+    if (props.rotate !== undefined) {
+      const r = toV3(props.rotate, ctx, "rotate (rx, ry, rz) degrees");
+      if (r[0]) rot.push({ op: "rotate", angle: r[0], origin: [0, 0, 0], axis: [1, 0, 0] });
+      if (r[1]) rot.push({ op: "rotate", angle: r[1], origin: [0, 0, 0], axis: [0, 1, 0] });
+      if (r[2]) rot.push({ op: "rotate", angle: r[2], origin: [0, 0, 0], axis: [0, 0, 1] });
+    }
+    const move = placementMove(rot, at);
+    const explode = explodeProp(props.explode, ctx, propSpans.explode);
+
+    // read it with the parameters given
+    const read = this.readDesign(entry, table, [...stack, entry.id], s.name, sets, config);
+    const inner = read.model;
+    for (const x of sets) {
+      const ip = inner.params.find((p) => p.name === x.name);
+      if (!ip) {
+        const names = inner.params.map((p) => p.name);
+        const near = suggest(x.name, names);
+        throw new EvalError(`${entry.name} has no parameter "${x.name}"${near ? `: did you mean ${near}?` : ""}${names.length ? ` Its parameters: ${names.join(", ")}` : " It has none to set"}`, x.span);
+      }
+      const what = typeof ip.value === "number" ? "a number" : typeof ip.value === "string" ? "text" : "true or false";
+      if (typeof ip.value !== typeof x.value) throw new EvalError(`${x.name}: ${entry.name} gives it ${what} (${ip.text}), so give it ${what} here too`, x.span);
+      if (typeof x.value === "number" && ((ip.min !== undefined && x.value < ip.min - 1e-9) || (ip.max !== undefined && x.value > ip.max + 1e-9)))
+        this.diags.push({ message: `${x.name}: ${fmtNum(x.value)} is outside the range ${entry.name} gives it (${fmtNum(ip.min ?? -Infinity)} to ${fmtNum(ip.max ?? Infinity)})`, start: x.span.start, end: x.span.end, severity: "warning" });
+    }
+    const err = inner.diagnostics.find((d) => d.severity === "error");
+    if (err) {
+      const line = entry.source.slice(0, err.start).split("\n").length;
+      throw new EvalError(`${entry.name}, line ${line}: ${err.message}`, config !== undefined && /configuration/i.test(err.message) ? configSpan! : nameSpan);
+    }
+
+    // its names here: each part, piece and component as mount_<name>, reached as mount.<name> too
+    const pre = `${s.name}_`;
+    const group = typeof props.group === "string" ? props.group : label;
+    const placed = this.opts.skipGeometry
+      ? null
+      : placeDesign(inner, { block: s.name, design: entry.name, move, span: s.span, group, ...(typeof props.held === "string" ? { held: props.held.trim() } : {}), ...(explode !== undefined ? { explode } : {}), locked: flags.has("locked"), hidden: flags.has("hidden"), removable: flags.has("removable") });
+    const fields: Record<string, Value> = { name: s.name, kind: "design", design: entry.name, at: new Vec(at) };
+    if (config !== undefined) fields.config = config;
+    fields.params = new Obj(Object.fromEntries(inner.params.map((p) => [p.name, p.value])), "params", `${s.name}.params`);
+    const kinds = new Map<string, "part" | "component">();
+    for (const b of inner.blocks) if (b.kind === "part" || b.kind === "component") kinds.set(b.name, b.kind);
+    for (const p of inner.parts) if (!kinds.has(p.name)) kinds.set(p.name, p.kind);
+    const after = moveXforms(move);
+    const refs: Value[] = [];
+    for (const [n, kind] of kinds) {
+      const here = pre + n;
+      if (this.globals.has(here)) throw new EvalError(`${entry.name}'s ${n} would be called ${here} here, and that name is taken: rename this component or the other ${here}`, s.nameSpan);
+      let v: Value;
+      const info = read.comps.get(n);
+      if (kind === "component" && info) {
+        // a component placed again: its points and directions where they are here, so it can be wired and mated
+        const xf = [...info.xf, ...after];
+        const lf = info.def.fields;
+        const cf: Record<string, Value> = { name: here, kind: String(info.value.fields.kind ?? "") };
+        for (const [k, x] of Object.entries(lf.scalars ?? {})) cf[k] = x;
+        for (const [k, q] of Object.entries(lf.points ?? {})) cf[k] = new Vec(applyXforms(q, xf));
+        for (const [k, d] of Object.entries(lf.dirs ?? {})) cf[k] = new Vec(vnorm(applyXformsToDir(d, xf)));
+        for (const [k, list] of Object.entries(lf.pointLists ?? {})) cf[k] = list.map((q) => new Vec(applyXforms(q, xf)));
+        for (const [k, sh] of Object.entries(lf.shapes ?? {})) cf[k] = new ShapeV({ t: "xform", shape: sh, xf });
+        if (typeof info.value.fields.count === "number") cf.count = info.value.fields.count;
+        v = new Obj(cf, "component", here);
+        const motion = placed?.parts.find((p) => p.name === here && p.motion)?.motion;
+        this.comps.set(here, { def: info.def, at: movePoint(move, info.at), axis: vnorm(moveDir(move, info.axis)), xf, ...(motion ? { motion } : {}), value: v as Obj });
+      } else v = new Ref(here, kind);
+      this.define(here, kind, v, s.nameSpan, `${label}: ${n}`);
+      // shown in the dependency graph, and edited, as the placed design
+      this.defKind.delete(here);
+      this.memberOf.set(here, s.name);
+      refs.push(v);
+      if (!INSERT_FIELDS.has(n)) fields[n] = v;
+    }
+    fields.parts = refs;
+    for (const [k, v] of Object.entries(read.values)) if (!(k in fields)) fields[k] = v;
+    fields.place = new Fn("place", (pos, named, c) => new Vec(movePoint(move, toV3(pos[0] ?? named.p, c, "place(p)"))), `place((x, y, z)) → a point of ${entry.name} (in its own coordinates) where it is in this design`);
+    fields.turn = new Fn("turn", (pos, named, c) => new Vec(vnorm(moveDir(move, toV3(pos[0] ?? named.d, c, "turn(d)")))), `turn(d) → a direction of ${entry.name} as it points in this design`);
+    this.define(s.name, "component", new Obj(fields, "component", s.name), s.nameSpan, `design ${label}`);
+
+    // its requirements, checked with the sizes given here
+    for (const r of inner.requirements) {
+      if (r.status === "pending") continue;
+      this.reqs.push({ label: `${label}: ${r.label}`, level: r.level, uses: [], status: r.status, ...(r.margin !== undefined ? { margin: r.margin } : {}), detail: r.detail, span: s.span, deps: [...(this.current ?? [])], geo: [] });
+    }
+    // what it bought, wired and worked out (made even when the geometry is skipped)
+    const machine = placed ?? placeDesign(inner, { block: s.name, design: entry.name, move, span: s.span, group, locked: false, hidden: false, removable: false });
+    this.machine.components.push(...machine.components);
+    this.machine.wires.push(...machine.wires);
+    for (const n of machine.nets) {
+      if (this.machine.nets.some((x) => x.name === n.name)) throw new EvalError(`${entry.name}'s net ${n.name.slice(pre.length)} would be ${n.name} here, which is already a net`, s.nameSpan);
+      this.machine.nets.push(n);
+    }
+    this.machine.calcs.push(...machine.calcs);
+    for (const it of machine.items) {
+      const same = this.machine.items.find((x) => x.label === it.label);
+      if (same) same.qty += it.qty;
+      else this.machine.items.push({ ...it });
+    }
+    this.machine.boards.push(...machine.boards);
+    this.machine.belts.push(...machine.belts);
+    for (const h of inner.mateQueries ?? []) this.mateQueries.add(h);
+    this.splitQueries.push(...(inner.splitQueries ?? []));
+    this.inserts.push({
+      name: s.name,
+      design: entry.name,
+      projectId: entry.id,
+      label,
+      ...(config !== undefined ? { config } : {}),
+      params: inner.params.map((p) => ({ name: p.name, value: p.value, set: sets.some((x) => x.name === p.name) })),
+      at,
+      rotate: props.rotate !== undefined ? toV3(props.rotate, ctx, "rotate") : [0, 0, 0],
+      parts: [...new Set(inner.parts.map((p) => pre + p.name))],
+      left: machine.left,
+      span: s.span,
+    });
+    if (!placed) return;
+    this.frames.push(...placed.frames);
+    this.splits.push(...placed.splits);
+    for (const p of placed.parts) {
+      if (p.kind === "part" && p.motion) this.partMotion.set(p.name, p.motion);
+      this.parts.push(p);
+    }
+  }
+
+  /**
+   * Read a design placed in this one, with the parameters given. A reading is kept for the next evaluation once it
+   * is settled (no mates or splits waiting for the kernel), so typing elsewhere does not read it again.
+   */
+  readDesign(entry: DesignEntry, table: DesignTable, stack: string[], block: string, sets: { name: string; value: number | string | boolean }[], config: string | undefined): InnerRead {
+    const overrides = Object.fromEntries(sets.map((x) => [x.name, x.value]));
+    const shared = !this.opts.designs && !this.opts.faces && !this.opts.splits;
+    const key = shared ? [entry.id, hashString(entry.source), block, stableStringify(overrides), config ?? "", this.opts.skipGeometry ? 1 : 0, stack.join(">"), evalDesigns().version].join("|") : "";
+    const hit = key ? INNER_READS.get(key) : undefined;
+    if (hit) {
+      INNER_READS.delete(key);
+      INNER_READS.set(key, hit);
+      return hit;
+    }
+    if (/(^|[^\w.])step\s*\(/.test(entry.source.replace(/\/\/[^\n]*/g, "")))
+      throw new EvalError(`${entry.name} uses an imported file (step("...")), and a design placed in another can't bring its imported files yet: import the file here as well and place it with step()`, this.callSpan);
+    const parsed = parse(entry.source);
+    const faces = this.opts.faces ?? evalFaces();
+    const ev = new Evaluator(entry.source, {
+      overrides,
+      ...(config !== undefined ? { config } : {}),
+      ...(this.opts.designs ? { designs: this.opts.designs } : {}),
+      designStack: stack,
+      imports: {},
+      // its parts are named here as block_name: faces found for them under that name are theirs
+      faces: (hash, name) => faces(hash, `${block}_${name}`),
+      ...(this.opts.splits ? { splits: this.opts.splits } : {}),
+      ...(this.opts.skipGeometry ? { skipGeometry: true } : {}),
+    });
+    ev.run(parsed.program);
+    ev.finishMates();
+    const model = ev.toModel(parsed.diagnostics);
+    const values: Record<string, number | string | boolean> = {};
+    for (const [n, v] of ev.globals) {
+      const k = ev.defKind.get(n);
+      if ((k === "param" || k === "let" || k === "given") && (typeof v === "number" || typeof v === "string" || typeof v === "boolean")) values[n] = v;
+    }
+    const read: InnerRead = { model, values, comps: ev.comps };
+    const settled = !model.splits?.some((r) => r.status === "waiting") && (model.mateQueries ?? []).every((h) => !!faces(h, "\u0000"));
+    if (key && settled) {
+      INNER_READS.set(key, read);
+      if (INNER_READS.size > INNER_READS_MAX) INNER_READS.delete(INNER_READS.keys().next().value!);
+    }
+    return read;
   }
 
   /** Number board parts without an explicit ref: R1, R2, C1... in the order they are written. */
@@ -2428,10 +2693,18 @@ class Evaluator {
 
   // ---------------- split: a part made in pieces ----------------
 
-  /** The parts a name stands for: the part or component itself, or the pieces of a part made in pieces. */
+  /** The parts a name stands for: the part or component itself, the pieces of a part made in pieces, or what a placed design brought. */
   partsNamed(name: string): EvalPart[] {
     const own = this.parts.filter((p) => p.name === name);
-    return own.length ? own : this.parts.filter((p) => p.split?.part === name && p.split.piece !== undefined);
+    if (own.length) return own;
+    const pieces = this.parts.filter((p) => p.split?.part === name && p.split.piece !== undefined);
+    return pieces.length ? pieces : this.parts.filter((p) => p.insert?.block === name);
+  }
+
+  /** The body a mate moves for a name: a placed design moves whole, whichever of its parts the mate holds by. */
+  mateBody(name: string): string {
+    const block = this.memberOf.get(name);
+    return block && this.inserts.some((i) => i.name === block) ? block : name;
   }
 
   /**
@@ -3683,8 +3956,12 @@ class Evaluator {
       this.callOverride = saved;
     }
     if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), or a joint: revolute(), slider(), cylindrical(), planar() or ball()", s.call.span);
-    for (const r of [v.a, v.b]) this.current?.add(r.ref.body);
-    const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: v.a.label ?? v.a.ref.body, b: v.b.label ?? v.b.ref.body, bodies: [v.a.ref.body, v.b.ref.body], span: s.span, status: "waiting" };
+    for (const r of [v.a, v.b]) this.current?.add(this.memberOf.get(r.ref.body) ?? r.ref.body);
+    // the faces come from the part named; the body moved is the placed design it belongs to, if any
+    const bodyA = this.mateBody(v.a.ref.body);
+    const bodyB = this.mateBody(v.b.ref.body);
+    if (bodyA === bodyB) throw new EvalError(`${v.kind}(): a mate joins two different bodies, and both are parts of ${bodyA}, which moves as one`, s.call.span);
+    const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: v.a.label ?? v.a.ref.body, b: v.b.label ?? v.b.ref.body, bodies: [bodyA, bodyB], span: s.span, status: "waiting" };
     const ga = this.mateGeom(v.a, s.call.span);
     const gb = this.mateGeom(v.b, s.call.span);
     if (!ga || !gb) {
@@ -3693,7 +3970,7 @@ class Evaluator {
     }
     const fit = mateFits(v.kind, ga, gb, v.value);
     if (fit) throw new EvalError(fit, s.call.span);
-    const spec: MateSpec = { name, kind: v.kind, a: { body: v.a.ref.body, geom: ga, label: v.a.label ?? v.a.ref.body }, b: { body: v.b.ref.body, geom: gb, label: v.b.label ?? v.b.ref.body } };
+    const spec: MateSpec = { name, kind: v.kind, a: { body: bodyA, geom: ga, label: v.a.label ?? v.a.ref.body }, b: { body: bodyB, geom: gb, label: v.b.label ?? v.b.ref.body } };
     if (v.value !== undefined) spec.value = v.value;
     if (v.min !== undefined) spec.min = v.min;
     if (v.max !== undefined) spec.max = v.max;
@@ -3805,10 +4082,11 @@ class Evaluator {
           this.current?.add(name);
           return pieces.map((p) => p.name);
         }
-        if (this.defKind.get(name) !== "frame") return undefined;
+        if (this.defKind.get(name) !== "frame" && !this.inserts.some((i) => i.name === name)) return undefined;
         this.current?.add(name);
         return [...this.memberOf].filter(([, f]) => f === name).map(([m]) => m);
       },
+      designOf: (name) => this.inserts.find((i) => i.name === name)?.design,
       param: (name) => this.params.find((p) => p.name === name),
     });
     // the parts it reads are dependencies, so the graph and incremental reruns see them
@@ -3917,7 +4195,7 @@ class Evaluator {
     for (const e of edges) usedBy.set(e.from, [...(usedBy.get(e.from) ?? []), e.to]);
     for (const p of this.params) p.usedBy = usedBy.get(p.name) ?? [];
     for (const g of this.brief?.givens ?? []) g.usedBy = usedBy.get(g.name) ?? [];
-    for (const p of this.parts) p.deps = [...(this.deps.get(p.frame ?? p.name) ?? [])];
+    for (const p of this.parts) p.deps = [...(this.deps.get(p.insert?.block ?? p.frame ?? p.name) ?? [])];
     // an option may name only parameters (defined anywhere in the file)
     const paramNames = new Set(this.params.map((p) => p.name));
     this.assignRefs();
@@ -3958,6 +4236,7 @@ class Evaluator {
       ...(this.configTable ? { configs: this.configTable } : {}),
       ...(this.splits.length ? { splits: this.splits } : {}),
       ...(this.splitQueries.length ? { splitQueries: this.splitQueries } : {}),
+      ...(this.inserts.length ? { inserts: this.inserts } : {}),
     };
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
@@ -4211,8 +4490,8 @@ export type { V2 };
 export function moveParts(parts: EvalPart[], moves: Map<string, BodyMove>) {
   const remap = new Map<Motion, Motion>();
   for (const p of parts) {
-    // the pieces and pins of a part made in pieces move with it
-    const mv = moves.get(p.name) ?? (p.split ? moves.get(p.split.part) : undefined);
+    // the pieces and pins of a part made in pieces move with it, and what a placed design brought with the design
+    const mv = moves.get(p.name) ?? (p.split ? moves.get(p.split.part) : undefined) ?? (p.insert ? moves.get(p.insert.block) : undefined);
     if (!mv) continue;
     p.xf = [...p.xf, ...moveXforms(mv)];
     const pt = (q: V3) => movePoint(mv, q);

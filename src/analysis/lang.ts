@@ -644,8 +644,10 @@ export interface AnalysisEnv {
   fail(msg: string, span: Span): never;
   /** the kind of a top-level name: "part", "component", or undefined */
   kindOf(name: string): string | undefined;
-  /** a frame's member parts, when the name is a frame, or the pieces of a part made in pieces (split:) */
+  /** a frame's member parts, when the name is a frame, the pieces of a part made in pieces (split:), or the parts a placed design brought */
   members?(name: string): string[] | undefined;
+  /** the design a component places (component mount = design("Motor mount")), when it places one */
+  designOf?(name: string): string | undefined;
   /** a param declared so far, for a design study's vary: */
   param?(name: string): { value: number | string | boolean; text: string; min?: number; max?: number; locked: boolean } | undefined;
 }
@@ -752,8 +754,8 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   if (pp.length) {
     const list = Array.isArray(pp[0].value) ? pp[0].value : [pp[0].value];
     for (const v of list) {
-      // a frame stands for all its members, and a part made in pieces (split:) for all its pieces
-      const members = v instanceof Obj && v.kind === "frame" ? env.members?.(String(v.fields.name)) : v instanceof Ref ? env.members?.(v.name) : undefined;
+      // a frame stands for all its members, a part made in pieces (split:) for all its pieces, and a placed design for all its parts
+      const members = v instanceof Obj && (v.kind === "frame" || v.kind === "component") ? env.members?.(String(v.fields.name)) : v instanceof Ref ? env.members?.(v.name) : undefined;
       if (members) {
         for (const m of members) if (!parts.includes(m)) parts.push(m);
         continue;
@@ -867,7 +869,11 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       if (!parts.length) namedParts.push(...members.filter((m) => !namedParts.includes(m)));
       else if (members.some((m) => !parts.includes(m))) {
         const frame = env.kindOf(n) === "frame";
-        fail(`face(${n}, …) is every ${frame ? `member of the frame ${n}` : `piece of ${n} (it is made in pieces)`}, and parts: leaves some out. Give parts: [${n}], or name single ${frame ? "members" : "pieces"}, like face(${members[0]}, -Z).`, span);
+        const design = env.designOf?.(n);
+        fail(
+          `face(${n}, …) is every ${frame ? `member of the frame ${n}` : design ? `part ${n} brings from ${design}` : `piece of ${n} (it is made in pieces)`}, and parts: leaves some out. Give parts: [${n}], or name single ${frame ? "members" : design ? "parts" : "pieces"}, like face(${members[0]}, -Z).`,
+          span,
+        );
       }
       continue;
     }

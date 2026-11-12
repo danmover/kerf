@@ -13,6 +13,7 @@ import { backupFile, download, projectFile, readImportFile, safeFileName, type P
 import { copyAssets, exportAssets, importAssets, releaseAssetUrls } from "../persist/assets";
 import { collectUnusedBlobs, getPackedBlob, putBlob, toBase64 } from "../persist/blobs";
 import { onImportsChanged, setImports } from "../core/imports";
+import { designTable, designsUsed, evalDesigns, setEvalDesigns } from "../lang/designs";
 import type { ProjectImport } from "../kernel/imports";
 import { go, toast, errorText } from "./ui";
 import { resetView, useView } from "./view";
@@ -78,6 +79,25 @@ export async function refreshProjects() {
   const persistent = await db.ensureOpen();
   const projects = (await db.getAll<ProjectRecord>("projects")).sort((a, b) => b.updatedAt - a.updatedAt);
   set({ projects, loaded: true, save: persistent ? get().save : "memory" });
+  publishDesigns(true);
+}
+
+/**
+ * Give the evaluator the other designs a design can place (component mount = design("Motor mount")), and read
+ * the open design again when one it places has changed (an import, a sync, a project renamed).
+ */
+function publishDesigns(reread: boolean) {
+  const open = get().current;
+  const before = evalDesigns().table;
+  const table = designTable(get().projects);
+  setEvalDesigns(table, open?.id);
+  if (!reread || !open) return;
+  const src = useDesign.getState().source;
+  if (!src || !/\bdesign\s*\(/.test(src)) return;
+  const was = designsUsed(before, src);
+  const now = designsUsed(table, src);
+  const same = Object.keys(was).length === Object.keys(now).length && Object.values(now).every((d) => was[d.id]?.source === d.source && was[d.id]?.name === d.name);
+  if (!same) setSource(src, { force: true });
 }
 
 export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[]): Promise<ProjectRecord> {
@@ -106,8 +126,9 @@ export async function openProject(id: string) {
   releaseAssetUrls();
   previewBase = null;
   set({ current: p, versions, undo: [], redo: [], save: db.persistent ? "saved" : "memory", preview: null });
-  // the evaluator needs the imported files' analysis before it reads the source
+  // the evaluator needs the imported files' analysis, and the other designs it may place, before it reads the source
   setImports(p.imports ?? []);
+  publishDesigns(false);
   loadSource(p.source);
   committed = { source: p.source, model: useDesign.getState().model };
   // an empty design starts on its brief

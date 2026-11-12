@@ -29,6 +29,7 @@ import { openSheets } from "../cam/sheetJob";
 import { startMatePick } from "./viewport/PickLayer";
 import { fastenFrames } from "../app/frameFasten";
 import { importStepFiles } from "../app/imports";
+import { placeDesignHere } from "../app/placeDesign";
 import { DXF_ACCEPT, importDxfFiles, insertDxfIntoSketch, pickDxf } from "../app/dxf";
 import { TEMPLATES } from "../demos/templates";
 import { openDrawings, closeDrawings, useDrawings } from "../drawing/engine";
@@ -245,6 +246,31 @@ export function findItems(ctx: FindContext): FindItem[] {
       { id: "model:fasten-frames", group: "Model", title: "Fasten frame joints", detail: "Corner brackets with screws and T-nuts at every 2020 or 2040 frame joint nothing holds yet, without Claude", keywords: "fasten frame joints corner brackets gusset t-nuts tee nuts screws extrusion v-slot 2020 2040 join profiles", icon: <Icon.Screw size={14} />, run: () => void fastenFrames() },
       { id: "model:cutlist", group: "Model", title: "Cut list", detail: "Lengths to cut for every frame, their end cuts and the bars to buy (under the parts list)", keywords: "cut list cutting list saw lengths stock bars frame members weldment extrusion", icon: <Icon.List size={14} />, run: () => useView.setState({ dockTab: "bom", dockOpen: true }) },
       { id: "model:step", group: "Model", title: "Import a STEP file", detail: "Bring in a part from another CAD tool to design around", keywords: "import step stp cad file part load open", icon: <Icon.Upload size={14} />, run: pickStep },
+      // another of your designs, placed in this one as a subassembly
+      ...useProject
+        .getState()
+        .projects.filter((p) => p.id !== useProject.getState().current?.id)
+        .slice(0, 30)
+        .map(
+          (p): FindItem => ({
+            id: `model:place:${p.id}`,
+            group: "Model",
+            title: `Place ${p.name} in this design`,
+            detail: "As one subassembly that updates when you change it, read with the sizes you give it",
+            keywords: `place insert put add design project subassembly sub-assembly assembly reuse reused another existing derived part component module library ${p.name}`,
+            icon: <Icon.Layers size={14} />,
+            run: () => placeDesignHere(p.id),
+          }),
+        ),
+      ask(
+        "ask:place-design",
+        "Model",
+        "Make part of this a design of its own",
+        "Split out a subassembly you want to reuse (a motor mount, a wheel module) so other designs can place it",
+        "subassembly sub-assembly assembly module reuse reusable library derived part shared part split out extract another project design",
+        'Pick the subassembly in this design that would be worth reusing in other designs (say which and why), and tell me how to make it a design of its own: its parameters, what stays here, and the component mount = design("...") line that places it back here.',
+        <Icon.Layers size={14} />,
+      ),
       { id: "model:dxf", group: "Model", title: "Import a DXF drawing as a sketch", detail: "A laser-cut part, a flat pattern or an outline from another CAD tool: its lines, arcs, circles and curves come in joined and fixed, ready to make solid", keywords: "import dxf dwg drawing 2d outline profile sketch autocad librecad qcad inkscape illustrator laser cut cnc router waterjet plasma flat pattern sheet vector logo trace extrude plate", icon: <Icon.Upload size={14} />, run: pickDxfSketch },
       { id: "model:mesh", group: "Model", title: "Import a mesh (STL, OBJ or 3MF)", detail: "A downloaded model, a print or a scan: Kerf repairs the mesh, makes it a solid you can cut, fasten to and check, and finds its holes", keywords: "import mesh stl obj 3mf wavefront triangles printables thingiverse makerworld download scan scanned 3d scan photogrammetry bambu prusa slicer model print convert mesh to solid brep repair fix holes", icon: <Icon.Upload size={14} />, run: pickStep },
       ask("ask:fix-up", "Model", "Fix it up", "After modelling by hand: Claude makes it fit, build and pass the checks", "tidy clean repair hand made manual", FIX_IT_UP, <Icon.Sparkle size={14} />),

@@ -266,6 +266,8 @@ export interface EvalPart {
   beam?: BeamInfo;
   /** a piece of a part made in pieces (split:), or that part's pins (no piece): edits go to that part's block */
   split?: { part: string; piece?: number; of: number };
+  /** made by another design placed in this one (component mount = design("Motor mount")): the component, the design, and the part's name there; edits go to that design */
+  insert?: { block: string; design: string; part: string };
 }
 
 /** A frame member as a beam: the line it was drawn on (through the joints), its section's own axes across it, the section. */
@@ -536,6 +538,29 @@ export interface Model {
   splits?: SplitRecord[];
   /** split parts waiting for their cuts and pins, worked out from the part as built (the engine does, then evaluates again) */
   splitQueries?: SplitQuery[];
+  /** other designs placed in this one (component mount = design("Motor mount")) */
+  inserts?: InsertInfo[];
+}
+
+/** Another design placed in this one: what it was read with, and what it brought. */
+export interface InsertInfo {
+  /** the component's name here */
+  name: string;
+  /** the design's project name, and the project */
+  design: string;
+  projectId: string;
+  label: string;
+  config?: string;
+  /** its parameters as read: the ones this design sets, and the rest at their own values */
+  params: { name: string; value: number | string | boolean; set: boolean }[];
+  /** where it is placed: at:, and rotate: (degrees about X, then Y, then Z) */
+  at: V3;
+  rotate: V3;
+  /** the parts it brought, by their names here */
+  parts: string[];
+  /** what stays in the design itself: its firmware, tests, analyses and drawings */
+  left: string[];
+  span: Span;
 }
 
 /** A part made in pieces: its pieces (parts of the same name), the cuts and the pins in each joint. */

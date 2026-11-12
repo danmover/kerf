@@ -9,6 +9,7 @@ import type { CompletionContext, CompletionResult, Completion } from "@codemirro
 import { KEYWORDS, UNITS } from "../../lang/lexer";
 import { SHAPE_FNS, MATH_FNS, modifierDocs, GEO_FNS } from "../../lang/builtins";
 import { useImports } from "../../core/imports";
+import { evalDesigns } from "../../lang/designs";
 import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FNS } from "../../lang/modelling";
 import { SHEET_FNS } from "../../lang/sheet";
 import { MOULD_FNS } from "../../lang/mould";
@@ -275,6 +276,11 @@ export function kerfCompletions(getModel: () => Model | null) {
     }
     // imported STEP files place like library components
     const imports: Completion[] = useImports.getState().list.map((i) => ({ label: `step(${JSON.stringify(i.name)})`, type: "class", detail: "imported STEP", info: i.file, apply: `step(${JSON.stringify(i.name)})` }));
-    return { from: word.from, options: [...defined, ...imports, ...fnCompletions, ...consts, ...kw, ...props, ...briefProps, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
+    // and so do your other designs, as subassemblies
+    const { table, open } = evalDesigns();
+    const designs: Completion[] = Object.values(table)
+      .filter((d) => d.id !== open)
+      .map((d) => ({ label: `design(${JSON.stringify(d.name)})`, type: "class", detail: "your design", info: "Places it here as one subassembly: give its parameters by name, like design(\"Name\", width: 80)", apply: `design(${JSON.stringify(d.name)})` }));
+    return { from: word.from, options: [...defined, ...imports, ...designs, ...fnCompletions, ...consts, ...kw, ...props, ...briefProps, { label: "lib", type: "namespace" }], validFor: /^[A-Za-z_0-9]*$/ };
   };
 }

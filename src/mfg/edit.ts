@@ -5,8 +5,9 @@ import type { EvalPart } from "../core/model";
 import { PROCESSES, specToSource } from "./profiles";
 import type { ProcessSpec, SettingValue } from "./types";
 
-/** Replace the part's process: property, insert one, or remove it (spec null). */
-export function setPartProcess(src: string, part: Pick<EvalPart, "span" | "processSpan">, spec: ProcessSpec | null | false): string {
+/** Replace the part's process: property, insert one, or remove it (spec null). A placed design's part is changed in that design, so its source is left as it is. */
+export function setPartProcess(src: string, part: Pick<EvalPart, "span" | "processSpan" | "insert">, spec: ProcessSpec | null | false): string {
+  if (part.insert) return src;
   const text = spec ? `process: ${specToSource(spec)}` : spec === false ? "process: false" : "";
   const ps = part.processSpan;
   if (ps) {

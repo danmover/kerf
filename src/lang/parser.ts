@@ -1110,6 +1110,11 @@ class Parser {
           this.next();
           return { k: "ident", name: "range", span };
         }
+        // design("name"): another design placed as a component (a design "name" line is a statement, with no bracket)
+        if (tk.value === "design" && this.isOp("(", 1)) {
+          this.next();
+          return { k: "ident", name: "design", span };
+        }
         break;
       case "op":
         if (tk.value === "(") {
