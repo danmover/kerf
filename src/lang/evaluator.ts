@@ -994,7 +994,17 @@ class Evaluator {
     switch (s.k) {
       case "wire": {
         const ends = s.path.map((e) => this.wireEnd(e));
-        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "label", "cable", "length"], "wire");
+        // via: one point or a list of them, where the wire is tied down on its way
+        const viaItem = s.items.find((it) => it.k === "prop" && it.name === "via");
+        let via: [number, number, number][] | undefined;
+        if (viaItem?.k === "prop") {
+          const v = this.expr(viaItem.value, null);
+          const point = (q: unknown): q is Vec => q instanceof Vec && q.v.length === 3 && q.v.every((x) => Number.isFinite(x));
+          const pts = point(v) ? [v] : Array.isArray(v) && v.length > 0 && v.every(point) ? (v as Vec[]) : null;
+          if (!pts) throw new EvalError("via: is where the wire is tied down on its way, a point or a list of points, e.g. via: (40, 0, 12) or via: [(40, 0, 12), (40, 30, 12)]", viaItem.span);
+          via = pts.map((q) => [q.v[0], q.v[1], q.v[2]]);
+        }
+        const pr = this.machineProps(s.items.filter((it) => it !== viaItem), ["gauge", "insulation", "color", "label", "cable", "length", "via"], "wire");
         const insulation = this.insulationOf(pr.insulation, s.span);
         if (pr.length !== undefined && !(typeof pr.length === "number" && pr.length > 0)) throw new EvalError("length: is how long the bought cable is, e.g. length: 100mm", s.span);
         if (pr.cable !== undefined && typeof pr.cable !== "string") throw new EvalError('cable: names the bought cable the wires are part of, e.g. cable: "STEMMA QT cable 100 mm"', s.span);
@@ -1017,6 +1027,7 @@ class Evaluator {
               cable: str(pr.cable),
               length: numv(pr.length),
               own: lead !== undefined && pr.gauge === undefined ? true : undefined,
+              via,
               span: s.span,
             }),
           );

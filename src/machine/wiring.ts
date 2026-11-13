@@ -71,6 +71,8 @@ export interface WireRow {
   bought?: string;
   /** the ends that are a part's own lead: the wire needs no plug made there */
   own?: ("from" | "to")[];
+  /** where the design ties the wire down on its way (assembly coordinates, mm), in order from `from` to `to` */
+  via?: [number, number, number][];
   note?: string;
 }
 
@@ -102,6 +104,8 @@ interface Item {
   boughtMm?: number;
   /** the wire is a part's own lead from end to end (the design gave it no gauge of its own) */
   own?: boolean;
+  /** where the design ties the wire down, in order from pins[0] to pins[1] */
+  via?: [number, number, number][];
 }
 
 // ---------------------------------------------------------------- items
@@ -206,7 +210,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
   const items: Item[] = [];
   const seenPairs = new Set<string>();
   let signals = 0;
-  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string; spots?: Map<string, string>; bought?: string; boughtMm?: number; own?: boolean }) => {
+  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string; spots?: Map<string, string>; bought?: string; boughtMm?: number; own?: boolean; via?: [number, number, number][] }) => {
     const net = pins[0].pin.type === "port" ? undefined : nl.netOf.get(pins[0].key);
     const kind = classify(pins, net);
     const bus = pins.length > 2;
@@ -220,7 +224,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const gauge = o.gauge ?? suggestGauge(kind, pins, net?.pins ?? pins);
     const cable = kind === "cable" ? (CABLE_NAMES[pins.find((p) => p.pin.port)?.pin.port ?? ""] ?? "cable") : undefined;
     const name = o.name ?? net?.name ?? o.label ?? (cable ? `${instName(pins[0])}.${pins[0].pin.id}` : net ? netLabel(net) : `${instName(pins[0])}.${pins[0].pin.id}`);
-    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name), spots: o.spots?.size ? o.spots : undefined, bought: o.bought, boughtMm: o.boughtMm, own: o.own });
+    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name), spots: o.spots?.size ? o.spots : undefined, bought: o.bought, boughtMm: o.boughtMm, own: o.own, via: bus ? undefined : o.via });
   };
   const spotsOf = (refs: PinRef[], pins: (NetPin | undefined)[]) => {
     const out = new Map<string, string>();
@@ -236,7 +240,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     if (!a || !b || a.key === b.key) continue;
     // the two halves of a connector pair, or a fuse or switch, join inside the part: no wire to make
     if (a.comp === b.comp && a.index === b.index && a.pin.through === b.pin.id) continue;
-    add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label, spots: spotsOf([w.a, w.b], [a, b]), bought: w.cable, boughtMm: w.length, own: w.own });
+    add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label, spots: spotsOf([w.a, w.b], [a, b]), bought: w.cable, boughtMm: w.length, own: w.own, via: w.via });
   }
   // a net joining pins on one circuit board is copper on that board, not a wire to make
   const boardOf = new Map(m.components.filter((c) => c.pcb).map((c) => [c.name, c.pcb!.board]));
@@ -484,6 +488,7 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
         lengthMm: fixedMm ?? estimateLength(a, b, positions),
         label: it.label,
         cable: it.cable,
+        via: it.via,
         note: notes.join(" ") || undefined,
       });
     }

@@ -233,11 +233,22 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
       const back = (i: number) => {
         for (let k = 0; k < 3; k++) c.p[i * 3 + k] = was[i * 3 + k];
       };
+      // whether a move from one place to another goes through a part's own surface
+      const crosses = (ax: number, ay: number, az: number, bx: number, by: number, bz: number) => {
+        const len = Math.hypot(bx - ax, by - ay, bz - az);
+        return len > 1e-6 && !!solids!.raycast([ax, ay, az], [(bx - ax) / len, (by - ay) / len, (bz - az) / len], len);
+      };
       for (let i = 1; i < c.n - 1; i++) {
         const x = c.p[i * 3],
           y = c.p[i * 3 + 1],
           z = c.p[i * 3 + 2];
         if (flow && still[i] && flow(x, y, z)) {
+          back(i);
+          continue;
+        }
+        // a point in a place the field calls solid (a socket in the gap behind a board, a plug inside a bought part's
+        // filled box) has no field to hold it there: it never goes through a part's own surface on its way out
+        if (solids && !ok[i] && crosses(was[i * 3], was[i * 3 + 1], was[i * 3 + 2], x, y, z)) {
           back(i);
           continue;
         }
@@ -281,6 +292,7 @@ export function relaxCables(cables: RelaxInput[], field: SignedField, solids: So
         const l = Math.hypot(g[0], g[1], g[2]);
         if (l < 1e-9) continue;
         const move = Math.min(h, need - f);
+        if (solids && !ok[i] && crosses(x, y, z, x + (g[0] / l) * move, y + (g[1] / l) * move, z + (g[2] / l) * move)) continue;
         for (let k = 0; k < 3; k++) c.p[i * 3 + k] += (g[k] / l) * move;
       }
       for (let i = 0; i < c.n; i++) {

@@ -344,8 +344,12 @@ export const PULL: Record<PlugKind, number> = {
   bare: 0,
 };
 
-/** The straight lead out of a plug before the cable is free to bend, mm. */
-export const leadLength = (w: HarnessWire) => Math.max(6, w.d * 3);
+/**
+ * The stiff, straight start of a lead where it leaves its plug, crimp or solder joint, before the cable is free to
+ * bend, mm. It is not the bend radius again: the router rounds the bend after it to the cable's own radius, so a
+ * thick lead that also stood three diameters straight here turned twice as far from its plug as the real one does.
+ */
+export const leadLength = (w: HarnessWire) => Math.max(6, w.d * 1.5);
 
 /** Where a cable's free run starts at one of its ends: past the plug's straight lead, or just past the splice it runs through. */
 export function runStart(e: PlugEnd, w: HarnessWire): { p: V3; dir: V3 } {
@@ -358,7 +362,10 @@ export function routeRequests(h: Harness, plan?: TravelPlan | null): RouteWire[]
   const endPoint = runStart;
   // thick cables first: they claim the clear runs, and thin ones then follow them
   const order = [...h.wires].sort((a, b) => b.d * b.wires.length - a.d * a.wires.length);
-  if (!plan) return order.map((w) => ({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d }));
+  // where the design ties a wire down (via:), the run passes through that point (a wire across a pivot is placed by
+  // the pivot's own crossing instead: see runWiring)
+  const tied = (w: HarnessWire) => (w.row.via?.length ? { via: w.row.via.map((c) => ({ c, axis: [0, 0, 1] as V3, at: c, here: true })) } : {});
+  if (!plan) return order.map((w) => ({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d, ...tied(w) }));
   const { avoid } = keepOutBits(plan);
   const links = new Map(plan.links.map((l) => [l.id, l]));
   const carrierOf = new Map<string, string>();
@@ -369,7 +376,7 @@ export function routeRequests(h: Harness, plan?: TravelPlan | null): RouteWire[]
     if (!pieces) {
       // a cable that does not move still keeps out of the way of what does
       const on = carrierOf.get(w.ends[0].partId) ?? null;
-      out.push({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d, avoid: avoid(on) });
+      out.push({ id: w.id, a: endPoint(w.ends[0], w), b: endPoint(w.ends[1], w), d: w.d, avoid: avoid(on), ...tied(w) });
       continue;
     }
     for (const pc of pieces) {

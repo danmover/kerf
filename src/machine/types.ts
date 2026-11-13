@@ -441,6 +441,8 @@ export interface WireDef {
    * reach. A wire the design gives a gauge is one the builder makes, joined to the lead's end, as long as it needs to be.
    */
   own?: boolean;
+  /** where the wire is tied down on its way from a to b, in order (assembly coordinates, mm): its route passes through them */
+  via?: [number, number, number][];
   span: Span;
 }
 
