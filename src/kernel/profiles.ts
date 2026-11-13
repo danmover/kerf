@@ -339,14 +339,59 @@ export function sweepProfile(p: Profile, path: Path3, rot: number, frenet: boole
   const loops = regions.reduce((n, r) => n + 1 + r.inner.length, 0);
   if (loops > 8) throw new ProfileError(`sweep(): the profile has ${loops} outlines and holes; Kerf sweeps at most 8`);
   const cfg = { frenet: frenet || path.t === "helix", transitionMode: "round" as const };
+  // a path with no sharp corner carries a profile's holes in the same sweep as its outline (see sweepFace)
+  const smooth = !cfg.frenet && (path.t !== "poly" || path.r > 1e-9);
   let out: Shape3D | null = null;
   for (const reg of regions) {
     let s = R.genericSweep(reg.outer, spine, cfg) as Shape3D;
-    for (const inner of reg.inner) s = s.cut(R.genericSweep(inner, spine, cfg) as Shape3D);
+    if (reg.inner.length) {
+      const holes = reg.inner.map((w) => R.genericSweep(w, spine, cfg) as Shape3D);
+      const one = smooth ? sweepFace(reg, spine, s, holes) : null;
+      if (one) {
+        s.delete();
+        holes.forEach((h) => h.delete());
+        s = one;
+      } else for (const h of holes) s = s.cut(h);
+    }
     out = out ? out.fuse(s) : s;
   }
   if (!out) throw new ProfileError("sweep(): the profile is empty");
   return out;
+}
+
+/**
+ * Sweeps an outline and its holes along a smooth path as one face, so the result needs no boolean between the
+ * outline's sweep and the holes' sweeps. Along a spline those are two surfaces approximated separately, and cutting
+ * one from the other took OpenCASCADE minutes (a 3 x 6 mm tube along ten points: 155 s, and the tube came out
+ * missing), far longer than the app waits for a part. OpenCASCADE's MakePipe needs a path with no sharp corner.
+ * Returns null, and the caller cuts, unless the solid's volume is the outline's sweep less the holes'.
+ */
+function sweepFace(reg: { outer: R.Wire; inner: R.Wire[] }, spine: R.Wire, outer: Shape3D, holes: Shape3D[]): Shape3D | null {
+  const oc = R.getOC();
+  let face: R.Face | null = null;
+  let pipe: { Build(r: unknown): void; IsDone(): boolean; Shape(): unknown; delete(): void } | null = null;
+  try {
+    face = R.addHolesInFace(R.makeFace(reg.outer), reg.inner);
+    pipe = new (oc as unknown as { BRepOffsetAPI_MakePipe: new (spine: unknown, profile: unknown) => NonNullable<typeof pipe> }).BRepOffsetAPI_MakePipe(spine.wrapped, face.wrapped);
+    pipe.Build(new oc.Message_ProgressRange());
+    if (!pipe.IsDone()) return null;
+    const s = R.cast(pipe.Shape() as never);
+    if (!(s instanceof R.Solid)) {
+      s.delete();
+      return null;
+    }
+    const want = R.measureVolume(outer) - holes.reduce((v, h) => v + R.measureVolume(h), 0);
+    if (Math.abs(R.measureVolume(s) - want) > 1e-3 * Math.abs(want)) {
+      s.delete();
+      return null;
+    }
+    return s;
+  } catch {
+    return null;
+  } finally {
+    face?.delete();
+    pipe?.delete();
+  }
 }
 
 export function loftProfiles(secs: { p: Profile; f: Frame }[], ruled: boolean, matched = false): Shape3D {
