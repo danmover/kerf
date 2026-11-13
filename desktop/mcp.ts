@@ -23,6 +23,12 @@ export interface McpBackend {
   version: string;
 }
 
+/** What Kerf saw of a connection attempt, for the status line in Settings → Claude. */
+export type McpSeen =
+  | { kind: "connected"; client: string }
+  /** no-token: nothing after "Bearer" (or no Authorization header); wrong-token: an old or mistyped token */
+  | { kind: "refused"; why: "no-token" | "wrong-token" };
+
 export interface RunningMcp {
   port: number;
   url: string;
@@ -35,17 +41,33 @@ type Rpc = { jsonrpc: "2.0"; id?: string | number | null; method?: string; param
 
 const rpcError = (id: Rpc["id"], code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
-function sameToken(header: string | undefined, token: string) {
-  const m = /^Bearer\s+(\S+)$/i.exec(header ?? "");
-  if (!m) return false;
-  const a = Buffer.from(m[1]);
+/** The token in an Authorization header, or "" when there is none. */
+const tokenIn = (header: string | undefined) => /^Bearer\s+(\S+)\s*$/i.exec(header ?? "")?.[1] ?? "";
+
+function sameToken(sent: string, token: string) {
+  const a = Buffer.from(sent);
   const b = Buffer.from(token);
   return a.length === b.length && timingSafeEqual(a, b);
 }
 
+const REFUSED = {
+  "no-token":
+    "Kerf got no token. Copy the connect command from Kerf's Settings → Claude → Claude Code and run it as it is: it gives Claude Code the whole header, Authorization: Bearer and the token.",
+  "wrong-token":
+    "Kerf turned down this token: it is old or mistyped. Copy the connect command again from Kerf's Settings → Claude → Claude Code, which has the current token.",
+};
+
+/** The name and version a client gave in its initialize, e.g. "claude-code 2.1.323". */
+function clientOf(msg: Rpc) {
+  const c = msg.params?.clientInfo as { name?: unknown; title?: unknown; version?: unknown } | undefined;
+  const name = typeof c?.name === "string" ? c.name : typeof c?.title === "string" ? c.title : "A program";
+  return `${name}${typeof c?.version === "string" ? ` ${c.version}` : ""}`.slice(0, 80);
+}
+
 function send(res: ServerResponse, status: number, body?: unknown) {
   if (body === undefined) {
-    res.writeHead(status).end();
+    // an explicit empty length, so even an empty reply is never sent chunked
+    res.writeHead(status, status === 405 ? { allow: "POST", "content-length": 0 } : { "content-length": 0 }).end();
     return;
   }
   const text = JSON.stringify(body);
@@ -115,14 +137,20 @@ export async function handleRpc(msg: Rpc, backend: McpBackend, signal: AbortSign
 }
 
 /** Start listening on 127.0.0.1, from `port` upward when it is taken. */
-export function startMcp(opts: { port: number; token: string; backend: McpBackend }): Promise<RunningMcp> {
+export function startMcp(opts: { port: number; token: string; backend: McpBackend; onSeen?: (s: McpSeen) => void }): Promise<RunningMcp> {
   const cancels = new Map<string, AbortController>();
   const server: Server = createServer(async (req, res) => {
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     // a web page can't reach this: it needs the token, and pages always send an Origin
     if (url.pathname !== "/mcp") return send(res, 404);
     if (req.headers.origin) return send(res, 403);
-    if (!sameToken(req.headers.authorization, opts.token)) return send(res, 401, rpcError(null, -32001, "Kerf needs the token from Settings → Claude"));
+    const sent = tokenIn(req.headers.authorization);
+    if (!sent || !sameToken(sent, opts.token)) {
+      const why = sent ? "wrong-token" : "no-token";
+      // GET is a client probing for a stream; count only real requests
+      if (req.method === "POST") opts.onSeen?.({ kind: "refused", why });
+      return send(res, 401, rpcError(null, -32001, REFUSED[why]));
+    }
     if (req.method === "GET" || req.method === "DELETE") return send(res, 405);
     if (req.method !== "POST") return send(res, 405);
     let msg: Rpc;
@@ -132,6 +160,7 @@ export function startMcp(opts: { port: number; token: string; backend: McpBacken
       return send(res, 400, rpcError(null, -32700, "Parse error"));
     }
     if (Array.isArray(msg)) return send(res, 400, rpcError(null, -32600, "Kerf takes one message per request"));
+    if (msg?.method === "initialize") opts.onSeen?.({ kind: "connected", client: clientOf(msg) });
     const ac = new AbortController();
     res.on("close", () => {
       if (!res.writableEnded) ac.abort();
