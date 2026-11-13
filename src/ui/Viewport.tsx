@@ -16,6 +16,7 @@ import { lightingPreset } from "./viewport/render/studio";
 import { registerViewport } from "../app/viewportApi";
 import { openFind } from "../app/ui";
 import { Icon } from "./icons";
+import { desktop } from "../app/desktop";
 import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
@@ -475,9 +476,25 @@ export function Viewport() {
                   <Icon.Alert size={26} />
                 </div>
                 <div style={{ fontWeight: 600 }}>3D graphics are unavailable</div>
-                <div className="muted" style={{ marginTop: 6 }}>
-                  Kerf needs WebGL 2. Turn on hardware acceleration in your browser settings, or try a current version of Chrome, Edge, Firefox or Safari.
-                </div>
+                {desktop() ? (
+                  <>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      Kerf couldn't start 3D on this PC's graphics card. Restart Kerf, and if it happens again, update the graphics driver or pick another option in Settings → Display → Graphics.
+                    </div>
+                    <button className="btn primary sm" style={{ marginTop: 14 }} onClick={() => void desktop()?.relaunch()}>
+                      <Icon.Refresh size={13} /> Restart Kerf
+                    </button>
+                  </>
+                ) : (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Kerf needs WebGL 2. Turn on hardware acceleration in your browser settings, or try a current version of Chrome, Edge, Firefox or Safari.
+                  </div>
+                )}
+                {webglError && (
+                  <div className="muted mono" style={{ marginTop: 10, fontSize: 11, opacity: 0.7, userSelect: "text" }}>
+                    {webglError}
+                  </div>
+                )}
               </div>
             ) : kernelStatus === "error" ? (
               <div className="card" style={{ padding: 24, maxWidth: 440, textAlign: "center" }}>

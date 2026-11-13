@@ -8,6 +8,7 @@ contextBridge.exposeInMainWorld("kerfDesktop", {
   info: () => ipcRenderer.invoke("kerf:desktop-info"),
   setGraphics: (backend: string) => ipcRenderer.invoke("kerf:set-graphics", backend),
   relaunch: () => ipcRenderer.invoke("kerf:relaunch"),
+  graphicsFailed: () => ipcRenderer.invoke("kerf:graphics-failed"),
   claudeCode: {
     info: () => ipcRenderer.invoke("kerf:claude-code-info"),
     setEnabled: (on: boolean) => ipcRenderer.invoke("kerf:set-claude-code", on),

@@ -25,7 +25,7 @@ import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
-import { desktop, graphicsCard, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
+import { desktop, graphicsCard, isSoftwareRenderer, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "AI", icon: <Icon.Sparkle size={14} /> },
@@ -515,8 +515,17 @@ function GraphicsSettings() {
   };
   return (
     <Section title="Graphics">
-      <Row t="Graphics card" d={app ? "The card Kerf draws with." : "The card this browser draws with. If it isn't your fastest one, the Kerf desktop app always uses the fast card."}>
-        <span className="chip mono">{card}</span>
+      <Row
+        t="Graphics card"
+        d={
+          isSoftwareRenderer(card)
+            ? "Kerf is drawing 3D in software because it can't use the graphics card here (Remote Desktop, a missing or old driver, or a virtual machine). Updating the graphics driver usually fixes it."
+            : app
+              ? "The card Kerf draws with."
+              : "The card this browser draws with. If it isn't your fastest one, the Kerf desktop app always uses the fast card."
+        }
+      >
+        <span className={`chip mono${isSoftwareRenderer(card) || card === "No WebGL 2" ? " warn" : ""}`}>{card}</span>
       </Row>
       {info && info.backends.length > 1 && (
         <Row t="Graphics backend" d={BACKENDS[info.graphics].d}>

@@ -33,8 +33,14 @@ app.commandLine.appendSwitch("force_high_performance_gpu");
 // 3D view get its context back instead
 app.disableDomainBlockingFor3DAPIs();
 if (settings.graphics !== "auto") app.commandLine.appendSwitch("use-angle", settings.graphics);
-// CI machines have no graphics card: draw in software there rather than fail
-if (SMOKE) app.commandLine.appendSwitch("enable-unsafe-swiftshader");
+// When Chromium can't use the graphics card (a backend that fails on this card,
+// a driver it distrusts, Remote Desktop, a PC or CI machine with no card) it
+// falls back to drawing WebGL in software, which recent Chromium only allows
+// with this switch. Kerf only ever shows its own pages, so allowing it is safe,
+// and a slow 3D view beats none. The page then says it is drawing in software.
+app.commandLine.appendSwitch("enable-unsafe-swiftshader");
+// the backend Kerf switched away from because it couldn't start 3D (see kerf:graphics-failed)
+const resetFrom = process.argv.find((a) => a.startsWith("--kerf-graphics-reset="))?.split("=")[1] ?? "";
 
 if (!SMOKE && !app.requestSingleInstanceLock()) app.quit();
 
@@ -199,7 +205,21 @@ function bridge() {
       // what this launch is actually using, which differs from `graphics` until a restart
       running: app.commandLine.getSwitchValue("use-angle") || "auto",
       backends: backendsFor(process.platform),
+      resetFrom,
     };
+  });
+  // The page couldn't get hardware WebGL 2 (none at all, or only software). If
+  // that's with a backend chosen in Settings, go back to Auto and restart; the
+  // next launch is on Auto, so this happens at most once.
+  ipcMain.handle("kerf:graphics-failed", (e) => {
+    fromKerf(e);
+    const running = app.commandLine.getSwitchValue("use-angle") || "auto";
+    if (SMOKE || running === "auto") return { relaunching: false };
+    settings.graphics = "auto";
+    saveSettings(userData, settings);
+    app.relaunch({ args: [...process.argv.slice(1).filter((a) => !a.startsWith("--kerf-graphics-reset=")), `--kerf-graphics-reset=${running}`] });
+    app.quit();
+    return { relaunching: true };
   });
   ipcMain.handle("kerf:set-graphics", (e, backend: GraphicsBackend) => {
     fromKerf(e);
