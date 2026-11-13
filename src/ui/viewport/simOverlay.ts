@@ -257,8 +257,9 @@ export class SimOverlay implements SceneOverlay {
       m.position.set(...b.spec.origin);
       b.group.add(m);
     }
+    const off = new Set(this.spec.off ?? []);
     for (const p of parts) {
-      if (p.hidden) continue;
+      if (p.hidden || off.has(p.id)) continue;
       const entry = meshes.get(p.hash);
       const data = entry?.final ?? entry?.preview;
       if (!data || !entry) continue;

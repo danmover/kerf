@@ -488,6 +488,7 @@ export class MechWorld implements World {
       floor: inner?.floor,
       ground: g?.floor ? { p: mm(g.floor.p), n: g.floor.n, blocks: g.blocks.map((b) => ({ min: mm(b.min), max: mm(b.max) })), label: g.label, down: g.down } : undefined,
       bodies,
+      off: this.model.off,
       follow: this.model.follow,
       notes,
     };

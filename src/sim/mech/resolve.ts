@@ -279,7 +279,16 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     throw new Fail(`mechanism: ${msg}`);
   };
   const notes: string[] = [];
-  const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid"));
+  // parts left off the machine for this run: on no body, weighing and touching nothing
+  const off = new Set<string>();
+  for (const it of spec.items) {
+    if (it.k !== "without") continue;
+    for (const n of it.what) {
+      if (!model.parts.some((p) => p.name === n)) fail(`sim.without(): there is no built part or component called ${n}`);
+      off.add(n);
+    }
+  }
+  const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && !off.has(p.name));
   const byName = new Map<string, EvalPart[]>();
   for (const p of parts) {
     const l = byName.get(p.name);
@@ -298,6 +307,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     const g: Group = { id: j.name, members: j.what, parts: [], joint: j };
     for (const m of j.what) {
       if (bodyOf.has(m)) fail(`${m} is on two joints (${bodyOf.get(m)} and ${j.name}): a part moves with one body; put it in one joint's list`);
+      if (off.has(m)) fail(`${m} is left off this run (sim.without) and on the joint ${j.name}: take it out of one of them`);
       const ps = byName.get(m);
       if (!ps?.length) fail(`${j.name}: there is no built part or component called ${m}`);
       bodyOf.set(m, g.id);
@@ -378,13 +388,14 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   const groupOf = new Map<string, Group>();
   for (const g of groups) for (const p of g.parts) groupOf.set(p.id, g);
   const ride = (p: EvalPart, g: Group | undefined) => {
-    if (!g || taken.has(p.id)) return;
+    if (!g || taken.has(p.id) || off.has(p.name)) return;
     g.parts.push(p);
     taken.add(p.id);
     groupOf.set(p.id, g);
   };
   let rode = 0;
   for (const st of holds.stacks) {
+    if (off.has(st.screw.name)) continue;
     const anchor = st.clamped.find((p) => !isFastener(p) && !st.pivots.includes(p)) ?? (st.host && !st.pivots.includes(st.host) ? st.host : undefined);
     const g = anchor ? groupOf.get(anchor.id) : undefined;
     if (!g) continue;
@@ -402,6 +413,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       rode += taken.size - before;
     }
   if (rode) notes.push(`${rode} screw${rode === 1 ? "" : "s"}, nut${rode === 1 ? "" : "s"} and bolted part${rode === 1 ? "" : "s"} move with the bodies they fasten`);
+  if (off.size) notes.push(`left off the machine for this run: ${[...off].join(", ")}`);
   const frameParts = parts.filter((p) => !taken.has(p.id));
   const bodyIdOf = (name: string | null, what: string): string => {
     if (name === null || name === FRAME) return FRAME;
@@ -450,6 +462,14 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         const g = cat && typeof cat.specs.mass_g === "number" ? (cat.specs.mass_g as number) : NaN;
         compMass.set(p.name, g);
       }
+    }
+    // a payload from: a bought part is a share of that part's catalogue weight (its leads) lying somewhere else
+    for (const pl of payloads) {
+      if (!pl.from || bodyIdOf(pl.on, "sim.payload") !== id) continue;
+      const g = compMass.get(pl.from);
+      if (g === undefined || !Number.isFinite(g)) fail(`sim.payload(${pl.name}): from: ${pl.from} should be a bought part with a catalogue weight on the same body as ${pl.on}`);
+      else if (pl.mass > g) fail(`sim.payload(${pl.name}): ${pl.from} weighs ${fmtMass(g)} in the catalogue, less than the ${fmtMass(pl.mass)} taken from it`);
+      else compMass.set(pl.from, g - pl.mass);
     }
     for (const p of ps) {
       const pr = props.get(p.id);
@@ -567,6 +587,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (j.damping !== undefined) mj.damping = (j.damping / 1000) * (180 / Math.PI);
       if (j.spring !== undefined) mj.spring = (j.spring / 1000) * (180 / Math.PI);
       if (j.free !== undefined) mj.free = j.free * D2R;
+      if (j.start) mj.start = j.start * D2R;
       if (j.friction === undefined) {
         // a bearing on the axis (on either body) sets the friction; else a plain bushing
         const onBody = on === FRAME ? frameParts : (groups.find((x) => x.id === on)?.parts ?? []);
@@ -600,6 +621,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (j.damping !== undefined) mj.damping = j.damping * 1000;
       if (j.spring !== undefined) mj.spring = j.spring * 1000;
       if (j.free !== undefined) mj.free = j.free / 1000;
+      if (j.start) mj.start = j.start / 1000;
       if (j.friction === undefined) {
         mj.frictionPerLoad = 0.05;
         mj.assumed!.push(`${j.name}: a lubricated slide (friction 0.05)`);
@@ -756,6 +778,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         if (dot(jf.axis, u) < 0) {
           jf.axis = scl(jf.axis, -1);
           if (jf.limits) jf.limits = [-jf.limits[1], -jf.limits[0]];
+          if (jf.start) jf.start = -jf.start;
           notes.push(`${jf.name}: its axis is taken pointing away from ${it.cam}, so its pos grows as the cam lifts it`);
         }
         const n = 180;
@@ -1120,12 +1143,26 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     if (it.area === undefined) notes.push(`${it.name}: ${it.model}'s frontal area ${area.toFixed(0)} mm² and width ${d.toFixed(1)} mm from its shape (an ellipse filling its outline), drag coefficient ${it.cd}`);
   }
 
+  // a joint that starts away from the design pose is moved there before the run, with all that hangs on it: only
+  // where nothing else ties it to another body (a drive holds its own position, a gear or screw its own phase,
+  // and a closed chain would be pulled apart)
+  for (const mj of joints) {
+    if (!mj.start) continue;
+    const what = `sim.${mj.kind}(${mj.name}): start:`;
+    if (mj.kind !== "pivot" && mj.kind !== "slider") fail(`${what} only a pivot or a slider has a start`);
+    if (mj.limits && (mj.start < mj.limits[0] - 1e-9 || mj.start > mj.limits[1] + 1e-9)) fail(`${what} is outside its limits`);
+    if (drives.some((d) => d.joint === mj.name && (d.kind === "motor" || d.kind === "servo" || d.kind === "actuator" || d.kind === "turn"))) fail(`${what} its drive sets where it is, so leave start: out`);
+    const tied = links.find((l) => Object.values(l).includes(mj.name));
+    if (tied) fail(`${what} it is geared or coupled (${tied.name}), so it cannot start out of step with the design pose`);
+    if (joints.some((o) => o !== mj && o.body === mj.body)) fail(`${what} ${mj.body} hangs on more than one joint (a closed chain), which only fits together in the design pose`);
+  }
+
   const power: Record<string, [number, number][]> = {};
   for (const it of spec.items) if (it.k === "power") power[it.comp] = it.value;
   const follow = spec.follow ? bodyIdOf(spec.follow, "follow") : base === "free" ? FRAME : undefined;
 
   return {
-    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, notes },
+    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, off: off.size ? model.parts.filter((p) => off.has(p.name)).map((p) => p.id) : undefined, notes },
   };
 }
 

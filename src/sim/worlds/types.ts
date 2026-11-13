@@ -107,6 +107,8 @@ export interface SceneSpec {
   /** the body a camera should follow */
   follow?: string;
   bodies: SceneBody[];
+  /** part ids left off the machine for this run: not drawn */
+  off?: string[];
   /** an opening or target to reach */
   target?: { at: [number, number, number]; normal: [number, number, number]; d: number; label: string };
   /** the tunnel the machine leaves behind: a channel of its own path */

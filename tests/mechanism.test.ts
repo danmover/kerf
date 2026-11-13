@@ -528,3 +528,104 @@ function boxMesh(s: V3, at: V3 = [0, 0, 0]): MeshEntry {
   const mesh = { positions: Float32Array.from(p), normals: new Float32Array(p.length), indices: Uint32Array.from(idx), edges: new Float32Array(0) };
   return { preview: mesh, volume: s[0] * s[1] * s[2], bbox: [[at[0] - a, at[1] - b, at[2] - c], [at[0] + a, at[1] + b, at[2] + c]], rev: 0 };
 }
+
+describe("a joint that starts away from the design pose", () => {
+  it("starts a pendulum where start: says, with what hangs on it, and counts its angle from the design pose", () => {
+    const L = 0.5;
+    // a bob drawn hanging straight down, with a second bob on a pivot at its end
+    const m = mech({
+      bodies: [body("bob", 1, [0, 0, -L]), body("tail", 0.2, [0, 0, -L - 0.2])],
+      joints: [
+        { kind: "pivot", name: "bob", body: "bob", on: FRAME, at: [0, 0, 0], axis: [0, 1, 0], start: Math.PI / 6 },
+        { kind: "pivot", name: "tail", body: "tail", on: "bob", at: [0, 0, -L], axis: [0, 1, 0], limits: [0, 0] },
+      ],
+    });
+    const sys = new MechSystem(m);
+    const j = sys.joints.get("bob")!;
+    sys.step(1e-4);
+    // 30° about +Y swings a point below the pivot towards -X
+    expect(j.coord).toBeCloseTo(Math.PI / 6, 3);
+    const bob = sys.bodies.get("bob")!;
+    expect(bob.x[0]).toBeCloseTo(-L * Math.sin(Math.PI / 6), 3);
+    expect(bob.x[2]).toBeCloseTo(-L * Math.cos(Math.PI / 6), 3);
+    const tail = sys.bodies.get("tail")!;
+    expect(tail.x[0]).toBeCloseTo(-(L + 0.2) * Math.sin(Math.PI / 6), 3);
+    expect(sys.joints.get("tail")!.coord).toBeCloseTo(0, 3);
+    // released there, it swings through the bottom to nearly as far the other side, and never further than it started
+    run(sys, 2);
+    const st = sys.stats.get("bob")!;
+    expect(st.max).toBeCloseTo(Math.PI / 6, 2);
+    expect(st.min).toBeLessThan(-Math.PI / 6 + 0.03);
+    expect(st.min).toBeGreaterThan(-Math.PI / 6 - 0.01);
+  });
+
+  it("reads start: from the design and refuses it on a driven joint", () => {
+    const src = `
+part base { body box(60, 60, 5, at: (0, 0, 0)) }
+part arm { body box(80, 10, 5, at: (40, 0, 20)) }
+component m = lib.servo("mg996r") { at: (0, 0, 10) }
+scenario "swing" {
+  world: sim.bench()
+  mechanism: sim.mechanism(sim.pivot(arm, at: (0, 0, 22.5), axis: Y, limits: (-45, 45), start: -45))
+  duration: 0.2s
+}
+scenario "driven" {
+  world: sim.bench()
+  mechanism: sim.mechanism(sim.pivot(arm, at: (0, 0, 22.5), axis: Y, drive: m, start: 20))
+  duration: 0.2s
+}`;
+    const model = evaluate(src);
+    expect(model.diagnostics.filter((d) => d.severity === "error")).toEqual([]);
+    const geom = (): MeshEntry | undefined => undefined;
+    const swing = resolveMechanism(model.scenarios![0].spec, model, geom, true);
+    expect("mech" in swing && swing.mech.joints[0].start).toBeCloseTo(-Math.PI / 4, 6);
+    const driven = resolveMechanism(model.scenarios![1].spec, model, geom, true);
+    expect("error" in driven && driven.error).toMatch(/start: its drive sets where it is/);
+  });
+});
+
+describe("a payload taken from a bought part's weight", () => {
+  const src = (payload: string) => `
+part base { body box(60, 60, 5, at: (0, 0, 0)) }
+part arm { material: "Aluminum 6061"  body box(10, 10, 10, at: (40, 0, 20)) }
+component m = lib.servo("mg90d") { at: (60, 0, 25) }
+scenario "swing" {
+  world: sim.bench()
+  mechanism: sim.mechanism(sim.pivot([arm, m], at: (0, 0, 22.5), axis: Y, limits: (-45, 45))${payload})
+  duration: 0.2s
+}`;
+  // every solid as a 10 mm cube: the arm's at x 40, the servo's where it is placed (x 60)
+  const resolve = (payload: string) => {
+    const model = evaluate(src(payload));
+    expect(model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const geom = (hash: string): MeshEntry | undefined => {
+      const p = model.parts.find((x) => x.hash === hash)!;
+      return p.name === "m" ? boxMesh([10, 10, 10]) : boxMesh([10, 10, 10], [p.name === "arm" ? 40 : 0, 0, 25]);
+    };
+    return resolveMechanism(model.scenarios![0].spec, model, geom, true);
+  };
+
+  it("leaves the body's weight alone and moves its centre towards where the lead lies", () => {
+    const plain = resolve("");
+    const led = resolve(", sim.payload(on: arm, mass: 3g, at: (20, 0, 25), from: m, name: \"lead\")");
+    if (!("mech" in plain) || !("mech" in led)) throw new Error(JSON.stringify([plain, led]));
+    const a = plain.mech.bodies.find((b) => b.parts.includes("arm"))!;
+    const b = led.mech.bodies.find((x) => x.parts.includes("arm"))!;
+    // the servo's 13.4 g and the arm's 2.7 g either way
+    expect(a.mass * 1000).toBeCloseTo(16.1, 1);
+    expect(b.mass).toBeCloseTo(a.mass, 9);
+    // 3 g moved 40 mm towards the pivot
+    expect((b.com[0] - a.com[0]) * 1000).toBeCloseTo((-3 * 40) / 16.1, 2);
+    // a plain payload still adds its weight
+    const added = resolve(", sim.payload(on: arm, mass: 3g, at: (20, 0, 25))");
+    if (!("mech" in added)) throw new Error(JSON.stringify(added));
+    expect(added.mech.bodies.find((x) => x.parts.includes("arm"))!.mass * 1000).toBeCloseTo(19.1, 1);
+  });
+
+  it("refuses more than the part weighs, and a part with no catalogue weight", () => {
+    const heavy = resolve(", sim.payload(on: arm, mass: 20g, at: (20, 0, 25), from: m)");
+    expect("error" in heavy && heavy.error).toMatch(/weighs 13\.4 g in the catalogue, less than the 20\.0 g taken from it/);
+    const printed = resolve(", sim.payload(on: arm, mass: 1g, at: (20, 0, 25), from: arm)");
+    expect("error" in printed && printed.error).toMatch(/should be a bought part with a catalogue weight/);
+  });
+});

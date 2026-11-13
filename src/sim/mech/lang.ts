@@ -28,6 +28,8 @@ export interface MechJointItem {
   damping?: number;
   spring?: number;
   free?: number;
+  /** where it is when a run begins, deg or mm from the design pose */
+  start?: number;
   /** the motor, servo, actuator, cylinder or solenoid that drives it */
   drive?: string;
   /** a servo's angle at the design pose, deg */
@@ -76,7 +78,8 @@ export type MechItem =
       pad?: [number, number];
     }
   | { k: "field"; earth: V3 }
-  | { k: "payload"; name: string; on: string; mass: number; at?: V3 }
+  | { k: "payload"; name: string; on: string; mass: number; at?: V3; from?: string }
+  | { k: "without"; name: string; what: string[] }
   | { k: "load"; name: string; on: string; at?: V3; dir: V3; value: Schedule; torque: boolean; turns: boolean }
   | { k: "turn"; name: string; joint: string; speed: Schedule; limit: number }
   | { k: "motor"; name: string; comp: string }
@@ -218,6 +221,7 @@ function joint(k: MechJointItem["k"], a: Args): MechJointItem {
     if (a.has("damping")) j.damping = a.num("damping");
     if (a.has("spring")) j.spring = a.num("spring");
     if (a.has("free")) j.free = a.num("free");
+    if (a.has("start")) j.start = a.num("start");
     if (a.has("drive")) j.drive = nameOf(a.value("drive"), a.ctx, `${a.fname}(): drive`);
     if (a.has("zero")) j.zero = a.num("zero");
     if (k === "pivot" && a.has("cables")) j.cables = optV3(a, "cables");
@@ -230,14 +234,14 @@ const JOINT_DOC = "what: the part or component (or a list of them) that moves as
 export const MECH_FNS: [string, Fn][] = [
   mechFn(
     "pivot",
-    ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "drive", "zero", "cables", "name"],
-    `A hinge or shaft turning about an axis. ${JOINT_DOC}; at: a point on the axis and axis: its direction (both from the part's spin:/mesh: or gear when left out); limits: end stops from the design pose, like (-10deg, 90deg); friction: torque in its bearings (N·mm); damping: N·mm per deg/s; spring: a torsion spring, N·mm per deg, relaxed at free: (deg from the design pose, 0); drive: the gearmotor or servo turning it (a servo also takes zero: its angle at the design pose, deg); cables: a point where the wiring crosses this joint in a loop of slack, for a joint whose bearing has no room beside it (a turntable, a yaw axis under a bolt): the wires are routed through that point and the wiring check says how long a loop to leave (left out, they cross beside the bearing at one end of the axis). Results: <name>.angle, .angle_min, .angle_max, .turns, .max_rpm, .peak_torque, .hold_torque (the most averaged over any one second: a servo reaches its stall torque for a moment whenever it starts or corrects, so judge its load by this), .bearing_load, .hit_stop.`,
+    ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "start", "drive", "zero", "cables", "name"],
+    `A hinge or shaft turning about an axis. ${JOINT_DOC}; at: a point on the axis and axis: its direction (both from the part's spin:/mesh: or gear when left out); limits: end stops from the design pose, like (-10deg, 90deg); friction: torque in its bearings (N·mm); damping: N·mm per deg/s; spring: a torsion spring, N·mm per deg, relaxed at free: (deg from the design pose, 0); start: where it is when a run begins, deg from the design pose (a unit parked on its end stop, a lid that starts open: everything that hangs on it starts turned with it; for a joint nothing drives or gears, on an open chain); drive: the gearmotor or servo turning it (a servo also takes zero: its angle at the design pose, deg); cables: a point where the wiring crosses this joint in a loop of slack, for a joint whose bearing has no room beside it (a turntable, a yaw axis under a bolt): the wires are routed through that point and the wiring check says how long a loop to leave (left out, they cross beside the bearing at one end of the axis). Results: <name>.angle, .angle_min, .angle_max, .turns, .max_rpm, .peak_torque, .hold_torque (the most averaged over any one second: a servo reaches its stall torque for a moment whenever it starts or corrects, so judge its load by this), .bearing_load, .hit_stop.`,
     (a) => new MechValue(joint("pivot", a), "pivot"),
   ),
   mechFn(
     "slider",
-    ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "drive", "name"],
-    `A carriage or rod sliding along an axis. ${JOINT_DOC}; at: a point on its line and axis: the way it slides; limits: end stops from the design pose, like (0mm, 300mm) (a linear actuator's stroke sets them); friction: N; damping: N per mm/s; spring: N/mm, relaxed at free: (mm from the design pose); drive: the linear actuator, air cylinder or solenoid working it. Results: <name>.pos, .pos_min, .pos_max, .travel, .max_speed, .peak_force, .bearing_load, .hit_stop.`,
+    ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "start", "drive", "name"],
+    `A carriage or rod sliding along an axis. ${JOINT_DOC}; at: a point on its line and axis: the way it slides; limits: end stops from the design pose, like (0mm, 300mm) (a linear actuator's stroke sets them); friction: N; damping: N per mm/s; spring: N/mm, relaxed at free: (mm from the design pose); start: where it is when a run begins, mm from the design pose (for a slide nothing drives or gears); drive: the linear actuator, air cylinder or solenoid working it. Results: <name>.pos, .pos_min, .pos_max, .travel, .max_speed, .peak_force, .bearing_load, .hit_stop.`,
     (a) => new MechValue(joint("slider", a), "slider"),
   ),
   mechFn("ball", ["what", "on", "at", "name"], `A ball joint (rod end): turns every way about at:. ${JOINT_DOC}.`, (a) => new MechValue(joint("ball", a), "ball joint")),
@@ -370,8 +374,24 @@ export const MECH_FNS: [string, Fn][] = [
       );
     },
   ),
-  mechFn("payload", ["on", "mass", "at", "name"], "A mass carried by a body (what a gripper holds, a weight on an arm). on: a part on a joint; mass: g or kg; at: its centre (the body's centre when left out).", (a) =>
-    new MechValue({ k: "payload", name: a.has("name") ? a.str("name") : "payload", on: nameOf(a.value("on"), a.ctx, "sim.payload(): on"), mass: a.positive("mass"), at: optV3(a, "at") }, "payload"),
+  mechFn(
+    "payload",
+    ["on", "mass", "at", "from", "name"],
+    "A mass carried by a body (what a gripper holds, a weight on an arm, a cable's weight along its run). on: a part on a joint; mass: g or kg; at: its centre (the body's centre when left out). from: a bought part on the same body whose catalogue weight already includes this mass (its own leads lying away from it): the mass is taken off that part and sits at `at` instead, so the body weighs the same and balances as built.",
+    (a) =>
+      new MechValue(
+        { k: "payload", name: a.has("name") ? a.str("name") : "payload", on: nameOf(a.value("on"), a.ctx, "sim.payload(): on"), mass: a.positive("mass"), at: optV3(a, "at"), from: a.has("from") ? nameOf(a.value("from"), a.ctx, "sim.payload(): from") : undefined },
+        "payload",
+      ),
+  ),
+  mechFn(
+    "without",
+    ["what", "name"],
+    "Parts left off the machine for this run (a transport lock screw taken out, a test fixture, a cover): what: the part or component, or a list of them. They are not weighed, touch nothing, hold nothing together and are not drawn while the run plays, so one design can be run parked, on test and free.",
+    (a) => {
+      const what = namesOf(a.value("what"), a.ctx, "sim.without(): what");
+      return new MechValue({ k: "without", name: a.has("name") ? a.str("name") : "left off", what }, "parts left off");
+    },
   ),
   mechFn(
     "load",
@@ -553,7 +573,7 @@ export const MECHANISM_FN = new Fn(
     const spec: MechSpec = { items, base: base as MechSpec["base"], auto, follow };
     return new MechSpecValue(spec);
   },
-  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.load, sim.jet, sim.tunnel, sim.field, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
+  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.without, sim.load, sim.jet, sim.tunnel, sim.field, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
 );
 
 export class MechSpecValue extends Obj {

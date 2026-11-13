@@ -3,7 +3,7 @@
 // tooth forces, screw thrust, contact with the floor, wheel slip, cam
 // follower jump, clutch slip and how far the machine tipped.
 
-import { Body, Solver, dot, qrot, sub, type M3, type V3 } from "./solver";
+import { Body, Solver, add, addScaled, dot, qmul, qrot, sub, type M3, type Quat, type V3 } from "./solver";
 import { AxisFriction, AxisSpring, Ball, Pivot, Slider, Stops, Weld, type Joint } from "./joints";
 import { Cam, Clutch, Profile, RatioLink, Thread, ToothMesh, gearPitch, type Loss } from "./couplings";
 import { ActuatorDrive, AirCylinder, AxisForce, MotorDrive, ServoDrive, Solenoid, SpeedSource } from "./drives";
@@ -251,7 +251,55 @@ export class MechSystem {
     this.actuators.set(comp, { d: this.solver.add(d), start });
   }
 
+  private posed = false;
+
+  /**
+   * Moves each joint that has a start: to where its run begins, with everything that hangs on it, before the first
+   * step. Everything fixed to a body by then (anchors, forces, sensors, contact points) was placed in the design
+   * pose and goes with it; x0 and q0 stay the design pose, so results still count from there.
+   */
+  private pose() {
+    this.posed = true;
+    const depth = (on: string): number => {
+      let d = 0;
+      for (let up = this.model.joints.find((x) => x.body === on); up && d < 64; up = this.model.joints.find((x) => x.body === up!.on)) d++;
+      return d;
+    };
+    const starts = this.model.joints.filter((jd) => jd.start).sort((a, b) => depth(a.on) - depth(b.on));
+    if (!starts.length) return;
+    for (const jd of starts) {
+      const j = this.joints.get(jd.name)!;
+      const moved = new Set<Body>([j.B]);
+      for (let grew = true; grew; ) {
+        grew = false;
+        for (const k of this.joints.values())
+          if (moved.has(k.A) && !moved.has(k.B)) {
+            moved.add(k.B);
+            grew = true;
+          }
+      }
+      const a = j.axis();
+      if (j.kind === "pivot") {
+        const p = j.anchorB();
+        const h = jd.start! / 2;
+        const q: Quat = [Math.cos(h), a[0] * Math.sin(h), a[1] * Math.sin(h), a[2] * Math.sin(h)];
+        for (const b of moved) {
+          if (b.fixed) continue;
+          b.x = add(p, qrot(q, sub(b.x, p)));
+          b.q = qmul(q, b.q);
+          b.updateInertia();
+        }
+      } else for (const b of moved) if (!b.fixed) b.x = addScaled(b.x, a, jd.start!);
+    }
+    for (const [name, j] of this.joints) {
+      j.update();
+      const st = this.stats.get(name)!;
+      st.min = st.max = j.coord;
+    }
+  }
+
   step(dt: number) {
+    if (!this.posed) this.pose();
     this.solver.step(dt);
     for (const [name, j] of this.joints) {
       const st = this.stats.get(name)!;

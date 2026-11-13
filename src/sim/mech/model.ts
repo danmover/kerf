@@ -43,6 +43,8 @@ export interface MechJoint {
   /** a spring on the axis: rate (N·m/rad or N/m) and where it is relaxed (joint units from the design pose) */
   spring?: number;
   free?: number;
+  /** where a run begins, in the joint's units from the design pose (the design pose when left out) */
+  start?: number;
   /** labels for friction and stops that the resolver assumed, for the run's notes */
   assumed?: string[];
 }
@@ -261,6 +263,8 @@ export interface MechModel {
   power: Record<string, Schedule>;
   /** the body the camera follows (the frame when it stands free) */
   follow?: string;
+  /** part ids left off the machine for this run (sim.without): on no body, not drawn */
+  off?: string[];
   /** what the resolver assumed (masses from materials, bearings found on an axis) */
   notes: string[];
 }
