@@ -7,7 +7,7 @@ import type { AnalysisSpec } from "../analysis/spec";
 import { electricMaterial } from "../analysis/electricMaterials";
 
 export interface AnalysisKind {
-  id: "strength" | "plies" | "fatigue" | "drop" | "vibration" | "shaking" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "gears" | "uci";
+  id: "strength" | "plies" | "fatigue" | "drop" | "vibration" | "shaking" | "heat" | "current" | "buckling" | "topology" | "study" | "airflow" | "cooling" | "ducts" | "gears" | "uci";
   label: string;
   /** one line: what it tells you */
   detail: string;
@@ -20,7 +20,7 @@ export interface AnalysisKind {
   /** a draft for the chat: Claude works out the loads, speeds or rules from the brief */
   ask: string;
   /** only offered when the design looks like it needs it */
-  fits?: "gears" | "bike" | "metal" | "layup";
+  fits?: "gears" | "bike" | "metal" | "layup" | "electronics";
 }
 
 export const ANALYSIS_KINDS: AnalysisKind[] = [
@@ -135,6 +135,25 @@ export const ANALYSIS_KINDS: AnalysisKind[] = [
     ask: "Set up an airflow analysis for this design at the speed it will really move, with the wind head on and from the side, then run it and tell me where the drag comes from and how to cut it.",
   },
   {
+    id: "cooling",
+    label: "Cooling",
+    detail: "Air through the box from its fans or rising on its own: how hot every board, chip and battery gets, and where the air goes",
+    keywords: "electronics cooling thermal cfd fan vent enclosure case box overheat hot chip board pcb battery heatsink airflow inside convection forced air natural convection icepak",
+    icon: "Thermo",
+    is: (a) => a.kind === "flow" && a.drive !== "set",
+    ask: "Set up a cooling analysis for this design: the air its fans move through the box (or warm air rising on its own if it has no fan), every electronic part's own heat and the hottest room it will be in, then run it and tell me which parts run too hot, where the air goes and how to cool them better.",
+    fits: "electronics",
+  },
+  {
+    id: "ducts",
+    label: "Duct flow",
+    detail: "A set flow of air or water through ducts, manifolds and nozzles: the pressure it takes and how it shares out between the outlets",
+    keywords: "internal flow duct pipe manifold nozzle pressure drop loss head loss flow split outlets plenum hose coolant water channel cfm lpm fluent",
+    icon: "Orbit",
+    is: (a) => a.kind === "flow" && a.drive === "set",
+    ask: "Set up a duct flow analysis for this design's ducts or manifold: the real flow it carries (air or water), where it goes in and the outlets it leaves by, then run it and tell me the pressure it takes, how the flow shares out between the outlets and how to make it take less.",
+  },
+  {
     id: "gears",
     label: "Gear train",
     detail: "Tooth bending, bearing life and shaft twist from the input torque and speed",
@@ -163,5 +182,7 @@ export function kindsFor(m: { parts: { gear?: unknown; chain?: unknown; tubes?: 
   const bike = !!m?.parts.some((p) => p.chain || p.tubes?.length) || !!m?.analyses.some((a) => a.kind === "uci");
   // a part of its own in a metal (a bought component's body says little about what carries its current)
   const metal = !!m?.parts.some((p) => p.kind !== "component" && electricMaterial(p.material).conductor) || !!m?.analyses.some((a) => a.kind === "structural" && a.thermal?.currents?.length);
-  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : k.fits === "bike" ? bike : k.fits === "layup" ? layup : metal));
+  // bought electronics or a fan among the parts, or a cooling analysis already
+  const electronics = !!m?.parts.some((p) => p.kind === "component") || !!m?.analyses.some((a) => a.kind === "flow");
+  return ANALYSIS_KINDS.filter((k) => !k.fits || (k.fits === "gears" ? gears : k.fits === "bike" ? bike : k.fits === "layup" ? layup : k.fits === "electronics" ? electronics : metal));
 }

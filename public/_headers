@@ -32,6 +32,10 @@
 /assets/aero.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
 
+# The flow and cooling worker: plain arithmetic on a grid of cells, no network.
+/assets/flow.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
 # The circuit simulation worker (Sound tab): plain arithmetic, no network.
 /assets/render.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

@@ -8,6 +8,7 @@ import { dropText, dropVerdict, lifeWords, shakingText, shakingVerdict, vibratio
 import { describeRegion, UNRELIABLE_RESIDUAL, type AirLoadResult, type AnalysisSpec, type DrivetrainSpec, type LoadSpec, type StructuralSpec, type UciSpec, type V3 } from "./spec";
 import type { CheckItem } from "../core/checks";
 import { airflowLine } from "./aeroSummary";
+import { flowLine, flowRun } from "./flowSummary";
 import type { AirflowRun } from "./aeroRuntime";
 import { accuracyText, bucklingText, bucklingVerdict, degC, heatOnlySpec, temperatureText, temperatureVerdict } from "./thermalSummary";
 import { fatigueModeText, fatigueText, fatigueVerdict } from "./fatigueSummary";
@@ -508,6 +509,7 @@ export function uciVerdict(items: CheckItem[]): "pass" | "warn" | "fail" | "pend
 /** One line per analysis for the design overview. */
 export function analysisLine(spec: AnalysisSpec, run: RunLike | undefined, dt: DrivetrainResult | undefined, report: CheckItem[] = [], air?: AirflowRun, study?: string): string {
   if (spec.kind === "airflow") return airflowLine(spec, air);
+  if (spec.kind === "flow") return flowLine(spec, flowRun(spec.label));
   if (spec.kind === "study")
     return `"${spec.label}" design study (${spec.goal.text}, varying ${spec.vary.map((v) => v.name).join(", ")}; up to ${spec.runs} designs): ${study ?? "not run yet; it runs only when asked (run_analysis label:)"}`;
   if (spec.kind === "uci") {

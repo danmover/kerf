@@ -32,8 +32,11 @@ import { Menu, MenuItem, Segmented } from "./common";
 import { Icon, StatusIcon } from "./icons";
 import { useChatDraft } from "./chatDraft";
 import { AirflowControls, AirflowView } from "./AirflowView";
+import { FlowControls, FlowView } from "./FlowView";
 import { kindsFor } from "./analysisKinds";
 import { useAirflow, showAirflow, yawMean, type AirflowRun } from "../analysis/aeroRuntime";
+import { useFlow, showFlow, type FlowRun } from "../analysis/flowRuntime";
+import { flowHottest } from "../analysis/flowSummary";
 import { fmtNum } from "../lang/values";
 import "../styles/analysis.css";
 
@@ -49,6 +52,7 @@ export function openAnalysis(label: string) {
   useAnalysis.setState({ selected: label });
   if (useAnalysis.getState().runs.get(label)?.result) showResults(label);
   if (useAirflow.getState().runs.get(label)?.result) showAirflow(label);
+  if (useFlow.getState().runs.get(label)?.result) showFlow(label);
 }
 
 export function AnalysisPanel() {
@@ -59,6 +63,7 @@ export function AnalysisPanel() {
   const selected = useAnalysis((s) => s.selected);
   const report = useDesign((s) => s.report);
   const airRuns = useAirflow((s) => s.runs);
+  const flowRuns = useFlow((s) => s.runs);
   const studies = useStudies((s) => s.runs);
   const specs = model?.analyses ?? [];
   const spec = specs.find((a) => a.label === selected) ?? specs.find((a) => a.label === shown) ?? specs[0];
@@ -69,15 +74,16 @@ export function AnalysisPanel() {
     <div className="an">
       <div className="an-head">
         {specs.map((a) => (
-          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} air={airRuns.get(a.label)} study={studies.get(a.label)} />
+          <Pick key={a.label} spec={a} active={a.label === spec?.label} run={runs.get(a.label)} dt={drivetrain.get(a.label)} items={report?.items} air={airRuns.get(a.label)} flow={flowRuns.get(a.label)} study={studies.get(a.label)} />
         ))}
         <AddAnalysis />
         <div className="grow" />
         {spec?.kind === "structural" && !spec.topology && <FineButton spec={spec} run={runs.get(spec.label)} />}
         {spec?.kind === "structural" && !spec.topology && <AccuracyButton spec={spec} run={runs.get(spec.label)} />}
-        {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} air={spec.kind === "airflow" ? airRuns.get(spec.label) : undefined} />}
+        {spec && <AskButton spec={spec} run={spec.kind === "structural" ? runs.get(spec.label) : undefined} dt={spec.kind === "drivetrain" ? drivetrain.get(spec.label) : undefined} air={spec.kind === "airflow" ? airRuns.get(spec.label) : undefined} flow={spec.kind === "flow" ? flowRuns.get(spec.label) : undefined} />}
         {spec?.kind === "structural" && <StructuralControls spec={spec} run={runs.get(spec.label)} />}
         {spec?.kind === "airflow" && <AirflowControls spec={spec} run={airRuns.get(spec.label)} />}
+        {spec?.kind === "flow" && <FlowControls spec={spec} run={flowRuns.get(spec.label)} />}
       </div>
       <div className="an-body">
         <AnimatePresence mode="wait" initial={false}>
@@ -86,6 +92,7 @@ export function AnalysisPanel() {
             {spec?.kind === "drivetrain" && <DrivetrainView spec={spec} result={drivetrain.get(spec.label)} />}
             {spec?.kind === "uci" && <UciView spec={spec} items={uciItems(spec, report?.items ?? [])} />}
             {spec?.kind === "airflow" && <AirflowView spec={spec} run={airRuns.get(spec.label)} />}
+            {spec?.kind === "flow" && <FlowView spec={spec} run={flowRuns.get(spec.label)} />}
             {spec?.kind === "study" && <StudyView spec={spec} st={studies.get(spec.label)} />}
           </motion.div>
         </AnimatePresence>
@@ -96,7 +103,7 @@ export function AnalysisPanel() {
 
 // ---------- header ----------
 
-function Pick({ spec, active, run, dt, items, air, study }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[]; air?: AirflowRun; study?: StudyState }) {
+function Pick({ spec, active, run, dt, items, air, flow, study }: { spec: AnalysisSpec; active: boolean; run?: StructuralRun; dt?: DrivetrainResult; items?: CheckItem[]; air?: AirflowRun; flow?: FlowRun; study?: StudyState }) {
   let status: Status = "pending";
   let val = "";
   if (spec.kind === "study") {
@@ -123,6 +130,18 @@ function Pick({ spec, active, run, dt, items, air, study }: { spec: AnalysisSpec
       status = spec.maxCda !== undefined ? (cda <= spec.maxCda ? "pass" : "fail") : "info";
       val = `CdA ${fmtNum(cda, 3)}`;
     } else val = air?.status === "running" ? `${Math.round(air.frac * 100)}%` : air ? "waiting" : "";
+  } else if (spec.kind === "flow") {
+    if (flow?.status === "error") {
+      status = flow.error === "Stopped." && flow.result ? "info" : "fail";
+      val = flow.error === "Stopped." ? "stopped" : "error";
+    } else if (flow?.result && flow.status === "done") {
+      // the worst of its checks, as the report has them
+      const mine = (items ?? []).filter((i) => i.id.startsWith(`flow:${spec.label}:`) && i.status !== "info");
+      status = mine.some((i) => i.status === "fail") ? "fail" : mine.some((i) => i.status === "warn") ? "warn" : mine.length ? "pass" : "info";
+      const r = flow.result;
+      const hot = flowHottest(r)[0];
+      val = r.heatIn > 0 && hot ? degC(hot.max) : r.drives.length ? `${fmtNum(r.drives[0].rise, 1)} Pa` : `${fmtNum(r.throughFlow / 0.000471947443, 1)} CFM`;
+    } else val = flow?.status === "running" ? `${Math.round(flow.frac * 100)}%` : flow ? "waiting" : "";
   } else if (spec.kind === "structural" && spec.topology) {
     const t = run?.result?.topology;
     if (run?.status === "error") {
@@ -246,9 +265,9 @@ function AccuracyButton({ spec, run }: { spec: StructuralSpec; run?: StructuralR
   );
 }
 
-function AskButton({ spec, run, dt, air }: { spec: AnalysisSpec; run?: StructuralRun; dt?: DrivetrainResult; air?: AirflowRun }) {
+function AskButton({ spec, run, dt, air, flow }: { spec: AnalysisSpec; run?: StructuralRun; dt?: DrivetrainResult; air?: AirflowRun; flow?: FlowRun }) {
   const setDraft = useChatDraft((s) => s.set);
-  const err = run?.status === "error" ? run.error : air?.status === "error" && air.error !== "Stopped." ? air.error : dt?.error;
+  const err = run?.status === "error" ? run.error : air?.status === "error" && air.error !== "Stopped." ? air.error : flow?.status === "error" && flow.error !== "Stopped." ? flow.error : dt?.error;
   const text = err
     ? `The "${spec.label}" analysis can't run: ${err} Please fix the set-up.`
     : spec.kind === "uci"
@@ -259,6 +278,10 @@ function AskButton({ spec, run, dt, air }: { spec: AnalysisSpec; run?: Structura
         ? run?.result?.topology
           ? `Model the shape the "${spec.label}" topology optimisation found as a real part: follow its members and openings${run.result.topology.outline ? " (use its profile outline)" : ""}, round it for making it, keep the mounting faces and holes, then check the new part in its own analysis against the same loads and tell me its mass and safety factor.`
           : `Run the "${spec.label}" topology optimisation and tell me what shape it finds.`
+        : spec.kind === "flow"
+        ? spec.drive === "set"
+          ? `Look at the "${spec.label}" flow results: where is the pressure lost and how does the flow share out between the openings? Reshape the passages to cut the pressure${spec.maxPressure !== undefined ? " below its limit" : ""} and even out the share (wider where the air is fastest, rounded bends and entries, smooth changes of section), re-run the flow after each change and tell me what each change did.`
+          : `Look at the "${spec.label}" cooling results: which parts run hottest against their limits, and where does the air go? Cool them better without making the design much bigger (vents in line with the fans so the air goes through rather than round, the hottest parts in the airflow, a heatsink or a path into a metal wall), re-run the flow after each change and tell me what each change did.`
         : spec.kind === "airflow"
         ? `Look at the "${spec.label}" airflow results: where does the drag come from? Reshape the parts that cost the most to cut the drag (keep them strong, legal and makeable), re-run the airflow after each change and tell me what each change saved.`
         : `Explain the "${spec.label}" analysis results and suggest how to strengthen the weakest area without adding much material.`;
