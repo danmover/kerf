@@ -1,9 +1,9 @@
-// App-wide confirm dialog, keyboard shortcut sheet and notifications.
+// App-wide confirm dialog, keyboard shortcut sheet (in ShortcutSheet) and notifications.
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useRef } from "react";
 import { dismissToast, useUi } from "../app/ui";
-import { Kbd, Modal, mod } from "./common";
+import { Modal } from "./common";
 import { Icon } from "./icons";
 
 export function ConfirmDialog() {
@@ -44,103 +44,8 @@ export function ConfirmDialog() {
   );
 }
 
-const SHORTCUTS: { group: string; items: [string[], string][] }[] = [
-  {
-    group: "General",
-    items: [
-      [[mod, "K"], "Find any tool, view, analysis or export, or ask Claude"],
-      [["/"], "Find, when you're not typing"],
-      [["V"], "Talk to Claude (Enter finishes, Esc cancels)"],
-      [[mod, "Z"], "Undo"],
-      [[mod, "⇧", "Z"], "Redo"],
-      [[mod, "S"], "Save now (Kerf also saves automatically)"],
-      [["C"], "Show design.kerf (again: back to the tab you were on)"],
-      [["?"], "Show this sheet"],
-      [["Esc"], "Clear selection, close dialogs"],
-    ],
-  },
-  {
-    group: "View",
-    items: [
-      [["F"], "Fit the model in view"],
-      [["1"], "Isometric view"],
-      [["2"], "Front view"],
-      [["3"], "Right view"],
-      [["4"], "Top view"],
-      [["⇧", "2"], "Back view (Shift turns 2, 3 and 4 round to the other side)"],
-      [["⇧", "3"], "Left view"],
-      [["⇧", "4"], "Bottom view"],
-      [["S"], "Toggle section plane"],
-      [["E"], "Toggle exploded view"],
-      [["X"], "Toggle x-ray"],
-      [["I"], "Isolate the selection"],
-      [["G"], "Show the selected part's group on its own (Shift+G: every group)"],
-      [["M"], "Draw on the view for Claude"],
-      [["R"], "Measure faces, edges and corners"],
-      [["Q"], "Selection filter: click picks parts, faces, edges or corners (Shift+Q: back)"],
-      [["B"], "Box select: dragging draws a box instead of turning the view"],
-      [["H"], "Drag handles on a selected part: pull its sizes, slide it along X, Y or Z"],
-      [["D"], "Switch between the 3D view and drawings"],
-      [["Space"], "Play or pause the mechanism"],
-      [["A"], "Play the assembly animation"],
-      [["T"], "Turntable"],
-      [["L"], "Next lighting (Shift+L: previous)"],
-      [["P"], "Photoreal view"],
-    ],
-  },
-  {
-    group: "Viewport mouse",
-    items: [
-      [["Left drag"], "Orbit"],
-      [["Right drag"], "Pan"],
-      [["Wheel"], "Zoom"],
-      [["Alt", "drag"], "Turn the lighting"],
-      [["Click"], "Select a part"],
-      [["⇧", "Click"], "Add to the selection"],
-      [["Drag"], "With box select on: left to right takes what is wholly inside, right to left whatever the box touches"],
-      [["Double-click"], "Zoom to a part (empty space fits all)"],
-      [["Right-click"], "Ask Claude about that spot"],
-    ],
-  },
-  {
-    group: "Chat and editor",
-    items: [
-      [["Enter"], "Send the message"],
-      [["⇧", "Enter"], "New line"],
-      [[mod, "F"], "Find in the design file"],
-      [[mod, "Space"], "Autocomplete in the editor"],
-    ],
-  },
-];
-
-export function ShortcutsModal() {
-  const open = useUi((s) => s.shortcutsOpen);
-  return (
-    <Modal open={open} onClose={() => useUi.setState({ shortcutsOpen: false })} title="Keyboard shortcuts" icon={<Icon.Keyboard size={16} />} width={720}>
-      <div className="modal-body" style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(300px, 1fr))", gap: "6px 28px" }}>
-        {SHORTCUTS.map((g) => (
-          <div key={g.group}>
-            <div className="section-label" style={{ marginTop: 6 }}>
-              {g.group}
-            </div>
-            {g.items.map(([keys, label]) => (
-              <div key={label} className="row" style={{ justifyContent: "space-between", padding: "5px 0", borderBottom: "1px solid var(--line)" }}>
-                <span className="muted" style={{ fontSize: 12.5 }}>
-                  {label}
-                </span>
-                <span className="row" style={{ gap: 3 }}>
-                  {keys.map((k) => (
-                    <Kbd key={k}>{k}</Kbd>
-                  ))}
-                </span>
-              </div>
-            ))}
-          </div>
-        ))}
-      </div>
-    </Modal>
-  );
-}
+/** the keyboard shortcut sheet, with keys the user can move (see ShortcutSheet) */
+export { ShortcutsModal } from "./ShortcutSheet";
 
 const TOAST_ICON = {
   success: <Icon.Check size={15} style={{ color: "var(--pass)" }} />,

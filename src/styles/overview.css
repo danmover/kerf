@@ -787,3 +787,27 @@
 .ov-find:hover {
   color: var(--accent-2);
 }
+
+/* mass properties, folded under the design and selection facts */
+.ov-massprops {
+  margin: 6px 0 2px;
+  font-size: 11.5px;
+}
+.ov-massprops summary {
+  cursor: pointer;
+  color: var(--text-3, var(--text-2));
+  user-select: none;
+}
+.ov-massprops dl {
+  display: grid;
+  grid-template-columns: max-content 1fr;
+  gap: 2px 10px;
+  margin: 6px 0 0;
+}
+.ov-massprops dt {
+  color: var(--text-3, var(--text-2));
+}
+.ov-massprops dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}

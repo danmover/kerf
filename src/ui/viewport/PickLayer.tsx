@@ -26,6 +26,9 @@ import { directPicked, roundPicked } from "../../app/quickRun";
 import type { DirectAsk } from "../../core/directEdits";
 import { select, useView } from "../../app/view";
 import { toast, useUi } from "../../app/ui";
+import { commandOf } from "../../app/shortcuts";
+import { useSettings } from "../../app/settings";
+import { MOUSE_SCHEMES } from "../../app/mouse";
 import { useChatDraft } from "../chatDraft";
 import { Menu, MenuItem } from "../common";
 import { Icon } from "../icons";
@@ -192,7 +195,9 @@ function currentMesh(part: EvalPart): MeshData | undefined {
 
 export function PickLayer({ host }: { host: () => PickHost | null }) {
   const filter = usePicks((s) => s.filter);
-  const box = usePicks((s) => s.box);
+  // box select turned on (B), or a mouse scheme whose left drag selects (SolidWorks, Fusion, Onshape)
+  const schemeBox = useSettings((s) => MOUSE_SCHEMES[s.mouseScheme].leftBox);
+  const box = usePicks((s) => s.box) || schemeBox;
   const picks = usePicks((s) => s.picks);
   const measureOn = useMeasure((s) => s.on);
   const sketching = useSketch((s) => !!s.active || s.picking);
@@ -210,17 +215,19 @@ export function PickLayer({ host }: { host: () => PickHost | null }) {
   // Q steps through the filters (Shift+Q back), B turns box select on and off, Esc lets go of the picks
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target)) return;
+      if (isTyping(e.target)) return;
       const ui = useUi.getState();
       const sk = useSketch.getState();
       if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || sk.active || sk.picking || useMarkup.getState().on || document.querySelector(".drawing-shell")) return;
-      if (e.key === "q" || e.key === "Q") {
-        cycleFilter(e.shiftKey);
+      const cmd = commandOf(e);
+      if (cmd === "filter.next" || cmd === "filter.back") {
+        cycleFilter(cmd === "filter.back");
         toast({ kind: "info", title: `Click picks ${FILTER_WORD[usePicks.getState().filter]}` }, 1600);
-      } else if (e.key === "b" || e.key === "B") {
+      } else if (cmd === "box") {
         toggleBox();
-        toast({ kind: "info", title: usePicks.getState().box ? "Box select: drag to pick (left to right: wholly inside; right to left: touching)" : "Box select off: dragging turns the view" }, 2400);
-      } else if (e.key === "Escape" && (usePicks.getState().picks.length || useMatePick.getState().on) && !measuring()) {
+        const scheme = MOUSE_SCHEMES[useSettings.getState().mouseScheme];
+        toast({ kind: "info", title: usePicks.getState().box ? "Box select: drag to pick (left to right: wholly inside; right to left: touching)" : scheme.leftBox ? `Box select off: with the ${scheme.label} mouse, a left drag off the parts still draws a box` : "Box select off: dragging turns the view" }, 2400);
+      } else if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && (usePicks.getState().picks.length || useMatePick.getState().on) && !measuring()) {
         clearPicks();
         useMatePick.setState({ on: false });
       }
@@ -263,7 +270,7 @@ export function PickLayer({ host }: { host: () => PickHost | null }) {
     let pending: PointerEvent | null = null;
     let raf = 0;
     const prevCursor = el.style.cursor;
-    el.style.cursor = usePicks.getState().box ? "crosshair" : "pointer";
+    el.style.cursor = usePicks.getState().box ? "crosshair" : usePicks.getState().filter !== "part" ? "pointer" : prevCursor;
     const kindNow = () => {
       const f = usePicks.getState().filter;
       return f === "part" ? null : f;
@@ -289,7 +296,8 @@ export function PickLayer({ host }: { host: () => PickHost | null }) {
     const pd = (e: PointerEvent) => {
       if (e.button !== 0 || e.altKey || e.target !== el) return;
       down = { x: e.clientX, y: e.clientY };
-      if (usePicks.getState().box) {
+      // with a scheme's left drag, the box starts only off the parts: a drag on a part moves it
+      if (usePicks.getState().box || (MOUSE_SCHEMES[useSettings.getState().mouseScheme].leftBox && !h.hit?.(e.clientX, e.clientY))) {
         drag = { x0: e.clientX, y0: e.clientY, x1: e.clientX, y1: e.clientY };
         if (h.orbit) h.orbit.enabled = false;
         setHover(null);

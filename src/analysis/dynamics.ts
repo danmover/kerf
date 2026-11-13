@@ -74,6 +74,8 @@ const RINGING_VISIBLE = 0.02;
 export function vibrationVerdict(spec: StructuralSpec, r: StructuralResult): Verdict {
   if (!r.modal) return "pass";
   let v: Verdict = r.modal.converged ? "pass" : "warn";
+  // loads that leave a mode with no stiffness would buckle the parts
+  if (r.modal.buckles) v = "fail";
   for (const h of resonances(spec, r)) v = worst(v, h.status);
   if (spec.modal?.ringing) for (const g of ringing(r, spec.modal.ringing)) if (g.amp > RINGING_VISIBLE) v = worst(v, "warn");
   return v;
@@ -82,8 +84,15 @@ export function vibrationVerdict(spec: StructuralSpec, r: StructuralResult): Ver
 /** detail: the frequencies and what they mean; notes: the same without the list of frequencies (for views that list them). */
 export function vibrationText(spec: StructuralSpec, r: StructuralResult): { title: string; detail: string; notes: string; fix?: string } {
   const m = r.modal!;
-  const list = m.modes.map((md, i) => `${i + 1}) ${hz(md.freq)}, ${modeWords(md)}`).join("; ");
+  const was = (i: number) => {
+    const u = m.unloaded?.[i];
+    if (!u) return "";
+    const pc = ((m.modes[i].freq - u) / u) * 100;
+    return ` (${hz(u)} unloaded, ${Math.abs(pc) < 0.05 ? "the same" : `${pc > 0 ? "+" : "−"}${fmtNum(Math.abs(pc), Math.abs(pc) < 10 ? 1 : 0)} %`})`;
+  };
+  const list = m.modes.map((md, i) => `${i + 1}) ${hz(md.freq)}${was(i)}, ${modeWords(md)}`).join("; ");
   let detail = `Moving mass ${fmtNum(m.mass, 0)} g.`;
+  if (m.unloaded) detail += m.buckles ? " Under the loads a mode is left with no stiffness: they would buckle the parts (check buckling)." : " The frequencies are under the loads: their tension stiffens the parts and compression softens them.";
   const hits = resonances(spec, r);
   const ex = spec.modal?.excite ?? [];
   if (ex.length) {
@@ -110,7 +119,8 @@ export function vibrationText(spec: StructuralSpec, r: StructuralResult): { titl
     const want = h.source.hi * Math.SQRT2;
     fix = `Stiffen it where mode ${h.index + 1} moves most, near ${p3(h.mode.peak.at)} (a brace, gusset or deeper section), to lift ${hz(h.mode.freq)} above about ${hz(want)}; or keep ${h.source.label} away from ${hz(h.mode.freq)}.`;
   } else if (spec.modal?.ringing && ringing(r, spec.modal.ringing).some((g) => g.amp > RINGING_VISIBLE)) fix = "Stiffen the frame against sway (diagonal braces, a stiffer gantry), lower the acceleration, or let the firmware cancel the ringing (input shaping).";
-  return { title: `Vibration: ${spec.label}: first mode ${hz(m.modes[0]?.freq ?? 0)}`, detail: `Natural frequencies: ${list}. ${detail}`, notes: detail, fix };
+  if (m.buckles && !fix) fix = "Lighten the loads that press on the parts, or stiffen them against buckling (shorter or deeper members, bracing).";
+  return { title: `Vibration: ${spec.label}: first mode ${hz(m.modes[0]?.freq ?? 0)}${m.unloaded ? " under load" : ""}`, detail: `Natural frequencies${m.unloaded ? " under the loads" : ""}: ${list}. ${detail}`, notes: detail, fix };
 }
 
 // ---------- shaking: a sine sweep or random vibration ----------

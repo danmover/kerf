@@ -486,7 +486,9 @@ function Assumptions({ v, run }: { v: VariantRun; run: SimRun }) {
 
 function Plots({ def, v }: { def: ScenarioDef; v: VariantRun }) {
   const world = def.spec.world.kind;
-  const defaults = useMemo(() => (DEFAULT_PLOTS[world] ?? DEFAULT_PLOTS.bench).map((ps) => [...new Set(ps.flatMap((p) => matchSeries(v.frames, p)))]).filter((x) => x.length), [world, v.frames]);
+  // points the scenario follows (sim.trace) open with their path, speed and acceleration
+  const traced = useMemo(() => (def.spec.mechanism?.items ?? []).flatMap((i) => (i.k === "trace" ? [[`${i.name}.x`, `${i.name}.y`, `${i.name}.z`], [`${i.name}.speed`], [`${i.name}.accel`]] : [])), [def]);
+  const defaults = useMemo(() => [...traced, ...(DEFAULT_PLOTS[world] ?? DEFAULT_PLOTS.bench)].map((ps) => [...new Set(ps.flatMap((p) => matchSeries(v.frames, p)))]).filter((x) => x.length), [world, v.frames, traced]);
   const [plots, setPlots] = useState<string[][] | null>(null);
   useEffect(() => setPlots(null), [def.label]);
   const shown = (plots ?? defaults).map((ps) => ps.filter((n) => v.frames.series[n])).filter((x) => x.length);

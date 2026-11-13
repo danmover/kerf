@@ -516,7 +516,7 @@ function ModesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
     <div className="an-box" style={{ marginBottom: 12 }}>
       <div className="row" style={{ gap: 8, marginBottom: 8 }}>
         <StatusIcon status={status} />
-        <b>Natural frequencies</b>
+        <b>Natural frequencies{r.modal?.unloaded ? " under load" : ""}</b>
         <span className="dim mono">
           {[spec.modal?.excite.length ? `against ${spec.modal.excite.map((e) => e.label).join(", ")}` : "", spec.modal?.ringing ? `ringing after ${fmtNum(spec.modal.ringing, 0)} mm/s² moves` : ""].filter(Boolean).join(" · ") || "nothing set to shake it (excite:)"}
         </span>
@@ -538,6 +538,11 @@ function ModesBox({ spec, r }: { spec: StructuralSpec; r: StructuralResult }) {
               >
                 <td className="mono">{i + 1}</td>
                 <td className="mono">{fmtNum(m.freq, m.freq < 100 ? 1 : 0)} Hz</td>
+                {r.modal!.unloaded && (
+                  <td className="mono dim" title="The same mode without the loads">
+                    {r.modal!.unloaded[i] ? `${fmtNum(r.modal!.unloaded[i], r.modal!.unloaded[i] < 100 ? 1 : 0)} Hz unloaded` : ""}
+                  </td>
+                )}
                 <td>{modeWords(m)}</td>
                 <td className={hit ? hit.status : "dim"}>{hit ? `${hit.source.label}: ${hit.status === "fail" ? "resonates" : "close"}` : ""}</td>
               </tr>

@@ -33,6 +33,7 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   // changes only what the user's view shows, never the design
   "set_view",
   "measure",
+  "mass_properties",
   "inspect_import",
   "view_reference",
   "suggest_next_steps",

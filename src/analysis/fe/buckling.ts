@@ -73,8 +73,11 @@ export interface BucklingSolve {
   converged: boolean;
 }
 
+/** The stress a static solve left in each cell, which is all the geometric stiffness needs. */
+type CellStress = Pick<BucklingInput, "cells" | "stress" | "n" | "h">;
+
 /** y = Kg·x on free dofs. */
-function applyKg(inp: BucklingInput, A: Float64Array[], free: Uint8Array, x: Float64Array, y: Float64Array) {
+function applyKg(inp: CellStress, A: Float64Array[], free: Uint8Array, x: Float64Array, y: Float64Array) {
   const [nx, ny] = inp.n;
   const NX = nx + 1,
     NY = ny + 1;
@@ -120,6 +123,15 @@ function applyKg(inp: BucklingInput, A: Float64Array[], free: Uint8Array, x: Flo
     }
   }
   for (let i = 0; i < y.length; i++) if (!free[i]) y[i] = 0;
+}
+
+/**
+ * The loads' geometric stiffness as an operator, y = Kg·x (full dofs, zero on held ones): added to K it gives the
+ * stiffness of the parts as loaded, for natural frequencies under load (tension stiffens, compression softens).
+ */
+export function geometricStiffness(inp: CellStress, free: Uint8Array): (x: Float64Array, y: Float64Array) => void {
+  const A = geometricMatrices(...inp.h);
+  return (x, y) => applyKg(inp, A, free, x, y);
 }
 
 const dotF = (a: Float64Array, b: Float64Array) => {

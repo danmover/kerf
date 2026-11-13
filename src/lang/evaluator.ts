@@ -7,6 +7,7 @@ import { FeatRef, FeatureV, Fn, Obj, Pending, ProfileV, Ref, SelV, ShapeV, Sketc
 import { boxFrameLines, cutRows, endWords, materialWord, memberRecipe, parseSection, planFrame, sectionName, sectionProps, sectionSearch, stockPlan, type CatalogProfile, type FrameLine } from "./frames";
 import { CONSTANTS, LibFn, MATH_FNS, MODIFIER_PARAMS, SHAPE_FNS, geoFns, libNamespace, threadConstants } from "./builtins";
 import { MODELLING_FNS, allowableStrain, featMember, isSelValue, selFeatures, selMember, toSel } from "./modelling";
+import { decalsProp } from "./decals";
 import { BLOCK_FNS } from "./blocks";
 import { SheetV, type SheetInfo } from "./sheet";
 import { TubeV, type AeroTube } from "./aero";
@@ -40,9 +41,9 @@ import { sketchFns } from "../sketch/fns";
 import { flipPlane, isPlane, planeConstants } from "../sketch/planes";
 import type { EvalSketch } from "../sketch/types";
 import { ANALYSIS_FNS, buildAnalysis, type AnalysisItem } from "../analysis/lang";
-import { MATE_FNS, MateRefV, MateV, evalFaces, type FaceLookup } from "./mates";
+import { MATE_FNS, MateNameV, MateRefV, MateV, RelationV, evalFaces, type FaceLookup } from "./mates";
 import { axisFrame, axisWord, evalSplits, pinDepth, pinHoleClearance, splitKey, splitPrinted, splitSpec, splitWords, type SplitLookup, type SplitQuery } from "./split";
-import { bodyBox, mateFits, moveDir, movePoint, moveXforms, pickAxis, pickPlane, solveMates, isStill, type BodyMove, type FaceCatalogue, type MateBody, type MateGeom, type MateSpec } from "../core/mates";
+import { bodyBox, mateFits, moveDir, movePoint, moveXforms, pickAxis, pickPlane, solveMates, isStill, SLIDE_JOINTS, TURN_JOINTS, type BodyMove, type FaceCatalogue, type MateBody, type MateGeom, type MateKind, type MateSpec } from "../core/mates";
 import { studyVariable } from "../analysis/studyLang";
 import type { AnalysisSpec } from "../analysis/spec";
 import { ProcessV, applyDefaultProcess, mfgNamespace, partMaterial, processFromText, processFromValue, toProcess } from "../mfg/spec";
@@ -159,8 +160,8 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode", "split"];
-const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label", "explode"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode", "split", "decal"];
+const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label", "explode", "decal"];
 
 /** Fields of the brief block, by the type of value each takes. */
 const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
@@ -1257,6 +1258,8 @@ class Evaluator {
       this.current?.add(this.memberOf.get(name) ?? name);
       return this.globals.get(name)!;
     }
+    // in a mate, a mate above it by name (the joints a gear() or a rack() relates)
+    if (this.callOverride === MATE_FNS && this.mates.some((m) => m.info.name === name)) return new MateNameV(name);
     if (this.builtins.has(name)) return this.builtins.get(name)!;
     if (name === "step") return STEP_FN;
     const all = [...this.globals.keys(), ...this.builtins.keys(), "step", ...(scope ? collectScope(scope) : [])];
@@ -1802,6 +1805,7 @@ class Evaluator {
     if (this.opts.skipGeometry) return;
     const anyMoving = def.solids.some((sd) => sd.moving);
     const explodeDir = explodeProp(props.explode, ctx, propSpans.explode);
+    const decals = decalsProp(props.decal, { error: (m: string) => { throw new EvalError(m, propSpans.decal ?? s.span); } });
     const color = typeof props.color === "string" ? props.color : undefined;
     const group = typeof props.group === "string" ? props.group : def.catalog ? (groupForCatalog(def.catalog.id) ?? entry?.group ?? "Components") : (entry?.group ?? groupFor(key));
     xfs.forEach((xf, idx) => {
@@ -1836,6 +1840,7 @@ class Evaluator {
           spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
           ...(band && !sd.suffix ? { band } : {}),
           ...(chainInfo && !sd.suffix ? { chain: chainInfo } : {}),
+          ...(decals && (!sd.suffix || (imported && sdIdx === 0)) ? { decals } : {}),
           fastener:
             def.fastener && !sd.suffix
               ? { ...def.fastener, headTop: applyXforms(def.fastener.headTop, xf), outward: vnorm(applyXformsToDir(def.fastener.outward, xf)) }
@@ -2699,6 +2704,7 @@ class Evaluator {
       sheet = { ...rest, flat, flatHash: recipeHash(flat) };
     }
     const explodeDir = explodeProp(state.props.explode, ctx, state.propSpans.explode);
+    const decals = decalsProp(state.props.decal, { error: (m: string) => { throw new EvalError(m, state.propSpans.decal ?? s.span); } });
     const record: EvalPart = {
       id: s.name,
       name: s.name,
@@ -2729,6 +2735,7 @@ class Evaluator {
       ...(state.flex.length ? { flex: state.flex } : {}),
       ...(sheet ? { sheet } : {}),
       ...(state.tubes.length ? { tubes: state.tubes } : {}),
+      ...(decals ? { decals } : {}),
     };
     if (state.props.split !== undefined && state.props.split !== false) this.splitPart(s, state.props.split, state.propSpans.split, record);
     else this.parts.push(record);
@@ -3998,7 +4005,8 @@ class Evaluator {
     } finally {
       this.callOverride = saved;
     }
-    if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), or a joint: revolute(), slider(), cylindrical(), planar() or ball()", s.call.span);
+    if (v instanceof RelationV) return this.relation(s, name, v);
+    if (!(v instanceof MateV)) throw new EvalError("A mate is one of against(), flush(), concentric(), pin(), distance(), angle(), parallel(), perpendicular(), tangent(), coincident() or rigid(), a joint: revolute(), slider(), cylindrical(), planar(), ball() or slot(), or a relation between joints: gear(), belt(), chain(), rack(), screw() or cam()", s.call.span);
     for (const r of [v.a, v.b]) this.current?.add(this.memberOf.get(r.ref.body) ?? r.ref.body);
     // the faces come from the part named; the body moved is the placed design it belongs to, if any
     const bodyA = this.mateBody(v.a.ref.body);
@@ -4021,6 +4029,48 @@ class Evaluator {
     this.mates.push({ spec, info });
   }
 
+  /** A relation between two named joints above it: gear(), belt(), chain(), rack(), screw() or cam(). */
+  relation(s: Extract<Stmt, { k: "mate" }>, name: string, v: RelationV) {
+    const c = v.couple;
+    const find = (n: string) => {
+      const m = this.mates.find((x) => x.info.name === n);
+      if (!m) throw new EvalError(`${v.kind}(): there is no mate called "${n}" above it (name the joints it relates, like mate drive = revolute(...))`, s.call.span);
+      if (m.spec?.couple || ["gear", "belt", "chain", "rack", "screw", "cam"].includes(m.info.kind)) throw new EvalError(`${v.kind}(): ${n} is itself a relation; name the joints it relates`, s.call.span);
+      return m;
+    };
+    const P = find(c.p),
+      Q = find(c.q);
+    const turns = (k: MateKind) => TURN_JOINTS.includes(k);
+    // a slide: along an axis, or a distance() between two faces
+    const slides = (m: typeof P) => SLIDE_JOINTS.includes(m.info.kind) && (m.info.kind !== "distance" || !m.spec || (m.spec.a.geom.t === "plane" && m.spec.b.geom.t === "plane"));
+    const joint = (m: typeof P) => `${m.info.name} is a ${m.info.kind}()`;
+    const turning = "a turning joint (revolute(), pin(), cylindrical() or concentric())";
+    const sliding = "a sliding joint (slider(), cylindrical(), concentric() or distance() between two faces)";
+    const need = (ok: boolean, what: string) => {
+      if (!ok) throw new EvalError(`${v.kind}(): ${what}`, s.call.span);
+    };
+    need(turns(P.info.kind), `the first mate should be ${turning}; ${joint(P)}`);
+    if (v.kind === "gear" || v.kind === "belt" || v.kind === "chain") need(turns(Q.info.kind), `the second mate should be ${turning}; ${joint(Q)}`);
+    if (v.kind === "rack") need(slides(Q), `the second mate should be the rack's ${sliding}; ${joint(Q)}`);
+    if (v.kind === "screw") need(P === Q ? P.info.kind === "cylindrical" || P.info.kind === "concentric" : slides(Q), P === Q ? `on one mate it should be a cylindrical() (the nut turns and slides on the screw); ${joint(P)}` : `the second mate should be the nut's ${sliding}; ${joint(Q)}`);
+    const swings = Q.info.kind === "revolute" || Q.info.kind === "pin";
+    if (v.kind === "cam") need(slides(Q) || swings, `the second mate should be the follower's ${sliding}, or a revolute() for a swinging follower; ${joint(Q)}`);
+    // the second joint's part follows the first's (a screw on one mate: the nut on the screw)
+    const bodies: [string, string] = P === Q ? [P.info.bodies[0], P.info.bodies[1]] : [Q.info.bodies[0], P.info.bodies[0]];
+    if (bodies[0] === bodies[1]) throw new EvalError(`${v.kind}(): ${c.p} and ${c.q} both move ${bodies[0]}; it relates the joints of two different parts`, s.call.span);
+    this.current?.add(c.p);
+    if (c.q !== c.p) this.current?.add(c.q);
+    const couple = { ...c, ...(c.lift && v.kind === "cam" && swings ? { lift: c.lift.map((x) => (x * Math.PI) / 180) } : {}) };
+    const info: NonNullable<Model["mates"]>["list"][number] = { name, kind: v.kind, a: c.p, b: c.q, bodies, span: s.span, status: "waiting" };
+    if (!P.spec || !Q.spec) {
+      this.mates.push({ spec: null, info });
+      return;
+    }
+    const spec: MateSpec = { name, kind: v.kind, a: { body: bodies[0], geom: { t: "body" }, label: c.q }, b: { body: bodies[1], geom: { t: "body" }, label: c.p }, couple };
+    info.status = "ok";
+    this.mates.push({ spec, info });
+  }
+
   /** What a mate holds by, where the parts are drawn; null while a solid's faces are not listed yet. */
   mateGeom(r: MateRefV, span: Span): MateGeom | null {
     const ref = r.ref;
@@ -4035,6 +4085,11 @@ class Evaluator {
         return { t: "plane", p: ref.at, n: ref.normal };
       case "line":
         return { t: "axis", p: ref.at, d: ref.dir };
+      case "segment": {
+        const d: V3 = [ref.to[0] - ref.from[0], ref.to[1] - ref.from[1], ref.to[2] - ref.from[2]];
+        const l = Math.hypot(...d);
+        return { t: "axis", p: ref.from, d: [d[0] / l, d[1] / l, d[2] / l], len: l };
+      }
     }
     const lookup = this.opts.faces ?? evalFaces();
     const placed: { cat: FaceCatalogue; xf: Xform[] }[] = [];
@@ -4087,7 +4142,7 @@ class Evaluator {
     if (moves.size) moveParts(this.parts, moves);
     // a mated part depends on what it is mated to
     for (const s of specs) this.deps.get(s.a.body)?.add(s.b.body);
-    this.mateResult = { list: this.mates.map((m) => m.info), specs, bodies, moves: [...sol.moves], free: sol.free };
+    this.mateResult = { list: this.mates.map((m) => m.info), specs, bodies, moves: [...sol.moves], free: sol.free, ...(sol.coords.size ? { coords: [...sol.coords] } : {}) };
   }
 
   // ---------------- analyses ----------------

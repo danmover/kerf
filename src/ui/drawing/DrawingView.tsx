@@ -11,6 +11,7 @@ import { setParamValue } from "../../core/sourceEdit";
 import { commitSource, endComparison } from "../../app/project";
 import { revealSpan, select, useView, requestCamera, type ViewPreset } from "../../app/view";
 import { toast, errorText, useUi } from "../../app/ui";
+import { isCommand } from "../../app/shortcuts";
 import { useSketch } from "../sketch/session";
 import { addMidRun, sendMessage, useChat } from "../../ai/chat";
 import { useAgents, isLive } from "../../agents/progress";
@@ -90,15 +91,14 @@ export function DrawingView() {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement | null;
       if (t && (t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable)) return;
-      if (e.metaKey || e.ctrlKey || e.altKey) return;
       // dialogs and the sketch editor keep their own keys
       const ui = useUi.getState();
       const sk = useSketch.getState();
       if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || sk.active || sk.picking) return;
-      if (e.key === "d" || e.key === "D") {
+      if (isCommand(e, "drawings")) {
         if (useDrawings.getState().open) closeDrawings();
         else if (useDesign.getState().model?.parts.length) openDrawings();
-      } else if (e.key === "Escape" && useDrawings.getState().open) {
+      } else if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && useDrawings.getState().open) {
         if (useDrawings.getState().selected) selectSheetItem(null);
       }
     };

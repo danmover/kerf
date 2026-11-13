@@ -52,6 +52,8 @@ import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
 import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
+import { DecalDecorator } from "./viewport/parts/decals";
+import { useProject } from "../app/project";
 import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 import { ViewCube } from "./viewport/ViewCube";
@@ -126,7 +128,9 @@ export function Viewport() {
     boards.setModel(useDesign.getState().model);
     // and bought electronics drawn as they look: printed labels, leads, moulded lettering
     const detail = new PartDetailDecorator();
-    decor.current = new Decorators([boards, detail]);
+    // and the decals written on parts: lettering and the project's pictures
+    const decals = new DecalDecorator(() => useProject.getState().current?.id, () => c.redecorate());
+    decor.current = new Decorators([boards, detail, decals]);
     c.setDecorator(decor.current);
     mfgOverlay.current = new ProcessOverlay(c);
     // with the selection filter on faces, edges or corners, a click picks those (the pick layer does), not the part
@@ -189,6 +193,7 @@ export function Viewport() {
       c.dispose();
       boards.dispose();
       detail.dispose();
+      decals.dispose();
       boardDecor.current = null;
       decor.current = null;
       ctl.current = null;
@@ -198,6 +203,10 @@ export function Viewport() {
   useEffect(() => {
     ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme });
   }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme]);
+
+  useEffect(() => {
+    ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
+  }, [settings.mouseScheme, settings.wheelReverse, glTry]);
 
   useEffect(() => {
     boardDecor.current?.setModel(model);

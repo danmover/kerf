@@ -10,7 +10,7 @@ import type { EvalPart } from "../../../core/model";
 import type { V3 } from "../../../kernel/recipe";
 import { catalogPart } from "../../../machine/catalog";
 import type { CatalogPart } from "../../../machine/types";
-import type { Decorator, PartDecoration } from "../scene";
+import type { Decorator, PartDecoration, PartSurface } from "../scene";
 import { boardOrigin } from "../boards/decorate";
 import { escBand, labelTexture, moulded, packSide, packTop, servoSticker, type LabelSpec, type PackText } from "./labels";
 
@@ -328,16 +328,30 @@ export class PartDetailDecorator implements Decorator {
 export class Decorators implements Decorator {
   constructor(private list: Decorator[]) {}
 
-  key(p: EvalPart): string | null {
+  key(p: EvalPart, s?: PartSurface): string | null {
+    const keys: string[] = [];
     for (let i = 0; i < this.list.length; i++) {
-      const k = this.list[i].key(p);
-      if (k !== null) return `${i}|${k}`;
+      const k = this.list[i].key(p, s);
+      if (k !== null) keys.push(`${i}|${k}`);
     }
-    return null;
+    return keys.length ? keys.join("||") : null;
   }
 
-  make(p: EvalPart): PartDecoration | null {
-    for (const d of this.list) if (d.key(p) !== null) return d.make(p);
-    return null;
+  /** Every decorator's decoration for the part together (a board's detail and the decals on it), once all are ready. */
+  make(p: EvalPart, s?: PartSurface): PartDecoration | null {
+    const made: PartDecoration[] = [];
+    for (const d of this.list) {
+      if (d.key(p, s) === null) continue;
+      const m = d.make(p, s);
+      if (!m) {
+        for (const x of made) x.dispose();
+        return null;
+      }
+      made.push(m);
+    }
+    if (made.length <= 1) return made[0] ?? null;
+    const object = new THREE.Group();
+    for (const m of made) object.add(m.object);
+    return { object, hides: made.flatMap((m) => m.hides ?? []), dispose: () => made.forEach((m) => m.dispose()) };
   }
 }

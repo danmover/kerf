@@ -4,6 +4,7 @@ import { MotionConfig, motion } from "framer-motion";
 import { useEffect, useState } from "react";
 import { useUi, go, toast } from "./app/ui";
 import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/settings";
+import { bindingOf, commandFor } from "./app/keymap";
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
 import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view";
 import { startEngine, useDesign } from "./core/engine";
@@ -136,9 +137,8 @@ function isTyping(t: EventTarget | null) {
   return el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable || !!el.closest?.(".cm-editor");
 }
 
-const CAMERA_KEYS: Record<string, ViewPreset> = { "1": "iso", "2": "front", "3": "right", "4": "top" };
-/** with Shift, 2, 3 and 4 look from the other side (by key position, so any keyboard layout) */
-const OPPOSITE_KEYS: Record<string, ViewPreset> = { Digit2: "back", Digit3: "left", Digit4: "bottom" };
+/** the standard views' commands (see app/keymap) */
+const VIEW_COMMANDS: Record<string, ViewPreset> = { "view.iso": "iso", "view.front": "front", "view.right": "right", "view.top": "top", "view.back": "back", "view.left": "left", "view.bottom": "bottom" };
 
 function useShortcuts() {
   useEffect(() => {
@@ -178,64 +178,71 @@ function useShortcuts() {
         else undo();
         return;
       }
-      if (meta || e.altKey || typing) return;
+      if (typing) return;
 
       const v = useView.getState();
       if (key === "Escape") {
+        if (meta || e.altKey) return;
         if (v.selected.length || v.focusCheck || v.focusParts.length) useView.setState({ selected: [], focusCheck: null, focusParts: [] });
         return;
       }
-      if (key === "?") {
-        e.preventDefault();
-        useUi.setState({ shortcutsOpen: true });
-        return;
-      }
-      if (key === " ") {
-        if ((e.target as HTMLElement | null)?.tagName === "BUTTON") return;
-        const moves = useDesign.getState().model?.parts.some((p) => turns(p.motion));
-        if (moves) {
+      // the keys the user may have moved (Settings, or the shortcut sheet); the tools with their own
+      // listeners (voice, measure, the selection filter, box select, handles, drawings) look theirs up there
+      const binding = bindingOf(e);
+      const cmd = commandFor(binding, useSettings.getState().keys);
+      if (!cmd) return;
+      if (binding !== null && /^(mod|alt)\+/.test(binding)) e.preventDefault();
+      if (VIEW_COMMANDS[cmd]) return requestCamera(VIEW_COMMANDS[cmd]);
+      switch (cmd) {
+        case "shortcuts":
           e.preventDefault();
-          useView.setState({ playing: !v.playing });
+          return useUi.setState({ shortcutsOpen: true });
+        case "play": {
+          if ((e.target as HTMLElement | null)?.tagName === "BUTTON") return;
+          const moves = useDesign.getState().model?.parts.some((p) => turns(p.motion));
+          if (moves) {
+            e.preventDefault();
+            useView.setState({ playing: !v.playing });
+          }
+          return;
         }
-        return;
-      }
-      if (e.shiftKey && OPPOSITE_KEYS[e.code]) return requestCamera(OPPOSITE_KEYS[e.code]);
-      if (CAMERA_KEYS[key]) return requestCamera(CAMERA_KEYS[key]);
-      switch (key) {
-        case "f":
+        case "fit":
           return requestCamera("fit");
-        case "s":
+        case "section":
           return useView.setState({ section: { ...v.section, on: !v.section.on } });
-        case "e":
+        case "explode":
           return useView.setState({ explode: v.explode > 0 ? 0 : 1 });
-        case "x":
+        case "xray":
           return useView.setState({ xray: !v.xray });
-        case "w":
+        case "wiring":
           return toggleWiring();
-        case "m":
+        case "markup":
           return toggleMarkup();
-        case "c":
+        case "code":
           return toggleCode();
-        case "i":
+        case "isolate":
           if (v.selected.length || v.isolate) useView.setState({ isolate: !v.isolate });
           return;
-        case "g": {
-          // the selected part's group on its own; again (or Shift+G) shows every group
+        case "group.solo": {
+          // the selected part's group on its own; again shows every group
           const part = useDesign.getState().model?.parts.find((p) => p.id === v.selected[0]);
-          if (e.shiftKey || !part || (v.soloGroups.length === 1 && v.soloGroups[0] === part.group)) return useView.setState({ soloGroups: [] });
+          if (!part || (v.soloGroups.length === 1 && v.soloGroups[0] === part.group)) return useView.setState({ soloGroups: [] });
           return useView.setState({ soloGroups: [part.group] });
         }
-        case "t":
+        case "group.all":
+          return useView.setState({ soloGroups: [] });
+        case "turntable":
           return useView.setState({ turntable: !v.turntable });
-        case "p":
+        case "photoreal":
           return updateSettings({ photoreal: !useSettings.getState().photoreal });
-        case "a":
+        case "assembly":
           // the parts fly in from an exploded start and end assembled
           return useView.setState({ explode: 0, assemblyRequest: v.assemblyRequest + 1 });
-        case "l": {
+        case "lighting.next":
+        case "lighting.prev": {
           const ids = LIGHTING_IDS;
           const cur = useSettings.getState().lighting;
-          return updateSettings({ lighting: ids[(ids.indexOf(cur) + (e.shiftKey ? ids.length - 1 : 1)) % ids.length] });
+          return updateSettings({ lighting: ids[(ids.indexOf(cur) + (cmd === "lighting.prev" ? ids.length - 1 : 1)) % ids.length] });
         }
       }
     };

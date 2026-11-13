@@ -434,6 +434,31 @@ a:hover {
   color: var(--text-2);
 }
 
+/* a key in the shortcut sheet that can be changed: click, then press the new key */
+.key-take {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  min-height: 24px;
+  padding: 1px 4px;
+  border: 1px dashed transparent;
+  border-radius: 6px;
+  background: none;
+  color: inherit;
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.key-take:hover,
+.key-take:focus-visible {
+  border-color: var(--line-2);
+  background: var(--bg-2);
+}
+.key-take.taking {
+  border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+
 .chip {
   display: inline-flex;
   align-items: center;

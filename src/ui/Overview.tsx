@@ -11,6 +11,7 @@ import { useProject, previewSource, endPreview, restoreVersion } from "../app/pr
 import { useChat, sendMessage } from "../ai/chat";
 import { openSpot } from "../app/spot";
 import { attention, briefSummary, checkScope, designStats, massText, sizeText, placedBox, type UseStatus } from "../app/designStats";
+import { massProperties } from "../core/massProps";
 import { lineCol } from "../lang/lexer";
 import { diffStats } from "../core/sourceEdit";
 import { materialDef, FINISHES, isPrinted, resolveFinish } from "../library/materials";
@@ -383,6 +384,58 @@ function useStats(only?: (p: EvalPart) => boolean) {
   return useMemo(() => designStats(model, (h) => meshes.get(h), only), [model, meshVersion, only]); // eslint-disable-line react-hooks/exhaustive-deps
 }
 
+const n3 = (v: number[], d = 1) => v.map((x) => (Math.abs(x) < 5e-4 ? 0 : +x.toFixed(d))).join(", ");
+
+/** Centre of mass, principal moments and axes, and the inertia tensor, folded away until asked for. */
+function MassProps({ only }: { only?: (p: EvalPart) => boolean }) {
+  const model = useDesign((s) => s.model);
+  const meshVersion = useDesign((s) => s.meshVersion);
+  const mp = useMemo(
+    () =>
+      model
+        ? massProperties(
+            model,
+            (h) => {
+              const e = meshes.get(h);
+              return e ? { mesh: e.preview ?? e.final, volume: e.volume } : undefined;
+            },
+            only,
+          )
+        : null,
+    [model, meshVersion, only], // eslint-disable-line react-hooks/exhaustive-deps
+  );
+  if (!mp?.solids) return null;
+  const kg = (x: number) => x / 1000;
+  const I = mp.inertia.map(kg);
+  const d = (x: number) => (x >= 100 ? 0 : x >= 1 ? 2 : 4);
+  return (
+    <details className="ov-massprops">
+      <summary>mass properties</summary>
+      <dl className="mono">
+        <dt>centre of mass</dt>
+        <dd>({n3(mp.com)}) mm</dd>
+        <dt>principal moments</dt>
+        <dd>{mp.principal.moments.map((x) => +kg(x).toFixed(d(kg(x)))).join(", ")} kg·mm²</dd>
+        {mp.principal.axes.map((a, k) => (
+          <div key={k} style={{ display: "contents" }}>
+            <dt>axis {k + 1}</dt>
+            <dd>({n3(a, 3)})</dd>
+          </div>
+        ))}
+        <dt>radii of gyration</dt>
+        <dd>{n3(mp.gyration)} mm</dd>
+        <dt title="About the centre of mass, along the world axes; off-diagonal terms are −∫xy dm">inertia tensor</dt>
+        <dd>
+          Ixx {+I[0].toFixed(d(Math.abs(I[0])))}, Iyy {+I[4].toFixed(d(Math.abs(I[4])))}, Izz {+I[8].toFixed(d(Math.abs(I[8])))}
+          <br />
+          Ixy {+I[1].toFixed(d(Math.abs(I[1])))}, Iyz {+I[5].toFixed(d(Math.abs(I[5])))}, Ixz {+I[2].toFixed(d(Math.abs(I[2])))} kg·mm²
+        </dd>
+      </dl>
+      {mp.pending > 0 && <div className="dim">{mp.pending} still building</div>}
+    </details>
+  );
+}
+
 function SpecsCard({ i }: { i: number }) {
   const model = useDesign((s) => s.model);
   const stats = useStats();
@@ -411,6 +464,7 @@ function SpecsCard({ i }: { i: number }) {
         </Fact>
         {brief?.data.process && <Fact k="process">{brief.data.process}</Fact>}
       </dl>
+      <MassProps />
       {stats.materials.length > 0 && (
         <div className="ov-mats">
           {stats.materials.slice(0, 6).map((m, k) => (
@@ -500,6 +554,7 @@ function SelectionCard({ ids, i }: { ids: string[]; i: number }) {
         <span>{massText(stats.mass)}</span>
         <span className={fails ? "fail" : checks.length ? "pass" : ""}>{checks.length ? (fails ? `${fails} failing` : `${checks.length} checks pass`) : "no checks"}</span>
       </div>
+      <MassProps only={only} />
       {one && (
         <button className="ov-code" onClick={() => (openTab("code"), setTimeout(() => revealSpan(p.span), 30))} title="Open in design.kerf">
           <span className="ov-code-gutter" aria-hidden="true">
