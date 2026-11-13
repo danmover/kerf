@@ -1,3 +1,5 @@
+// Test builds: a pull request that changes desktop/ puts its Windows installer on the
+// draft "Kerf desktop preview" release, which only people who can push to the repo see.
 // Kerf as a desktop app: one window showing the production build of the web
 // app from Kerf's own kerf://app origin, with the security headers it has on
 // the web. What the desktop adds is control a browser tab doesn't give:
