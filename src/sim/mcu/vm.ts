@@ -2,6 +2,8 @@
 // port, I2C, EEPROM and servos. The simulation engine implements it; the
 // compiler (compile.ts) only charges cycles and calls these.
 
+import type { Arch, Board } from "./board";
+
 /** A pointer: an element of a JS array that holds the pointee's memory. */
 export interface Ptr {
   m: unknown[];
@@ -25,8 +27,10 @@ export interface IoRegister {
 export interface Hal {
   /** CPU clock in Hz */
   fcpu: number;
-  /** the core family: the AVR (Uno, Nano) or the ESP32 */
-  arch?: "avr" | "esp32";
+  /** the core family: the AVR (Uno, Nano, Mega, ATtiny85), the ESP32, the RP2040 or the STM32 */
+  arch?: Arch;
+  /** the board's profile: its pins, ports and what its core lacks */
+  board?: Board;
   /** cycles elapsed since reset */
   cyc: number;
   /** when cyc reaches this, call service() */
@@ -48,6 +52,10 @@ export interface Hal {
   /** ESP32 LEDC: write a duty in the pin's own resolution */
   pwmWrite?(pin: number, duty: number): boolean;
   pwmRead?(pin: number): number;
+  /** the RP2040 and STM32 cores' analogWriteResolution(bits), analogWriteRange(top), analogWriteFreq(hz): every pin at once */
+  pwmGlobal?(what: "bits" | "range" | "hz", v: number): void;
+  /** analogReadResolution(): the bits analogRead() returns on the 32-bit cores */
+  readResolution?(bits: number): void;
   /** the PWM rate on a pin, Hz */
   pwmHz?(pin: number): number;
   attachInterrupt(n: number, fn: FnRef, mode: number): void;

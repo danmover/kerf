@@ -312,6 +312,73 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     ],
     smd: 1.1,
   },
+  // the boards in catalog/boards.ts: castellated or edge pins with headers soldered under them, in pin order
+  esp32s3_xiao: {
+    mask: "#2b2d30",
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["XIAO", "ESP32S3"],
+    marks: ["Seeed Studio\nESP32-S3R8"],
+    looks: ["usb_c", "can"],
+    extras: [
+      { look: "header_down", x: 0, y: -7.62, w: 17.78, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 0, y: 7.62, w: 17.78, d: 2.54, h: 2.5 },
+      { look: "button", x: -3.2, y: 4.4, w: 3, d: 2, h: 1.2 },
+      { look: "button", x: -3.2, y: -4.4, w: 3, d: 2, h: 1.2 },
+    ],
+    smd: 0.7,
+  },
+  esp32c3_xiao: {
+    mask: "#2b2d30",
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["XIAO", "ESP32C3"],
+    marks: ["ESP32-C3\nFH4"],
+    looks: ["usb_c", "qfn"],
+    extras: [
+      { look: "header_down", x: 0, y: -7.62, w: 17.78, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 0, y: 7.62, w: 17.78, d: 2.54, h: 2.5 },
+      { look: "button", x: -3.2, y: 4.4, w: 3, d: 2, h: 1.2 },
+      { look: "button", x: -3.2, y: -4.4, w: 3, d: 2, h: 1.2 },
+      { look: "soic", x: 8.2, y: 0, w: 2, d: 2, h: 0.8, mark: "U.FL" },
+    ],
+    smd: 0.7,
+  },
+  blackpill_f411: {
+    mask: BLACK,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["WeAct", "STM32F411"],
+    marks: ["STM32F411\nCEU6"],
+    looks: ["usb_c", "qfn"],
+    extras: [
+      // each row is 20 pins; its last three (5V, GND, 3V3) are a header of their own so the wiring takes them in order
+      { look: "header_down", x: -3.81, y: 7.62, w: 43.18, d: 2.54, h: 2.5 },
+      { look: "header_down", x: -3.81, y: -7.62, w: 43.18, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 21.59, y: 7.62, w: 7.62, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 21.59, y: -7.62, w: 7.62, d: 2.54, h: 2.5 },
+      { look: "button", x: -14, y: 3.4, w: 3.5, d: 3, h: 1.6 },
+      { look: "button", x: -14, y: -3.4, w: 3.5, d: 3, h: 1.6 },
+      { look: "button", x: 12, y: -3.4, w: 3.5, d: 3, h: 1.6 },
+      { look: "crystal", x: 9, y: 3.2, w: 3.2, d: 2.5, h: 0.8 },
+      { look: "soic", x: -7.5, y: 0, w: 5, d: 5.3, h: 1.6, mark: "SPI\nFLASH" },
+    ],
+    smd: 0.9,
+  },
+  trinket_5v: {
+    mask: BLUE,
+    silk: WHITE_SILK,
+    finish: "hasl",
+    title: ["Trinket 5V"],
+    marks: ["ATTINY85\n20SU"],
+    looks: ["usb_micro", "soic"],
+    extras: [
+      { look: "header_down", x: 4, y: -6.35, w: 12.7, d: 2.54, h: 2.5 },
+      { look: "header_down", x: 4, y: 6.35, w: 12.7, d: 2.54, h: 2.5 },
+      { look: "button", x: -5.5, y: 0, w: 3.5, d: 3, h: 1.6 },
+    ],
+    smd: 0.8,
+  },
   // Adafruit's field and current sensors and coil drivers (catalog/fields.ts), as sold: the newer ones black with
   // gold pads, the two older motor drivers blue; green screw terminals, cream STEMMA QT sockets
   tmag5273_breakout: {

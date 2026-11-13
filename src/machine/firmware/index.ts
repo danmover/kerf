@@ -31,7 +31,9 @@ export interface FirmwareOutput {
   own?: boolean;
 }
 
-const ARDUINO_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32)/;
+const ARDUINO_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32|blackpill_)/;
+/** boards a sketch of your own runs on (the firmware simulator has each one); the Trinket has no serial port for Kerf's console code */
+const OWN_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32|blackpill_|trinket_)/;
 
 export function generateFirmware(m: MachineData, designName: string): FirmwareOutput[] {
   return m.firmware.map((fw) => {
@@ -49,8 +51,8 @@ function ownFirmware(m: MachineData, fw: FirmwareDef, gen: FirmwareOutput): Firm
   const part = comp ? catalogPart(comp.catalogId) : undefined;
   if (gen.target !== "arduino" && gen.target !== "none")
     return { ...gen, warnings: [`code: "own" runs a sketch of your own on Arduino-style boards; ${part?.name ?? "this board"} runs ${TARGET_NAME[gen.target]}, so Kerf's ${TARGET_NAME[gen.target]} configuration is used.`, ...gen.warnings] };
-  if (!part || !ARDUINO_BOARDS.test(part.id))
-    return { ...gen, warnings: [`code: "own" needs an Arduino-style board (an Arduino, ESP32 or Raspberry Pi Pico) for the block's board:.`, ...gen.warnings] };
+  if (!part || !OWN_BOARDS.test(part.id))
+    return { ...gen, warnings: [`code: "own" needs an Arduino-style board (an Arduino, an ESP32 or XIAO, a Raspberry Pi Pico, an STM32 Black Pill or a Trinket) for the block's board:.`, ...gen.warnings] };
   const files = (fw.own?.files ?? []).filter((f) => OWN_FILE.test(f.path));
   if (!files.some((f) => f.path.endsWith(".ino")))
     return { ...gen, warnings: [`code: "own", but no sketch of your own is saved for ${fw.name} yet, so Kerf's generated code runs. Write it in Build → Firmware → My code.`, ...gen.warnings] };
@@ -114,7 +116,9 @@ function generatedFor(m: MachineData, fw: FirmwareDef, designName: string): Firm
       pinTable: r.pinTable,
     };
   }
-  const msg = `Kerf cannot generate firmware for ${ctx.boardPart.name} yet.`;
+  // a board the simulator runs, where Kerf's console code does not fit (the Trinket has no serial port), takes a sketch of your own
+  const own = OWN_BOARDS.test(ctx.boardPart.id) ? `: write a sketch of your own for it with code: "own" in the firmware block` : "";
+  const msg = `Kerf cannot generate firmware for ${ctx.boardPart.name} yet${own}.`;
   return { name: fw.name, board: ctx.board.name, target: "none", summary: msg, files: [], warnings: [msg], pinTable: [] };
 }
 

@@ -15,6 +15,10 @@ export interface Abi {
 export const AVR: Abi = { intBits: 16, ptrBytes: 2, doubleBits: 32, charSigned: true };
 /** ESP32 (Xtensa LX6): 32-bit int and pointers, a real 64-bit double */
 export const XTENSA: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: true };
+/** ARM Cortex-M (RP2040, STM32): as Xtensa, but a plain char is unsigned, as the ARM ABI says */
+export const ARM: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: false };
+/** RISC-V (ESP32-C3): a plain char is unsigned here too */
+export const RISCV: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: false };
 
 export interface StructField {
   name: string;

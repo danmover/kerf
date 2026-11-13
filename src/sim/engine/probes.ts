@@ -3,7 +3,7 @@
 // serial ports with its time on the wire, each I2C and SPI transaction, and each analog reading the firmware took.
 // The board reports these as they happen; nothing is sampled, so recording changes nothing in the run.
 
-import type { Board } from "../mcu/board";
+import { pinLabel, type Board } from "../mcu/board";
 
 export interface SignalSpec {
   /** record at most this many pin changes and bus events (400 000); later ones are dropped and the trace says so */
@@ -106,10 +106,7 @@ export interface PinState {
 
 /** A pin's name as the board's pinout prints it. */
 export function pinName(board: Board, pin: number): string {
-  if (board.arch === "esp32") return `GPIO${pin}`;
-  const a = board.analog.indexOf(pin);
-  if (a >= 0) return `A${a}`;
-  return `D${pin}`;
+  return pinLabel(board, pin);
 }
 
 export class SignalRecorder implements ProbeHooks {
