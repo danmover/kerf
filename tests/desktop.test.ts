@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { cardName } from "../src/app/desktop";
+import { cardName, isSoftwareRenderer } from "../src/app/desktop";
 
 describe("graphics card name", () => {
   it("reads the card from ANGLE's renderer strings", () => {
@@ -11,5 +11,19 @@ describe("graphics card name", () => {
   });
   it("leaves other strings alone", () => {
     expect(cardName("Apple M2")).toBe("Apple M2");
+  });
+});
+
+describe("software rendering", () => {
+  it("spots renderers that draw on the CPU, as full strings or card names", () => {
+    expect(isSoftwareRenderer("ANGLE (Google, Vulkan 1.3.0 (SwiftShader Device (Subzero) (0x0000C0DE)), SwiftShader driver)")).toBe(true);
+    expect(isSoftwareRenderer("SwiftShader Device (Subzero)")).toBe(true);
+    expect(isSoftwareRenderer("ANGLE (Microsoft, Microsoft Basic Render Driver (0x0000008C) Direct3D11 vs_5_0 ps_5_0, D3D11)")).toBe(true);
+    expect(isSoftwareRenderer("llvmpipe (LLVM 17.0.6, 256 bits)")).toBe(true);
+  });
+  it("leaves real graphics cards alone", () => {
+    expect(isSoftwareRenderer("ANGLE (AMD, AMD Radeon RX 7800 XT (0x0000747E) Direct3D11 vs_5_0 ps_5_0, D3D11)")).toBe(false);
+    expect(isSoftwareRenderer("AMD Radeon RX 7800 XT")).toBe(false);
+    expect(isSoftwareRenderer("Apple M2")).toBe(false);
   });
 });
