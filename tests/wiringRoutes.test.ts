@@ -209,6 +209,39 @@ describe("cables across a pivot", () => {
     expect(info.detail).toMatch(/slack/);
   });
 
+  it("crosses where the design says, in a loop of slack, when the joint gives a cables: point", () => {
+    // 45 mm out from the axis, in the open beside the block: far from the axis by intent
+    const marked: PivotJoint = { ...joint, cables: [0, -45, 100] };
+    const run = runWiring({ geos, placed, wires: [] }, { harness: h, mounts: [], screws: [], pivots: [marked] });
+    const c = run.findings!.pivots!;
+    expect(c).toHaveLength(1);
+    expect(c[0].loop).toBe(true);
+    expect(dist(c[0].at!, [0, -45, 100])).toBeLessThan(8);
+    expect(c[0].r!).toBeGreaterThan(36);
+    const w = run.result.wires[0];
+    expect(Math.min(...w.points.map((p) => dist(p, c[0].at!)))).toBeLessThan(6);
+    const model = { parts: [], scenarios: [{ spec: { mechanism: { items: [{ k: "pivot", name: "tilt", limits: [-30, 30] }] } } }] } as unknown as Model;
+    const items = wiringItems(h, run.findings!, [], model);
+    // a loop by intent is told how long to be, not warned about
+    expect(items.find((i) => i.id === "wiring:pivot:tilt")).toBeUndefined();
+    const loop = items.find((i) => i.id === "wiring:pivot-loop:tilt")!;
+    expect(loop.status).toBe("info");
+    expect(loop.detail).toMatch(/free loop of about \d+ mm/);
+  });
+
+  it("reads a pivot's cables: point from the design", () => {
+    const m = evaluate(`design "Turntable"
+part plate { process: false  body box(80, 80, 6, at: (0, 0, 40)) }
+scenario "Spin" {
+  mechanism: sim.mechanism(sim.pivot(plate, at: (0, 0, 40), axis: Z, limits: (-45deg, 45deg), cables: (0, -50, 36)))
+  firmware: none
+  duration: 1s
+}
+`);
+    const it = m.scenarios![0].spec.mechanism!.items.find((x) => x.k === "pivot")!;
+    expect(it.k === "pivot" && it.cables).toEqual([0, -50, 36]);
+  });
+
   it("goes the short way round without the pivot", () => {
     const run = runWiring({ geos, placed, wires: [] }, { harness: h, mounts: [], screws: [] });
     expect(run.findings!.pivots).toBeUndefined();

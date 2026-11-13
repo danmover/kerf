@@ -62,6 +62,8 @@ export interface RouteVia {
   c: V3;
   axis: V3;
   at: V3;
+  /** cross at `c` itself (the design's own crossing point), not as near the axis as there is room */
+  here?: boolean;
 }
 
 /** Space a cable should not be tied in: where a moving part or a drag chain goes (assembly coordinates). */
@@ -1160,7 +1162,7 @@ class Search {
           const along = Math.abs((p[0] - v.c[0]) * v.axis[0] + (p[1] - v.c[1]) * v.axis[1] + (p[2] - v.c[2]) * v.axis[2]);
           if (along > VIA_REACH / 2) continue;
           // a cell a cable already crosses in is taken: the next one crosses beside it
-          const cost = axisDistance(p, v.at, v.axis) + 0.5 * along + gr.use[idx] * gr.h * 1.5;
+          const cost = (v.here ? Math.hypot(p[0] - v.c[0], p[1] - v.c[1], p[2] - v.c[2]) : axisDistance(p, v.at, v.axis) + 0.5 * along) + gr.use[idx] * gr.h * 1.5;
           if (cost < bestCost) {
             bestCost = cost;
             best = idx;
@@ -1349,7 +1351,7 @@ interface Cable {
 function bundles(wires: RouteWire[]): Cable[] {
   const bendOf = (d: number) => Math.max(BEND_MIN, BEND * d);
   const way = (w: RouteWire, flipped: boolean) => {
-    const via = (w.via ?? []).map((v) => [...v.at, ...v.axis].map((x) => Math.round(x * 10)).join(","));
+    const via = (w.via ?? []).map((v) => [...v.at, ...v.axis, ...(v.here ? v.c : [])].map((x) => Math.round(x * 10)).join(","));
     const legs = [...(w.legAvoid ?? [])];
     if (flipped) {
       via.reverse();

@@ -820,7 +820,12 @@ function assemblyMd(model: Model, name: string, ctx: { made: MadePart[]; cuts: C
   const tools = ["hex keys and screwdrivers", "a multimeter"];
   if (ctx.rows.length) tools.push("wire strippers and a crimp tool for the connectors you use");
   if (ctx.boards.length) tools.push("a temperature-controlled soldering iron, thin solder and flush cutters for the circuit board");
-  else if (m.components.some((c) => ["connector", "battery", "fuse"].includes(c.kind))) tools.push("a soldering iron and heat-shrink for the power connectors");
+  else if (m.components.some((c) => ["connector", "battery", "fuse"].includes(c.kind))) {
+    // only when a joint needs solder: leads that plug in, and bare ends under a screw or in a lever, need none
+    const ws = ctx.rows.length ? wiringSteps(m, ctx.rows) : null;
+    const solder = !ws || [...ws.fits.values()].some((ends) => ends.some((x) => /solder/i.test(x))) || ws.steps.some((st) => st.notes.some((n) => /\bsolder/i.test(n)));
+    if (solder) tools.push("a soldering iron and heat-shrink for the power connectors");
+  }
   if (ctx.made.some((p) => p.printable)) tools.push("a 3D printer");
   if (ctx.cuts.length) tools.push("a saw with a fine blade and a deburring tool (or have the stock cut when you order it)");
   L.push(`- [ ] Tools: ${tools.join("; ")}.`, "");

@@ -32,6 +32,8 @@ export interface MechJointItem {
   drive?: string;
   /** a servo's angle at the design pose, deg */
   zero?: number;
+  /** where cables cross a pivot in a loop of slack (a point at the design pose), when they cannot pass beside its bearing */
+  cables?: V3;
 }
 
 export type MechItem =
@@ -218,6 +220,7 @@ function joint(k: MechJointItem["k"], a: Args): MechJointItem {
     if (a.has("free")) j.free = a.num("free");
     if (a.has("drive")) j.drive = nameOf(a.value("drive"), a.ctx, `${a.fname}(): drive`);
     if (a.has("zero")) j.zero = a.num("zero");
+    if (k === "pivot" && a.has("cables")) j.cables = optV3(a, "cables");
   }
   return j;
 }
@@ -227,8 +230,8 @@ const JOINT_DOC = "what: the part or component (or a list of them) that moves as
 export const MECH_FNS: [string, Fn][] = [
   mechFn(
     "pivot",
-    ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "drive", "zero", "name"],
-    `A hinge or shaft turning about an axis. ${JOINT_DOC}; at: a point on the axis and axis: its direction (both from the part's spin:/mesh: or gear when left out); limits: end stops from the design pose, like (-10deg, 90deg); friction: torque in its bearings (N·mm); damping: N·mm per deg/s; spring: a torsion spring, N·mm per deg, relaxed at free: (deg from the design pose, 0); drive: the gearmotor or servo turning it (a servo also takes zero: its angle at the design pose, deg). Results: <name>.angle, .angle_min, .angle_max, .turns, .max_rpm, .peak_torque, .hold_torque (the most averaged over any one second: a servo reaches its stall torque for a moment whenever it starts or corrects, so judge its load by this), .bearing_load, .hit_stop.`,
+    ["what", "on", "at", "axis", "limits", "friction", "damping", "spring", "free", "drive", "zero", "cables", "name"],
+    `A hinge or shaft turning about an axis. ${JOINT_DOC}; at: a point on the axis and axis: its direction (both from the part's spin:/mesh: or gear when left out); limits: end stops from the design pose, like (-10deg, 90deg); friction: torque in its bearings (N·mm); damping: N·mm per deg/s; spring: a torsion spring, N·mm per deg, relaxed at free: (deg from the design pose, 0); drive: the gearmotor or servo turning it (a servo also takes zero: its angle at the design pose, deg); cables: a point where the wiring crosses this joint in a loop of slack, for a joint whose bearing has no room beside it (a turntable, a yaw axis under a bolt): the wires are routed through that point and the wiring check says how long a loop to leave (left out, they cross beside the bearing at one end of the axis). Results: <name>.angle, .angle_min, .angle_max, .turns, .max_rpm, .peak_torque, .hold_torque (the most averaged over any one second: a servo reaches its stall torque for a moment whenever it starts or corrects, so judge its load by this), .bearing_load, .hit_stop.`,
     (a) => new MechValue(joint("pivot", a), "pivot"),
   ),
   mechFn(
