@@ -365,6 +365,29 @@ void loop() {
     expect(String(v.results.state)).toMatch(/holding level/);
   });
 
+  it("arms after the unit crept steadily on its pivots while the gyro was zeroed at power-up", { timeout: 30_000 }, () => {
+    // a steady creep reads as steady as standing still: a zero taken then holds the creep's rate, and the unit, once
+    // it stops, reads as turning, so the arm check would refuse it for good
+    const m = design(`scenario "Creep at power-up" {
+  world: sim.bench()
+  duration: 4s
+  console: [sim.type("arm", at: 2.5s)]
+}`);
+    const def = m.scenarios![0];
+    const mech = gimbal();
+    const roll = mech.joints.find((j) => j.name === "roll")!;
+    roll.start = -3 * D2R;
+    // a push against heavy damping: about 8 deg/s about the roll axis for the first 0.8 s, all through the firmware's
+    // first zeroing; then friction holds it still
+    roll.damping = 0.2;
+    mech.drives.push({ kind: "force", name: "creep", joint: "roll", value: [[0, 0.03], [0.8, 0.03], [0.801, 0]] });
+    const v = runSpec({ ...def.spec, mech, variants: ["expected"] }, m.machine!, m.name).variants[0];
+    expect(v.error).toBeUndefined();
+    const out = v.serial.filter((l) => l.dir === "out").map((l) => l.text);
+    expect(out).not.toContain("not still");
+    expect(out).toContain("state: armed");
+  });
+
   it("reads the IMU in the rig's axes when the board is mounted on its side", { timeout: 30_000 }, () => {
     // stood on a face looking out along -X: the chip's X runs up, its Z points out along -X
     const m = design(

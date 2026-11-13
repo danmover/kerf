@@ -364,6 +364,9 @@ ${homeStop ? "// the end stop the fan's start-up twists the unit onto, degrees f
 #define ARM_STILL_DPS 5.0f
 // the gyro's bias is only taken while no axis swings more than this either side of its mean
 #define CAL_STILL_DPS 1.0f
+// and only when its mean is under this: the chip's own zero-rate offset is about 1 deg/s, so a larger mean is the
+// unit turning steadily (creeping off its stop against the bearings' friction reads as steady as standing still)
+#define CAL_MAX_BIAS_DPS 3.0f
 #define IMU_TIMEOUT_MS 20
 #define LOOP_US 2000
 
@@ -1048,7 +1051,8 @@ bool imuSample(float *g, float *a) {
 
 // the gyro's bias: its mean over 0.5 s, kept only when the unit held still all through it. A bias taken while the
 // unit swings (it can still be settling on its pivots after power-up) is off by the swing's rate, and the attitude
-// filter turns that into a steady tilt the loop then holds. Returns whether it was still.
+// filter turns that into a steady tilt the loop then holds; one taken while it creeps steadily would also make a
+// still unit read as turning, and the arm check would refuse it for good. Returns whether it was still.
 bool calibrateGyro() {
   float s[3] = {0, 0, 0};
   float lo[3] = {1e9f, 1e9f, 1e9f};
@@ -1068,7 +1072,7 @@ bool calibrateGyro() {
   }
   if (n < 100) return false;
   for (int i = 0; i < 3; i++)
-    if (hi[i] - lo[i] > 2 * CAL_STILL_DPS * DEG) return false;
+    if (hi[i] - lo[i] > 2 * CAL_STILL_DPS * DEG || fabs(s[i] / n) > CAL_MAX_BIAS_DPS * DEG) return false;
   for (int i = 0; i < 3; i++) bias[i] = s[i] / n;
   return true;
 }
