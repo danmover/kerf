@@ -247,6 +247,8 @@ function bridge() {
   ipcMain.handle("kerf:claude-code-new-token", async (e) => {
     fromKerf(e);
     settings.claudeCode.token = newToken();
+    // what connected before used the old token
+    lastConnect = lastRefused = null;
     await stopClaudeCode();
     if (settings.claudeCode.enabled) await startClaudeCode();
     else saveSettings(userData, settings);
@@ -272,6 +274,9 @@ const MCP_INSTRUCTIONS =
 
 let mcp: RunningMcp | null = null;
 let mcpError = "";
+/** the last time a program connected, and the last time one was turned away, for the status in Settings */
+let lastConnect: { at: number; client: string } | null = null;
+let lastRefused: { at: number; why: "no-token" | "wrong-token" } | null = null;
 let pageReady = false;
 let nextCall = 1;
 const calls = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -305,7 +310,15 @@ async function startClaudeCode() {
   if (!cc.token) cc.token = newToken();
   mcpError = "";
   try {
-    mcp = await startMcp({ port: cc.port, token: cc.token, backend: { request: askPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() } });
+    mcp = await startMcp({
+      port: cc.port,
+      token: cc.token,
+      backend: { request: askPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() },
+      onSeen: (s) => {
+        if (s.kind === "connected") lastConnect = { at: Date.now(), client: s.client };
+        else lastRefused = { at: Date.now(), why: s.why };
+      },
+    });
     // keep the port it found, so the command Claude Code saved keeps working
     cc.port = mcp.port;
   } catch (e) {
@@ -322,7 +335,7 @@ async function stopClaudeCode() {
 
 function claudeCodeInfo() {
   const cc = settings.claudeCode;
-  return { enabled: cc.enabled, running: !!mcp, url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`, token: cc.token, error: mcpError };
+  return { enabled: cc.enabled, running: !!mcp, url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`, token: cc.token, error: mcpError, lastConnect, lastRefused };
 }
 
 // ---------- start ----------

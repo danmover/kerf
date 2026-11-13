@@ -3,7 +3,7 @@
 
 import { afterEach, describe, expect, it } from "vitest";
 import { createServer } from "node:net";
-import { startMcp, type McpBackend, type RunningMcp } from "../desktop/mcp";
+import { startMcp, type McpBackend, type McpSeen, type RunningMcp } from "../desktop/mcp";
 import { callTool, mcpTools, toMcp, type McpToolResult } from "../src/ai/claudeCode";
 import { TOOL_DEFS } from "../src/ai/tools";
 import { useProject } from "../src/app/project";
@@ -22,8 +22,8 @@ afterEach(async () => {
   running = [];
 });
 
-async function serve(request: McpBackend["request"], port = 0) {
-  const r = await startMcp({ port, token: TOKEN, backend: { request, instructions: "Use kerf_instructions first.", version: "9.9.9" } });
+async function serve(request: McpBackend["request"], port = 0, onSeen?: (s: McpSeen) => void) {
+  const r = await startMcp({ port, token: TOKEN, backend: { request, instructions: "Use kerf_instructions first.", version: "9.9.9" }, onSeen });
   running.push(r);
   return r;
 }
@@ -54,6 +54,39 @@ describe("Kerf's MCP server", () => {
     expect((await post(r.url, { jsonrpc: "2.0", method: "notifications/initialized" })).status).toBe(202);
     const missing = await (await post(r.url, { jsonrpc: "2.0", id: 3, method: "resources/list" })).json();
     expect(missing.error.code).toBe(-32601);
+  });
+
+  it("says why a token was turned away and reports who connected, for Settings", async () => {
+    const seen: McpSeen[] = [];
+    const r = await serve(async () => ({}), 0, (s) => seen.push(s));
+    const ping = { jsonrpc: "2.0", id: 1, method: "ping" };
+    // mcp-remote with the token split off its header sends just "Bearer"
+    const none = await post(r.url, ping, { authorization: "Bearer" });
+    expect(none.status).toBe(401);
+    expect((await none.json()).error.message).toMatch(/got no token/);
+    const old = await post(r.url, ping, { authorization: "Bearer old-token" });
+    expect((await old.json()).error.message).toMatch(/old or mistyped/);
+    // a GET probe isn't counted
+    expect((await fetch(r.url, { headers: { authorization: "Bearer old-token" } })).status).toBe(401);
+    await post(r.url, { jsonrpc: "2.0", id: 2, method: "initialize", params: { protocolVersion: "2025-11-25", clientInfo: { name: "claude-code", version: "2.1.323" } } });
+    expect(seen).toEqual([
+      { kind: "refused", why: "no-token" },
+      { kind: "refused", why: "wrong-token" },
+      { kind: "connected", client: "claude-code 2.1.323" },
+    ]);
+  });
+
+  it("sends every reply with a length, never chunked, whichever protocol version", async () => {
+    const r = await serve(async () => ({}));
+    for (const v of ["2025-06-18", "2025-11-25"]) {
+      const init = await post(r.url, { jsonrpc: "2.0", id: 1, method: "initialize", params: { protocolVersion: v } }, { authorization: `Bearer ${TOKEN}`, "mcp-protocol-version": v });
+      expect(init.headers.get("transfer-encoding")).toBeNull();
+      expect(Number(init.headers.get("content-length"))).toBe(new TextEncoder().encode(await init.text()).length);
+    }
+    const note = await post(r.url, { jsonrpc: "2.0", method: "notifications/initialized" });
+    expect([note.status, note.headers.get("content-length"), note.headers.get("transfer-encoding")]).toEqual([202, "0", null]);
+    const stream = await fetch(r.url, { headers: { authorization: `Bearer ${TOKEN}`, accept: "text/event-stream" } });
+    expect([stream.status, stream.headers.get("content-length"), stream.headers.get("allow")]).toEqual([405, "0", "POST"]);
   });
 
   it("passes tool calls to the page and returns its answer or its error", async () => {

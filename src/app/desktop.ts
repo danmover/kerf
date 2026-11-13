@@ -25,6 +25,10 @@ export interface ClaudeCodeInfo {
   token: string;
   /** why the server could not start, e.g. every port taken */
   error: string;
+  /** the last program that connected since Kerf started, e.g. "claude-code 2.1.323" */
+  lastConnect?: { at: number; client: string } | null;
+  /** the last time a program was turned away for a missing or old token */
+  lastRefused?: { at: number; why: "no-token" | "wrong-token" } | null;
 }
 
 export interface ClaudeCodeBridge {
