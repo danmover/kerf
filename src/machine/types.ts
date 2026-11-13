@@ -78,6 +78,53 @@ export interface PinDef {
   note?: string;
 }
 
+/**
+ * Another place on a part where one of its pins can be reached: SDA again in a board's STEMMA QT socket, the supply
+ * pin of a servo board's channel 3. Wiring names it like a pin (`imu.QT_SDA`); electrically it is the pin.
+ */
+export interface SpotDef {
+  /** identifier used in .kerf wiring, e.g. QT_SDA, V3 */
+  id: string;
+  /** the pin it is */
+  pin: string;
+  /** label printed on the part there */
+  label?: string;
+}
+
+/**
+ * A connector on a part, or a lead it is sold with: the pins that go through it, in contact order. Wiring can
+ * join two of them in one statement (`wire servo.LEAD -> hub.CH0`), which makes a wire for each pair of contacts.
+ */
+export interface ConnDef {
+  /** identifier used in .kerf wiring, e.g. QT, CH0, LEAD */
+  id: string;
+  /** what the build guide calls it, after the part's name: "STEMMA QT socket", "channel 0", "own lead" */
+  name: string;
+  /** the pins or spots in it, in contact order */
+  pins: string[];
+  /** a lead fixed to the part: its wires need no cutting, and it must reach */
+  lead?: LeadDef;
+  /** the wires of the standard cable that plugs in here (a STEMMA QT cable's black, red, blue, yellow): colour of each, in pin order, and their AWG */
+  cable?: { colors: string[]; gauge: number };
+  /** how it goes together, for the build guide: "It only fits one way round." */
+  how?: string;
+  /** the plug that goes in here only fits one way round, so the build guide need not tell its wires apart */
+  keyed?: boolean;
+}
+
+export interface LeadDef {
+  /** length from the part to the end of the lead, mm */
+  mm: number;
+  /** AWG of its wires */
+  gauge: number;
+  /** colour of each wire, in pin order */
+  colors: string[];
+  insulation?: WireInsulation;
+  /** what is on its end, for the build guide: "3-way servo plug", "4 mm bullet", "bare end"; and its kind when two leads plug into each other along the run */
+  end: string;
+  joint?: "bullet" | "xt60";
+}
+
 /** Catalog categories, used for lib.<kind>("id") lookups and grouping. */
 export type CatalogKind =
   | "controller"
@@ -202,10 +249,10 @@ export interface GeomSpec {
   material?: string;
   /**
    * box class only: draw the details of a known kind of part inside the same
-   * envelope (lipo, esc, fuse_maxi, xt, load_cell), so mount and clash checks
+   * envelope (lipo, esc, fuse_maxi, fuse_blade, terminal_way, xt, load_cell, wago), so mount and clash checks
    * see the box they always did
    */
-  style?: "lipo" | "esc" | "fuse_maxi" | "xt" | "load_cell";
+  style?: "lipo" | "esc" | "fuse_maxi" | "fuse_blade" | "terminal_way" | "xt" | "load_cell" | "wago";
   /**
    * servo class only: how the real case looks. mid is the middle case's colour (with the tabs; an alloy
    * middle takes mid_material), label and text the sticker on its sides, spline the output shaft's colour
@@ -243,6 +290,10 @@ export interface CatalogPart {
   /** typed specs: units are mm, N·mm (torque), A, V, W, g, rpm, mAh unless the key says otherwise */
   specs: Record<string, number | string | boolean>;
   pins: PinDef[];
+  /** further places its pins can be reached (a second socket, a channel's own supply pin) */
+  spots?: SpotDef[];
+  /** its connectors and the leads it is sold with, for wiring a whole plug at once and for the build guide */
+  conns?: ConnDef[];
   geom: GeomSpec;
   /** typical price in USD, for budgeting only */
   price_usd?: number;
@@ -368,6 +419,8 @@ export interface PinRef {
   /** instance index for pattern components (0 based) */
   index?: number;
   pin: string;
+  /** where on the part the wire meets the pin, when it is not the pin's own place (a SpotDef id) */
+  spot?: string;
   span: Span;
 }
 
@@ -380,6 +433,16 @@ export interface WireDef {
   insulation?: WireInsulation;
   color?: string;
   label?: string;
+  /** the bought cable this wire is one conductor of ("STEMMA QT cable 100 mm"), and that cable's length in mm */
+  cable?: string;
+  length?: number;
+  /**
+   * The wire is a part's own lead from end to end (a servo's lead onto a header): nothing to cut, and the lead has to
+   * reach. A wire the design gives a gauge is one the builder makes, joined to the lead's end, as long as it needs to be.
+   */
+  own?: boolean;
+  /** where the wire is tied down on its way from a to b, in order (assembly coordinates, mm): its route passes through them */
+  via?: [number, number, number][];
   span: Span;
 }
 

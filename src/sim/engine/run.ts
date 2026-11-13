@@ -357,6 +357,15 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results[`${h.comp}.samples`] = h.samples;
     if (h.cell) results[`${h.cell}.peak_force`] = h.peak;
   }
+  for (const h of plant.adcs) {
+    results[`${h.comp}.samples`] = h.dev.samples;
+    if (h.cell) results[`${h.cell}.peak_force`] = h.peak;
+  }
+  for (const h of plant.hubs) {
+    results[`${h.comp}.frame_hz`] = h.dev.hz();
+    results[`${h.comp}.asleep`] = h.dev.asleep();
+    results[`${h.comp}.resets`] = h.dev.resets;
+  }
   for (const h of plant.halls) results[`${h.comp}.passes`] = h.hits;
   for (const l of plant.leds) {
     results[`${l.comp}.shows`] = l.shows;

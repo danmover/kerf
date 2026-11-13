@@ -114,7 +114,9 @@ export interface JetVane {
  * A ducted fan's jet on the bodies it touches: the thrust on the fan's body along its axis; each vane's lift
  * (from the jet's dynamic pressure, thrust / (2 × swept area), its angle to the jet and a low-aspect-ratio lift
  * slope that stops growing past stall) and drag; and on the fan's body the rotor's gyroscopic torque when the
- * body turns, the reaction to it speeding up, and the swirl torque the stators do not take back.
+ * body turns, the reaction to it speeding up, and the swirl torque the stators do not take back. That left-over
+ * swirl also reaches the vanes: each meets the jet a few degrees off the axis, the same way round, so together
+ * they take part of it out and need a common angle to cancel the rest.
  */
 export class JetForces implements Constraint {
   private rows: Row[] = [];
@@ -158,10 +160,25 @@ export class JetForces implements Constraint {
     let drag = 0;
     const side: V3 = [0, 0, 0];
     let stalled = false;
+    // What the stators leave of the rotor's swirl still turns the jet a little, the rotor's way round, so each
+    // vane meets it at that angle: tan = swirl torque / (thrust x the vane's radius), the same at every thrust
+    // because both go with fan speed squared. The vanes take some of it out, which twists the unit back
+    const swirl = st.thrust > 1e-6 ? ((1 - this.recovery) * st.drag * st.spin) / st.thrust : 0;
+    const origin = this.fanBody.point(this.lp);
     for (const v of this.vanes) {
       const c = v.body.dir(v.lc);
       const a = v.body.dir(v.la);
-      const ang = Math.atan2(dot(cross(d, c), a), dot(d, c));
+      let flow = d;
+      if (swirl) {
+        const rel = sub(v.body.point(v.lp), origin);
+        const rad = sub(rel, scale(ax, dot(rel, ax)));
+        const r = len(rad);
+        if (r > 2e-3) {
+          const turned = add(d, scale(cross(ax, rad), swirl / (r * r)));
+          flow = scale(turned, 1 / len(turned));
+        }
+      }
+      const ang = Math.atan2(dot(cross(flow, c), a), dot(flow, c));
       const lim = this.stall;
       // flat-plate lift: linear to stall, then it holds about 70 % of its peak
       const cl = Math.abs(ang) <= lim ? v.cla * ang : Math.sign(ang) * v.cla * lim * 0.7;
@@ -170,10 +187,10 @@ export class JetForces implements Constraint {
       v.lift = q * v.area * cl;
       v.stalled = Math.abs(ang) > lim && q > 1;
       if (v.stalled) stalled = true;
-      const n = cross(a, d);
+      const n = cross(a, flow);
       const nl = len(n) || 1;
       // the jet turned toward the vane's chord pushes the vane the other way
-      const f = add(scale(n, -v.lift / nl), scale(d, q * v.area * cd));
+      const f = add(scale(n, -v.lift / nl), scale(flow, q * v.area * cd));
       drag += q * v.area * cd;
       for (let i = 0; i < 3; i++) side[i] += f[i] - dot(f, d) * d[i];
       put(v.body, f, v.body.point(v.lp));

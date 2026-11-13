@@ -11,6 +11,11 @@
 // or servo signal line is how a bench rig gets glitches. On the body a joint
 // hangs on, cables keep out of the space the joint's moving parts sweep
 // through, so the moving parts never catch them.
+//
+// Some joints have no room beside the bearing: a body hung from a bolt on its
+// own axis, a turntable. The design then says where its cables cross
+// (sim.pivot's cables: point), and they all cross there, in a loop of slack
+// long enough for the joint's travel.
 
 import type { Model } from "../../core/model";
 import type { V3 } from "../../kernel/recipe";
@@ -30,6 +35,8 @@ export interface PivotJoint {
   parts: string[];
   /** the joint whose body it hangs on, or null for the frame */
   parent: string | null;
+  /** where the design says cables cross it, in a loop of slack (sim.pivot's cables:) */
+  cables?: V3;
 }
 
 /** One cable's way across one joint. */
@@ -40,6 +47,8 @@ export interface PivotCrossing {
   side: 1 | -1;
   /** it was moved to this end to keep it apart from the motor leads */
   apart: boolean;
+  /** it crosses where the design says (cables:), in a loop of slack, not beside the bearing */
+  loop?: boolean;
 }
 
 export interface CrossingPlan {
@@ -62,11 +71,11 @@ const add = (a: V3, b: V3, s = 1): V3 => [a[0] + b[0] * s, a[1] + b[1] * s, a[2]
 
 /** Every pivot in the design's scenarios, once each by name (a scenario that welds a joint still has it free in another). */
 export function pivotJoints(model: Model): PivotJoint[] {
-  const items = new Map<string, { what: string[]; on: string | null; at: V3; axis: V3; limits?: [number, number] }>();
+  const items = new Map<string, { what: string[]; on: string | null; at: V3; axis: V3; limits?: [number, number]; cables?: V3 }>();
   for (const sc of model.scenarios ?? [])
     for (const it of sc.spec.mechanism?.items ?? []) {
       if (it.k !== "pivot" || !it.at || !it.axis || items.has(it.name)) continue;
-      items.set(it.name, { what: it.what, on: it.on, at: it.at, axis: it.axis, limits: it.limits });
+      items.set(it.name, { what: it.what, on: it.on, at: it.at, axis: it.axis, limits: it.limits, cables: it.cables });
     }
   if (!items.size) return [];
   const ids = new Map<string, string[]>();
@@ -81,6 +90,7 @@ export function pivotJoints(model: Model): PivotJoint[] {
     limits: it.limits ?? [-30, 30],
     parts: it.what.flatMap((w) => ids.get(w) ?? []),
     parent: it.on === null ? null : (jointOf.get(it.on) ?? null),
+    ...(it.cables ? { cables: it.cables } : {}),
   }));
 }
 
@@ -153,6 +163,12 @@ export function planCrossings(joints: PivotJoint[], wires: HarnessWire[], ends: 
   const endsOf = (j: PivotJoint): [V3, V3] => {
     let got = ends2.get(j.name);
     if (got) return got;
+    // the design's own crossing point serves for both ends
+    if (j.cables) {
+      got = [j.cables, j.cables];
+      ends2.set(j.name, got);
+      return got;
+    }
     let lo = Infinity;
     let hi = -Infinity;
     for (const pl of inBody(j))
@@ -285,10 +301,10 @@ export function planCrossings(joints: PivotJoint[], wires: HarnessWire[], ends: 
   };
   for (const r of runs) {
     out.wires.set(r.w.id, {
-      via: r.joints.map((j, i) => ({ c: endsOf(j)[r.sides[i] > 0 ? 1 : 0], axis: j.axis, at: j.at })),
+      via: r.joints.map((j, i) => ({ c: endsOf(j)[r.sides[i] > 0 ? 1 : 0], axis: j.axis, at: j.at, ...(j.cables ? { here: true } : {}) })),
       legAvoid: r.legs.map(avoidOn),
     });
-    r.joints.forEach((j, i) => out.crossings.push({ wire: r.w.id, joint: j.name, side: r.sides[i], apart: r.apart[i] }));
+    r.joints.forEach((j, i) => out.crossings.push({ wire: r.w.id, joint: j.name, side: r.sides[i], apart: r.apart[i], ...(j.cables ? { loop: true } : {}) }));
   }
   return out;
 }

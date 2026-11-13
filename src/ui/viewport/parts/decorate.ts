@@ -9,6 +9,7 @@ import * as THREE from "three";
 import type { EvalPart } from "../../../core/model";
 import type { V3 } from "../../../kernel/recipe";
 import { catalogPart } from "../../../machine/catalog";
+import { servoStickerBox } from "../../../machine/geometry";
 import type { CatalogPart } from "../../../machine/types";
 import type { Decorator, PartDecoration, PartSurface } from "../scene";
 import { boardOrigin } from "../boards/decorate";
@@ -216,6 +217,23 @@ function planFor(p: EvalPart, c: CatalogPart): Plan | null {
           },
         };
       }
+      case "fuse_blade": {
+        // the fuse's rating, as it is moulded into the top of the blade
+        const fw = Math.min(19.1, w * 0.4);
+        const ft = Math.min(5.2, dd * 0.3);
+        const amps = num(c.specs.rating_a, 0);
+        const k = `blade:${amps}`;
+        return {
+          key: `${k}:${w}x${dd}x${h}`,
+          hides: [],
+          build: (tex) => {
+            const o = new THREE.Group();
+            const m = printMat(tex(k, () => moulded(12, 5, [amps ? String(amps) : "ATO"], "#eef7f0")), true, { roughness: 0.5, clearcoat: 0.2 });
+            o.add(labelPlane("+z", 0, 0, h + LIFT, Math.min(fw * 0.55, 10), Math.min(ft * 0.85, 4.4), m));
+            return o;
+          },
+        };
+      }
       case "fuse_maxi": {
         const boot = Math.min(5, w * 0.12);
         const L = w - 2 * boot;
@@ -238,30 +256,28 @@ function planFor(p: EvalPart, c: CatalogPart): Plan | null {
     return null;
   }
   if (g.g === "servo") {
+    // printed on the sticker the solid model carries on each side of the middle case, in place of its bars
     const w = num(d.w, 40.7);
     const dd = num(d.d, 19.7);
-    const h = num(d.h, 37);
-    const fz = num(d.flange_z, 10);
-    const ft = num(d.flange_t, 2.5);
-    const sx = num(d.shaft_x, 10);
+    const sb = servoStickerBox(d as Record<string, number>);
+    if (!sb) return null;
     const at = boardOrigin(p.recipe, w, dd);
-    if (!at || Math.abs(at[0] + sx) > 1e-6 || Math.abs(at[2] + h) > 1e-6) return null;
-    const z0 = -h + 1.2;
-    const z1 = -fz - ft - 0.8;
-    if (z1 - z0 < 4) return null;
-    const sw = w - 2.4;
-    const sh = z1 - z0;
+    if (!at || at.some((v, i) => Math.abs(v - sb.base[i]) > 1e-6)) return null;
+    const sw = sb.w - 0.6;
+    const sh = sb.h - 0.6;
+    const y = dd / 2 + sb.proud + LIFT;
+    const zc = sb.z0 + sb.h / 2;
     const model = c.name.split(/\s+/)[0];
     const sub = c.name.replace(/\(.*$/, "").split(/\s+/).slice(1).join(" ");
     const k = `servo:${c.id}`;
     return {
       key: k,
-      hides: [],
+      hides: [`${p.id}.label_text`],
       build: (tex) => {
         const o = new THREE.Group();
         const m = printMat(tex(k, () => servoSticker(sw, sh, model, sub)), false, { roughness: 0.45, clearcoat: 0.3 });
-        o.add(labelPlane("-y", -sx, -dd / 2 - LIFT, (z0 + z1) / 2, sw, sh, m));
-        o.add(labelPlane("+y", -sx, dd / 2 + LIFT, (z0 + z1) / 2, sw, sh, m));
+        o.add(labelPlane("-y", sb.x, -y, zc, sw, sh, m));
+        o.add(labelPlane("+y", sb.x, y, zc, sw, sh, m));
         return o;
       },
     };

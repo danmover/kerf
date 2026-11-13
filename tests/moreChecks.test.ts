@@ -169,6 +169,23 @@ wire drv.SERVO_S -> s.SIG { gauge: 22 }
     expect(fuse(", load: 2.5Nm")?.detail).toMatch(/About 2\.3 A flows through the 2 A fuse/);
   });
 
+  it("fails a fuse bigger than its holder takes, and passes one it is rated for", () => {
+    const chain = (amps: number) => `
+component psu = lib.part("psu_12v_10a") { at: (0, 200, 0) }
+component f = lib.fuse("fuse_holder_blade_screw") { at: (0, 120, 0), rating: ${amps}A }
+component j = lib.connector("terminal_strip_30a_way") { at: (40, 120, 0) }
+component drv = lib.part("waveshare_bus_servo_adapter_a") { at: (0, 80, 0) }
+wire psu.VPOS -> f.IN { gauge: 12 }
+wire f.OUT -> drv.VIN { gauge: 12 }
+wire psu.VNEG -> j.A { gauge: 12 }
+wire j.B -> drv.GND { gauge: 12 }
+`;
+    const holder = (amps: number) => erc(chain(amps)).find((i) => /^erc:fuse-holder:/.test(i.id));
+    expect(holder(30)).toBeUndefined();
+    expect(holder(40)?.status).toBe("fail");
+    expect(holder(40)?.detail).toMatch(/takes fuses up to 30 A/);
+  });
+
   it("fails a pin used for two signals, naming free pins to move one to", () => {
     const items = erc(`
 component s = lib.servo("mg996r") { at: (0, 50, 0) }

@@ -181,6 +181,8 @@ export const MOTORS: CatalogPart[] = [
       { id: "PHASE_B", label: "Phase B", type: "motor", v: 25.2, channel: "M", required: false },
       { id: "PHASE_C", label: "Phase C", type: "motor", v: 25.2, channel: "M", required: false },
     ],
+    // its three motor leads with bullet plugs on (their length and the bullets' size are not published: 150 mm and 4 mm assumed)
+    conns: [{ id: "LEADS", name: "motor leads", pins: ["PHASE_A", "PHASE_B", "PHASE_C"], lead: { mm: 150, gauge: 14, colors: ["black", "black", "black"], insulation: "silicone", end: "4 mm bullet plug", joint: "bullet" } }],
     // The fan as sold: a plain round black housing with no mounting tabs (clamp it by its ends), a dark 12-blade rotor,
     // the polished aluminium spinner, and the inrunner's rear end showing behind the stator hub
     geom: { g: "edf", dims: { od: 73, fan_d: 70, length: 66, hub_d: 36, blades: 12, stators: 6, lead_az: -150, tabs: 0, can_d: 30, can_l: 3 }, color: "#1d1f23", color2: "#2e3136", edf: { spinner: "#d6dadf", spinner_material: "Aluminum 6061", can: "#a7adb5", leads: "#17191c" } },

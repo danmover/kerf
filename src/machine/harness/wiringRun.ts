@@ -5,9 +5,9 @@
 // jets, and cross the design's pivots (a gimbal's axes) beside their
 // bearings, away from the space the moving parts sweep.
 
-import { checkWiring, placeSplices, type SplicePlace, type WiringFindings } from "./clash";
+import { checkWiring, placeSplices, type Reach, type SplicePlace, type WiringFindings } from "./clash";
 import { inCone, type FlowZone } from "./flow";
-import { keepOutBits, routeRequests, type Harness } from "./harness";
+import { PLUG_BACK, keepOutBits, leadLength, routeRequests, type Harness } from "./harness";
 import { checkMounts, type MountResult, type MountSpec, type ScrewSpec } from "./mounts";
 import { planCrossings, type PivotJoint } from "./pivots";
 import type { SignedField } from "./relax";
@@ -61,6 +61,7 @@ export function runWiring(input: RouteInput, wiring: WiringInput, plan: TravelPl
   const findings = harness.wires.length ? checkWiring(harness, result.wires, solids, field, plan) : undefined;
   if (findings) {
     findings.flow = flowHits(result, field, wiring.flow ?? []);
+    findings.reach = shortLeads(harness, result);
     if (pivots) {
       const via = new Map(result.wires.map((r) => [r.id, r.via ?? []]));
       const seen = new Map<string, number>();
@@ -74,6 +75,31 @@ export function runWiring(input: RouteInput, wiring: WiringInput, plan: TravelPl
     }
   }
   return { result, findings, mounts: checkMounts(mounts, screws, solids), splices };
+}
+
+/** A lead may come up this much short on the model before it counts: plug positions are only that close, mm. */
+const REACH_SLOP = 3;
+
+/**
+ * The run each fixed-length wire has to cover against the length it has: its routed run, the straight stub out of
+ * each end, and the plug on the end of a part's own lead. A bought cable's length is the wire between its plugs.
+ */
+export function shortLeads(h: Harness, result: RouteResult): Reach[] {
+  const out: Reach[] = [];
+  for (const w of h.wires) {
+    const have = w.row.fixedMm;
+    if (have === undefined || !w.row.lead) continue;
+    // a wire's run may be in pieces, one on each moving body
+    const runs = result.wires.filter((r) => r.id === w.id || r.id.startsWith(`${w.id}.`));
+    if (!runs.length || runs.some((r) => r.straight)) continue;
+    let need = runs.reduce((a, r) => a + r.length, 0) + 2 * leadLength(w);
+    // a lead ends in its plug: the plug's own length is part of the lead
+    const own = w.row.own ?? [];
+    if (own.includes("from") && !own.includes("to")) need += PLUG_BACK[w.ends[1].spec.kind];
+    if (own.includes("to") && !own.includes("from")) need += PLUG_BACK[w.ends[0].spec.kind];
+    if (need > have + REACH_SLOP) out.push({ wire: w.id, lead: w.row.lead, have, need: Math.ceil(need) });
+  }
+  return out;
 }
 
 /** Lengths of cable left in a fan's intake or jet, by wire and zone. */

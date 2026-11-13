@@ -3,7 +3,7 @@
 // fans and seals. Spec keys use Kerf base units: torque in N·mm, length in
 // mm, current in A, voltage in V, mass in g.
 
-import type { CatalogPart, PinDef } from "../types";
+import type { CatalogPart, ConnDef, PinDef } from "../types";
 import { gnd, input, port, pwrIn } from "./pins";
 
 export const kgcm = (x: number) => Math.round(x * 98.0665);
@@ -26,6 +26,11 @@ export function dcMotorPins(v: number, encoder?: { vmin: number; vmax: number; l
 }
 
 export const stepperPlug = (amps: number): PinDef[] => [port("PLUG", "stepper4", "sink", { label: "A+ A− B+ B−", need_a: amps, required: true })];
+
+/** An RC servo's own lead: ground, power and signal in the order of its 3-way plug. */
+export function servoLead(mm: number, colors: [string, string, string] = ["brown", "red", "orange"]): ConnDef {
+  return { id: "LEAD", name: "lead", pins: ["GND", "V_PLUS", "SIG"], lead: { mm, gauge: 26, colors, end: "3-way servo plug" } };
+}
 
 export function servoPins(vmin: number, vmax: number, drawA: number): PinDef[] {
   return [
@@ -147,6 +152,8 @@ export const MOTION: CatalogPart[] = [
     summary: "Digital micro servo with metal gears, an alloy middle case and two ball bearings on the output: 2.1 kg·cm and 0.1 s/60° at 4.8 V (2.4 kg·cm and 0.08 s at 6 V), 20-tooth spline, 22.8 x 12.2 x 28.5 mm over the spline, 13.4 g. 1 to 2 ms pulses move it about 90°.",
     specs: { t_stall: kgcm(2.1), v_min: 4.8, v_max: 6, speed_s_per_60: 0.1, i_stall: 0.75, i_run: 0.15, mass_g: 13.4, range_deg: 180, frame_hz_max: 333, spline: "20T", bearings: 2 },
     pins: servoPins(4.8, 6, 0.15),
+    // its lead's length is not published: 180 mm is a careful guess (most micro servos' are 150 to 250 mm)
+    conns: [servoLead(180)],
     // MG90-size case: spline 5.9 mm off the case centre, tabs 4.5 mm below the top face, holes 27.8 mm apart (assumed: measure yours)
     // The case as sold: black top and bottom covers, the alloy middle case (it is the motor's heat sink) with the
     // tabs, the maker's sticker on its sides, and the 6061 aluminium output shaft

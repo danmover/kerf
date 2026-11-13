@@ -180,6 +180,30 @@ export function wiringItems(h: Harness, f: WiringFindings | null, mounts: MountR
     };
     blocked(f.leadBlocked, "lead");
     blocked(f.pullBlocked, "pull");
+    // ---- a part's own lead, or a bought cable, that does not reach
+    const short = new Map<string, NonNullable<typeof f.reach>>();
+    for (const r of f.reach ?? []) {
+      const w = wires.get(r.wire);
+      if (!w) continue;
+      // the wires of one lead or cable between the same two parts are one finding
+      const k = `${r.lead}|${w.ends[0].comp}|${w.ends[1].comp}`;
+      short.set(k, [...(short.get(k) ?? []), r]);
+    }
+    for (const [k, rs] of short) {
+      const w = wires.get(rs[0].wire)!;
+      const need = Math.max(...rs.map((r) => r.need));
+      const have = rs[0].have;
+      const own = /own lead/.test(rs[0].lead);
+      const lead = own ? rs[0].lead.replace(/'s own lead/g, "'s lead") : `The ${rs[0].lead}`;
+      add({
+        id: `wiring:reach:${k}`,
+        status: "fail",
+        title: `${lead} does not reach from ${w.ends[0].comp} to ${w.ends[1].comp}`,
+        detail: `${own ? `${lead} is` : `It is`} ${have.toFixed(0)} mm long and the run between ${endText(w.ends[0])} and ${endText(w.ends[1])} is ${need.toFixed(0)} mm (${list(rs.map((r) => r.wire), 6)}), ${(need - have).toFixed(0)} mm too far.`,
+        parts: [w.ends[0].partId, w.ends[1].partId],
+        fix: own ? `Move ${w.ends[0].comp} and ${w.ends[1].comp} closer or turn one so its connector faces the other, or add an extension lead and say so in the wiring.` : `Move the two closer, or use a longer cable (change cable: and length: on the wire).`,
+      });
+    }
     // ---- cables that leave the assembly on the way between two places inside it
     if (f.outside.length)
       add({
@@ -260,7 +284,9 @@ export function wiringItems(h: Harness, f: WiringFindings | null, mounts: MountR
     // ---- where cables cross the design's pivots
     if (f.pivots?.length) {
       const joints = [...new Set(f.pivots.map((c) => c.joint))];
-      const far = f.pivots.filter((c) => c.r !== undefined && c.r > PIVOT_FAR);
+      // a crossing the design gives (sim.pivot's cables:) is a loop of slack by intent, wherever it is
+      const far = f.pivots.filter((c) => !c.loop && c.r !== undefined && c.r > PIVOT_FAR);
+      const loops = f.pivots.filter((c) => c.loop && c.r !== undefined);
       const lost = f.pivots.filter((c) => c.r === undefined);
       // slack to leave at each crossing: the arc its far side moves through over the joint's travel, plus a little
       const swing = (c: (typeof f.pivots)[number]) => {
@@ -286,12 +312,26 @@ export function wiringItems(h: Harness, f: WiringFindings | null, mounts: MountR
         add({
           id: `wiring:pivot-room:${j}`,
           status: "warn",
-          title: `No room for ${cs.length === 1 ? `cable ${cs[0].wire}` : plural(cs.length, "cable")} to cross pivot ${j} beside its bearing`,
-          detail: `${list(cs.map((c) => wt(c.wire)), 6)}: there is no gap within ${VIA_WORD} of the bearing big enough for the cable, so the router took it across wherever it could.`,
-          fix: `Open a gap or slot beside the bearing for the cables, sized for the bundle with a few millimetres to spare.`,
+          title: `No room for ${cs.length === 1 ? `cable ${cs[0].wire}` : plural(cs.length, "cable")} to cross pivot ${j} ${cs[0].loop ? "where the design says" : "beside its bearing"}`,
+          detail: `${list(cs.map((c) => wt(c.wire)), 6)}: there is no gap within ${VIA_WORD} of ${cs[0].loop ? "the joint's cables: point" : "the bearing"} big enough for the cable, so the router took it across wherever it could.`,
+          fix: cs[0].loop ? `Move the joint's cables: point into open space between the two bodies, clear of both through the joint's travel.` : `Open a gap or slot beside the bearing for the cables, sized for the bundle with a few millimetres to spare.`,
         });
       }
-      const ok = f.pivots.filter((c) => c.r !== undefined && c.r <= PIVOT_FAR);
+      for (const j of [...new Set(loops.map((c) => c.joint))]) {
+        const cs = loops.filter((c) => c.joint === j);
+        const r = Math.max(...cs.map((c) => c.r!));
+        // each way from the design pose the far tie moves this chord; the loop covers it with a quarter to spare
+        const chord = 2 * r * Math.sin(Math.min(Math.PI, swing(cs[0])) / 2);
+        const loop = Math.max(20, Math.ceil((chord * 1.25 + 15) / 5) * 5);
+        add({
+          id: `wiring:pivot-loop:${j}`,
+          status: "info",
+          title: `${plural(new Set(cs.map((c) => c.wire)).size, "cable")} ${new Set(cs.map((c) => c.wire)).size === 1 ? "crosses" : "cross"} pivot ${j} in a loop of slack`,
+          detail: `${list([...new Set(cs.map((c) => c.wire))], 8)} cross where the design says (its cables: point), ${r.toFixed(0)} mm from the axis. Over the joint's travel the far tie moves about ${chord.toFixed(0)} mm each way, so leave a free loop of about ${loop} mm between a tie on each body.`,
+          fix: `Tie the cables on both bodies with the loop between the ties, then turn the joint to both stops: the loop should neither pull tight nor reach anything that moves or draws air.`,
+        });
+      }
+      const ok = f.pivots.filter((c) => !c.loop && c.r !== undefined && c.r <= PIVOT_FAR);
       if (ok.length) {
         const apart = ok.filter((c) => c.apart);
         add({

@@ -66,3 +66,69 @@ scenario "Turns 12:1" {
     expect(outcomesFor(demo, dres)!.map((o) => `${o.label}: ${o.status}`)).toEqual(["Output turns 12:1: pass", "Output reaches 25 rpm: pass"]);
   }, 120_000);
 });
+
+describe("parts left off the machine for a run", () => {
+  // an arm on a hinge with a lock screw threaded through it into the post, and a guard that sits on the base
+  const src = (items: string) => `
+part base { body box(120, 60, 6, at: (0, 0, 0)) }
+part post { material: "Aluminum 6061"  body box(20, 20, 40, at: (-30, 0, 6))  cut hole(M3, depth: 6, at: (-20, 0, 30), dir: -X) }
+part arm {
+  material: "Aluminum 6061"
+  body box(8, 20, 40, at: (-16, 0, 6))
+  cut hole(M3, fit: "tap", depth: 8, at: (-12, 0, 30), dir: -X)
+}
+part guard { material: "Aluminum 6061"  body box(10, 10, 10, at: (40, 0, 6)) }
+component lock = lib.screw(M3, 12) { at: (-12, 0, 30), axis: -X }
+scenario "swing" {
+  world: sim.bench()
+  mechanism: sim.mechanism(sim.pivot(arm, at: (-16, 0, 8), axis: Y, limits: (-45, 45))${items})
+  duration: 0.2s
+  variants: ["expected"]
+}`;
+  const resolve = (items: string) => {
+    const model = evaluate(src(items));
+    expect(model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
+    const cache = new Map<string, MeshEntry>();
+    const geom = (h: string): MeshEntry | undefined => {
+      if (!cache.has(h)) {
+        const p = model.parts.find((x) => x.hash === h);
+        if (!p) return undefined;
+        const s = buildPart(p.recipe);
+        cache.set(h, { preview: meshShape(s, "preview"), volume: solidVolume(s), bbox: s.boundingBox.bounds as [V3, V3], rev: 0 });
+      }
+      return cache.get(h);
+    };
+    return { model, r: resolveMechanism(model.scenarios![0].spec, model, geom, true) };
+  };
+
+  it("a lock screw rides with the arm it is threaded into, until the run leaves it off", () => {
+    const fitted = resolve("");
+    const out = resolve(", sim.without([lock, guard])");
+    if (!("mech" in fitted.r) || !("mech" in out.r)) throw new Error(JSON.stringify([fitted.r, out.r]));
+    const armOf = (m: typeof fitted.r.mech) => m.bodies.find((b) => b.id === "arm")!;
+    const lockId = fitted.model.parts.find((p) => p.name === "lock")!.id;
+    expect(armOf(fitted.r.mech).parts).toContain(lockId);
+    expect(fitted.r.mech.off).toBeUndefined();
+    // left off: on no body at all (not the arm, not the frame), and the arm is lighter by the screw
+    expect(out.r.mech.bodies.flatMap((b) => b.parts)).not.toContain(lockId);
+    expect(out.r.mech.bodies.flatMap((b) => b.parts)).not.toContain("guard");
+    expect([...out.r.mech.off!].sort()).toEqual([lockId, "guard"].sort());
+    const dm = (armOf(fitted.r.mech).mass - armOf(out.r.mech).mass) * 1000;
+    expect(dm).toBeGreaterThan(0.4);
+    expect(dm).toBeLessThan(1.5);
+    const frame = (m: typeof fitted.r.mech) => m.bodies.find((b) => b.fixed)!;
+    expect((frame(fitted.r.mech).mass - frame(out.r.mech).mass) * 1000).toBeCloseTo(2.7, 1);
+    expect(out.r.mech.notes.join(" ")).toMatch(/left off the machine for this run: lock, guard/);
+    // the view is told not to draw them
+    const res = runSpec({ ...out.model.scenarios![0].spec, mech: out.r.mech }, out.model.machine ?? emptyMachine(), out.model.name);
+    expect(res.variants[0].error).toBeUndefined();
+    expect([...(res.variants[0].scene.off ?? [])].sort()).toEqual([lockId, "guard"].sort());
+  });
+
+  it("refuses a part that is both left off and on a joint, and a name the design does not have", () => {
+    const both = resolve(", sim.without(arm)");
+    expect("error" in both.r && both.r.error).toMatch(/arm is left off this run \(sim\.without\) and on the joint arm/);
+    const none = evaluate(src(", sim.without(nothing_here)"));
+    expect(none.diagnostics.filter((d) => d.severity === "error").length).toBeGreaterThan(0);
+  });
+});

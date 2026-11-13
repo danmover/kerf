@@ -180,7 +180,7 @@ export function updateHarness(model: Model) {
       (travel?.key ?? "") +
       JSON.stringify(specs.map((s) => [s.comp, s.held])) +
       JSON.stringify(screws.map((s) => [s.id, s.seat, s.axis, s.length])) +
-      JSON.stringify(pivots.map((j) => [j.name, j.at, j.axis, j.limits, j.parent, j.parts.length])) +
+      JSON.stringify(pivots.map((j) => [j.name, j.at, j.axis, j.limits, j.parent, j.parts.length, j.cables])) +
       JSON.stringify(flow.map((z) => [z.partId, z.kind, z.o, z.dir])),
   );
   const st = useHarness.getState();

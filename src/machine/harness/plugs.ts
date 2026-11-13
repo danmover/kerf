@@ -41,7 +41,13 @@ export type PlugKind =
   /** 5.5 × 2.1 mm DC barrel plug on a power brick's cord */
   | "barrel"
   /** 6.3 mm insulated female spade on a tab (switches, motors) */
-  | "spade";
+  | "spade"
+  /** JST SH 1.0 mm: the STEMMA QT and Qwiic plug */
+  | "sh"
+  /** a stripped end in a lever connector (Wago 221) */
+  | "lever"
+  /** a stripped or tinned end clamped in a screw terminal, with no ferrule */
+  | "bare";
 
 export interface PlugSpec {
   kind: PlugKind;
@@ -79,6 +85,9 @@ export const PITCH: Record<PlugKind, number> = {
   lug: 6,
   barrel: 0,
   spade: 6,
+  sh: 1.0,
+  lever: 5.6,
+  bare: 5.0,
 };
 
 /** Names shown when a plug is picked. */
@@ -97,6 +106,9 @@ export const PLUG_NAME: Record<PlugKind, string> = {
   lug: "soldered to the lug",
   barrel: "5.5 × 2.1 mm DC barrel plug",
   spade: "6.3 mm spade",
+  sh: "STEMMA QT plug (JST SH 1.0 mm)",
+  lever: "stripped end in the lever connector",
+  bare: "bare end in the screw terminal",
 };
 
 const X: V3 = [1, 0, 0];
@@ -221,7 +233,32 @@ const BUS_SERVO: PlugTable = Object.fromEntries(
   (["GND", "V_PLUS", "SIG"] as const).map((id, k): [string, PlugSpec] => [id, { kind: "xh", at: [-14.05, 5.2, -25.6], out: NZ, row: Y, ways: 3, used: [k], more: [[-14.05, -5.2, -25.6]] }]),
 );
 
-/** Plugs for catalog parts, by catalog id and pin id. */
+/**
+ * A STEMMA QT socket on a board: the plug goes in flat, the way `out` points, at the socket's mouth. The four
+ * contacts (GND, V+, SDA, SCL) share the one housing, so each spot is the same plug with its own contact.
+ */
+function qtPlugs(id: string, at: V3, out: V3, row: V3): PlugTable {
+  const t: PlugTable = {};
+  ["GND", "V", "SDA", "SCL"].forEach((s, k) => (t[`${id}_${s}`] = { kind: "sh", at, out, row, ways: 4, used: [k] }));
+  return t;
+}
+
+// PCA9685 servo board (62.5 × 25.4, top at 1.6). Channel k is a column of three pins near the -Y edge: GND at the
+// edge, V+, then the pulse; a servo plug covers all three. The control header's right-angle pins point out of the
+// -X end; the power terminal's wires go in from the +Y edge.
+const HUB_T = 1.6;
+const hubX = (k: number) => -22.86 + 2.54 * (k + Math.floor(k / 4));
+const HUB: PlugTable = {};
+["GND", "OE", "SCL", "SDA", "VCC", "VP"].forEach((id, i) => (HUB[id] = { kind: "dupont", at: [-31.27, (2.5 - i) * 2.54, HUB_T + 1.27], out: NX, row: Y, ways: 1 }));
+for (let k = 0; k < 16; k++) ["G", "V", "P"].forEach((p, i) => (HUB[`${p}${k}`] = { kind: "dupont", at: [hubX(k), -7.62, HUB_T + 2.5], out: Z, row: Y, ways: 3, used: [i] }));
+HUB.T_VP = { kind: "bare", at: [-2.54, 12.7, HUB_T + 3.8], out: Y, row: X, ways: 1 };
+HUB.T_GND = { kind: "bare", at: [2.54, 12.7, HUB_T + 3.8], out: Y, row: X, ways: 1 };
+
+// Adafruit NAU7802 (25.3 × 23): six 3.5 mm screw terminals along +Y, a STEMMA QT socket at each end
+const NAU: PlugTable = { ...qtPlugs("QT1", [-12.65, 0.6, 3.1], NX, Y), ...qtPlugs("QT2", [12.65, 0.6, 3.1], X, NY) };
+["E_PLUS", "E_MINUS", "A_MINUS", "A_PLUS", "B_MINUS", "B_PLUS"].forEach((id, i) => (NAU[id] = { kind: "bare", at: [(i - 2.5) * 3.5, 11.5, 1.6 + 3.2], out: Y, row: X, ways: 1, pitch: 3.5 }));
+
+/** Plugs for catalog parts, by catalog id and pin (or spot) id. */
 export const PLUGS: Record<string, PlugTable> = {
   ...FIELD_PLUGS,
   esp32_devkitc: devkitcPins(),
@@ -242,6 +279,43 @@ export const PLUGS: Record<string, PlugTable> = {
   },
   // Arducam B0196 (38 × 38): the 4-pin lead stands out of its socket on the back of the board
   arducam_b0196: { USB: { kind: "lead", at: [0, -8.5, -4.5], out: NZ, row: X, ways: 1 } },
+  pca9685_servo_16: HUB,
+  nau7802_breakout: NAU,
+  // the sockets of boards that take a plug whole; their other pins are found on their headers
+  feather_esp32_v2: {
+    ...qtPlugs("QT", [-10.75, -4.5, 3.1], NX, Y),
+    USB_5V: { kind: "usb_c", at: [-27.95, 0, 3.2], out: NX, row: Y, ways: 2, used: [0] },
+    USB_GND: { kind: "usb_c", at: [-27.95, 0, 3.2], out: NX, row: Y, ways: 2, used: [1] },
+  },
+  lsm6dsox_breakout: { ...qtPlugs("QT1", [-12.8, -1.5, 3.1], NX, Y), ...qtPlugs("QT2", [12.8, -1.5, 3.1], X, NY) },
+  // Hobbywing Skywalker 60A V2 (73 × 30 × 12): the two battery leads and the thin signal lead leave one end, the
+  // three motor leads the other
+  skywalker_60a_v2: {
+    B_PLUS: { kind: "lead", at: [-36.5, -4.5, 4.9], out: NX, row: Y, ways: 1 },
+    B_MINUS: { kind: "lead", at: [-36.5, 4.5, 4.9], out: NX, row: Y, ways: 1 },
+    PHASE_A: { kind: "lead", at: [36.5, -7, 4.9], out: X, row: Y, ways: 1 },
+    PHASE_B: { kind: "lead", at: [36.5, 0, 4.9], out: X, row: Y, ways: 1 },
+    PHASE_C: { kind: "lead", at: [36.5, 7, 4.9], out: X, row: Y, ways: 1 },
+    BEC_GND: { kind: "lead", at: [-36.5, 11.5, 3], out: NX, row: Y, ways: 3, pitch: 1.3, used: [0] },
+    BEC_5V: { kind: "lead", at: [-36.5, 11.5, 3], out: NX, row: Y, ways: 3, pitch: 1.3, used: [1] },
+    SIG: { kind: "lead", at: [-36.5, 11.5, 3], out: NX, row: Y, ways: 3, pitch: 1.3, used: [2] },
+  },
+  // Jaycar SP0786 e-stop: each contact's two screw terminals are on opposite sides of its block, behind the panel
+  estop_jaycar_sp0786: {
+    NC_1: { kind: "bare", at: [-7.5, -17, -30], out: NY, row: X, ways: 1 },
+    NC_2: { kind: "bare", at: [-7.5, 17, -30], out: Y, row: X, ways: 1 },
+    NO_3: { kind: "bare", at: [7.5, -17, -30], out: NY, row: X, ways: 1 },
+    NO_4: { kind: "bare", at: [7.5, 17, -30], out: Y, row: X, ways: 1 },
+  },
+  // Wago 221 lever connectors: both wires go in the -Y end, side by side
+  wago_221_412: {
+    A: { kind: "lever", at: [-3.28, -9.3, 2.7], out: NY, row: X, ways: 1 },
+    B: { kind: "lever", at: [3.28, -9.3, 2.7], out: NY, row: X, ways: 1 },
+  },
+  wago_221_612: {
+    A: { kind: "lever", at: [-4, -10.55, 3.4], out: NY, row: X, ways: 1 },
+    B: { kind: "lever", at: [4, -10.55, 3.4], out: NY, row: X, ways: 1 },
+  },
   skr_mini_e3_v3: SKR,
   // KY-023 thumb stick (34 × 26): its five right-angle header pins stick out of the -X end on the top side, in the
   // board's order GND, +5V, VRx, VRy, SW, so Dupont plugs go on along -X
@@ -261,6 +335,16 @@ export const PLUGS: Record<string, PlugTable> = {
   fuse_holder_maxi: {
     IN: { kind: "lead", at: [-23, 0, 13], out: NX, row: Y, ways: 1 },
     OUT: { kind: "lead", at: [23, 0, 13], out: X, row: Y, ways: 1 },
+  },
+  // inline blade fuse holder with a screw terminal in each end (Jaycar SZ2044): a stripped wire goes straight in
+  fuse_holder_blade_screw: {
+    IN: { kind: "bare", at: [-31, 0, 8], out: NX, row: Y, ways: 1 },
+    OUT: { kind: "bare", at: [31, 0, 8], out: X, row: Y, ways: 1 },
+  },
+  // one way of a terminal strip: a wire in each end of its brass tube
+  terminal_strip_30a_way: {
+    A: { kind: "bare", at: [0, -11, 7], out: NY, row: X, ways: 1 },
+    B: { kind: "bare", at: [0, 11, 7], out: Y, row: X, ways: 1 },
   },
   // ATC blade fuse holder with a screw terminal at each end
   fuse_holder_atc: {
@@ -424,12 +508,14 @@ function sideLead(part: CatalogPart, pin: PinDef, w: number, dd: number, h: numb
  * a place from their geometry: board pins line up along the long edges,
  * motors take their leads at the back, boxes on the top face, panel jacks and
  * switches at their solder lugs. `peer` is the part at the wire's other end:
- * a power brick's cord plugs into the front of a panel jack.
+ * a power brick's cord plugs into the front of a panel jack. `spot` is the
+ * place on the part the wire meets the pin, when it is not the pin's own.
  */
-export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): PlugSpec | undefined {
+export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart, spot?: string): PlugSpec | undefined {
   const pin = part.pins.find((p) => p.id === pinId);
   if (!pin) return undefined;
-  const known = PLUGS[part.id]?.[pinId];
+  // a spot is somewhere else the pin can be reached (a socket's contact, a channel's own supply pin)
+  const known = (spot ? PLUGS[part.id]?.[spot] : undefined) ?? PLUGS[part.id]?.[pinId];
   if (known) return known;
   const kind = defaultKind(part, pin);
   const ways = pin.port ? Number(/(\d+)$/.exec(pin.port)?.[1] ?? 1) : 1;
@@ -496,8 +582,11 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart): P
       const k = fp.pins.indexOf(pinId);
       return { kind: "ferrule", at: [(k - (fp.pins.length - 1) / 2) * fp.pitch, -3.8, 3.8], out: NY, row: X, ways: 1 };
     }
-    case "servo":
-      return { kind: "lead", at: [num(d, "w", 40) / 2 - num(d, "shaft_x", 10), 0, -num(d, "h", 37) / 2], out: X, row: Z, ways: 3 };
+    case "servo": {
+      // the three wires of its lead leave the end of the case side by side: ground, power, signal
+      const k = ["GND", "V_PLUS", "SIG"].indexOf(pinId);
+      return { kind: "lead", at: [num(d, "w", 40) / 2 - num(d, "shaft_x", 10), 0, -num(d, "h", 37) / 2], out: X, row: Z, ways: 3, pitch: 1.3, used: [Math.max(0, k)] };
+    }
     case "desk_supply": {
       // a desktop supply's DC lead leaves the middle of its +X end, above the feet (geometryBenchParts.ts)
       const h = num(d, "h", 40);

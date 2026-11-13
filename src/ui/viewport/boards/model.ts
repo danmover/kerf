@@ -299,7 +299,38 @@ function item(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
       return;
     }
     case "terminal":
+    case "terminal35":
       return terminal(k, part, L, it);
+    case "header_ra": {
+      // a right-angle header: the plastic bar on the board's edge, each pin up out of the board, bent over and
+      // out past the edge
+      const P = 0.32;
+      const alongY = it.d >= it.w;
+      const g = F([it.x, it.y, t], alongY ? [open[0] || -1, 0] : [0, open[1] || -1]);
+      const n = Math.max(1, Math.round((alongY ? it.d : it.w) / 2.54));
+      for (let i = 0; i < n; i++) {
+        const a = (i - (n - 1) / 2) * 2.54;
+        k.plastic.box(g, -1.25, 1.25, a - 1.22, a + 1.22, 0, 2.5, it.color ?? BLACK);
+        k.metal.box(g, -1.25 - P, 7.3, a - P, a + P, 1.27 - P, 1.27 + P, GOLD);
+        k.metal.box(g, -1.25 - 2 * P, -1.25, a - P, a + P, -t - 2.6, 1.27 + P, GOLD);
+      }
+      return;
+    }
+    case "qt": {
+      // a JST SH socket lying on the board: a shroud open at the mouth, four contacts inside, a solder tab each side
+      const g = F([it.x, it.y, t], open);
+      const [a, b] = extents(it, open);
+      const h = it.h;
+      const body = "#1b1c1f";
+      k.plastic.box(g, -a, a, -b, b, 0, 0.5, body);
+      k.plastic.box(g, -a, a, -b, b, h - 0.45, h, body);
+      k.plastic.box(g, -a, a, -b, -b + 0.5, 0.5, h - 0.45, body);
+      k.plastic.box(g, -a, a, b - 0.5, b, 0.5, h - 0.45, body);
+      k.plastic.box(g, -a, -a + 0.9, -b + 0.5, b - 0.5, 0.5, h - 0.45, body);
+      for (let i = 0; i < 4; i++) k.metal.box(g, -a + 0.9, a - 0.9, (i - 1.5) * 1.0 - 0.15, (i - 1.5) * 1.0 + 0.15, 0.5, 0.8, GOLD);
+      for (const s of [-1, 1]) k.metal.box(g, a - 1.9, a - 0.5, s * (b + 0.35) - 0.4, s * (b + 0.35) + 0.4, 0, 0.9, TIN);
+      return;
+    }
     case "usb_c":
     case "usb_micro":
     case "usb_mini":
@@ -496,8 +527,8 @@ function header(k: Kit, it: BoardItem, t: number) {
   for (let i = 0; i < n; i++) {
     const a = (i - (n - 1) / 2) * 2.54;
     // each pin position has its own little block, with a groove between
-    if (alongX) k.plastic.box(f, a - 1.22, a + 1.22, -it.d / 2, it.d / 2, 0, 2.5, BLACK);
-    else k.plastic.box(f, -it.w / 2, it.w / 2, a - 1.22, a + 1.22, 0, 2.5, BLACK);
+    if (alongX) k.plastic.box(f, a - 1.22, a + 1.22, -it.d / 2, it.d / 2, 0, 2.5, it.color ?? BLACK);
+    else k.plastic.box(f, -it.w / 2, it.w / 2, a - 1.22, a + 1.22, 0, 2.5, it.color ?? BLACK);
   }
   for (const [x, y] of pins) {
     const g = F([x, y, t]);
@@ -515,17 +546,19 @@ function terminal(k: Kit, part: CatalogPart, L: BoardLayout, it: BoardItem) {
   const side: [number, number] = alongX ? [0, ey || 1] : [ex || 1, 0];
   const color = L.style.terminal ?? "#2c6e49";
   const deep = alongX ? it.d : it.w;
+  // half the width of one terminal's block: 5 mm blocks, or the small 3.5 mm ones
+  const hw = it.look === "terminal35" ? 1.7 : 2.45;
+  const sc = it.look === "terminal35" ? 0.7 : 1;
   for (const [x, y] of contacts) {
     const g = F([x, y, t], side);
-    const hw = 2.45;
     k.plastic.box(g, -deep / 2, deep / 2, -hw, hw, 0, it.h, color);
     // wire entry with the clamp inside
-    k.plastic.box(g, deep / 2 - 0.02, deep / 2 + 0.01, -1.6, 1.6, it.h * 0.2, it.h * 0.6, "#0a0b0c");
-    k.metal.box(g, deep / 2 - 0.6, deep / 2 - 0.05, -1.4, 1.4, it.h * 0.2, it.h * 0.28, STEEL);
+    k.plastic.box(g, deep / 2 - 0.02, deep / 2 + 0.01, -1.6 * sc, 1.6 * sc, it.h * 0.2, it.h * 0.6, "#0a0b0c");
+    k.metal.box(g, deep / 2 - 0.6, deep / 2 - 0.05, -1.4 * sc, 1.4 * sc, it.h * 0.2, it.h * 0.28, STEEL);
     // the screw on top, set back from the entry
     const s = F([x - side[0] * deep * 0.12, y - side[1] * deep * 0.12, t + it.h], side);
-    k.metal.cyl(s, 0, 0, -0.6, 0.01, 1.6, STEEL, 18);
-    k.plastic.box(s, -1.3, 1.3, -0.2, 0.2, -0.1, 0.03, "#2b2d31");
+    k.metal.cyl(s, 0, 0, -0.6, 0.01, 1.6 * sc, STEEL, 18);
+    k.plastic.box(s, -1.3 * sc, 1.3 * sc, -0.2, 0.2, -0.1, 0.03, "#2b2d31");
     // a line where the blocks meet
     k.plastic.box(g, -deep / 2, deep / 2, hw - 0.06, hw + 0.06, 0, it.h - 0.01, "#183d29");
   }

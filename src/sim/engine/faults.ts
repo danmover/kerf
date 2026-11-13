@@ -14,7 +14,7 @@ import type { FaultSpec } from "../scenario";
 import { FAULT_WORDS } from "../scenario";
 import { catalogPart } from "../../machine/catalog";
 import type { SerialLine } from "./hal";
-import { SCHEMES, type Plant, type Src } from "./plant";
+import { HUB_PIN, SCHEMES, type Plant, type Src } from "./plant";
 import type { MotorLoad, Orientation, World, WorldEvent } from "../worlds/types";
 
 /** a jammed shaft: no torque the motor can make turns it */
@@ -307,6 +307,21 @@ export class FaultInjector {
         break;
       }
       case "motor_driver": {
+        // a servo board: off the bus with a data wire loose (its outputs carry on with their last pulses), dark
+        // with its logic supply off, and a channel's own pin takes that pulse away
+        const hub = plant.hubs.find((h) => h.comp === comp);
+        if (hub) {
+          const k = plant.hubs.indexOf(hub);
+          const ch = /^P(\d+)$/.exec(pin);
+          if (pin === "SDA" || pin === "SCL") offBus();
+          else if (pin === "VCC") undos.push(this.swap(hub, "vcc", DEAD_NET));
+          else if (ch) {
+            const at = HUB_PIN + 16 * k + Number(ch[1]);
+            for (const s of plant.servos) if (s.pin === at) undos.push(this.swap(s, "pin", -1));
+            for (const e of plant.escs) if (e.pin === at) undos.push(this.swap(e, "pin", -1));
+          }
+          break;
+        }
         for (const c of plant.chans.filter((x) => x.comp === comp)) {
           if (def?.type === "motor_out" && (def.channel ?? "A") === c.ch) {
             // the motor, actuator or coil on this output loses its feed
@@ -341,7 +356,7 @@ export class FaultInjector {
       case "display": {
         offBus();
         // an HX711 off its pins, or the load cell off the HX711
-        for (const h of plant.hxs) {
+        for (const h of [...plant.hxs, ...plant.adcs]) {
           if (h.comp === comp) undos.push(this.swap(h, "on", false));
           else if (h.cell === comp) undos.push(this.swap(h, "cell", undefined));
         }
@@ -385,10 +400,8 @@ export class FaultInjector {
         // a lead off a switch, or its plug pulled out: whatever ran through its contacts is broken, as if it
         // were pressed; a normally-open contact off its controller pin just never closes
         if (!def?.through) break;
-        const n = plant.netOf(comp, pin);
-        if (!n || plant.cut.has(n.id)) break;
-        plant.cut.add(n.id);
-        undos.push(() => plant.cut.delete(n.id));
+        const opened = plant.openContacts(comp, [pin]);
+        if (opened) undos.push(opened);
         break;
       }
       case "fuse": {

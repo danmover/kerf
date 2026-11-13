@@ -3,8 +3,23 @@
 // `source`). Parts marked generic are commodity modules sold by many
 // sellers; their numbers are typical listing values and vary.
 
-import type { CatalogPart, FootprintSpec, PinDef } from "../types";
+import type { CatalogPart, ConnDef, FootprintSpec, PinDef, SpotDef } from "../types";
 import { avrPins, gnd, input, motorOut, port, pwrIn, pwrOut, rail } from "./pins";
+
+// ---------------- sockets and leads ----------------
+
+/**
+ * A STEMMA QT (Qwiic) socket: a 4-way JST SH with the contacts GND, V+, SDA, SCL. `v` is the pin its V+ contact is on
+ * this board. The cable made for it has the same four colours everywhere.
+ */
+export function qtSocket(id: string, name: string, v: string): { spots: SpotDef[]; conn: ConnDef } {
+  const spot = (s: string, pin: string, label: string): SpotDef => ({ id: `${id}_${s}`, pin, label: `${name}: ${label}` });
+  const spots = [spot("GND", "GND", "GND"), spot("V", v, "V+"), spot("SDA", "SDA", "SDA"), spot("SCL", "SCL", "SCL")];
+  return {
+    spots,
+    conn: { id, name, pins: spots.map((x) => x.id), cable: { colors: ["black", "red", "blue", "yellow"], gauge: 28 }, keyed: true, how: "The plug only goes in one way round: push it in flat until it clicks. Pull it out by the plug, not the wires." },
+  };
+}
 
 // ---------------- controllers ----------------
 
@@ -127,6 +142,11 @@ function featherV2Pins(): PinDef[] {
   );
   return out;
 }
+
+const FEATHER_QT = qtSocket("QT", "STEMMA QT socket", "QT_3V");
+// breakouts with a STEMMA QT socket at each end of the board: QT1 at the -X end, QT2 at +X
+const IMU_QT1 = qtSocket("QT1", "left STEMMA QT socket", "VIN");
+const IMU_QT2 = qtSocket("QT2", "right STEMMA QT socket", "VIN");
 
 function picoPins(): PinDef[] {
   const out: PinDef[] = [];
@@ -459,6 +479,9 @@ export const ELECTRONICS: CatalogPart[] = [
     summary: "ESP32-PICO-MINI-02, dual-core 240 MHz with Wi-Fi and Bluetooth, 3.3 V logic (not 5 V tolerant), 2 MB PSRAM, USB-C, LiPo charger and a STEMMA QT (Qwiic) I2C socket. 52 x 23 mm Feather with four 2.5 mm mounting holes.",
     specs: { mcu: "ESP32", logic_v: 3.3, clock_mhz: 240, flash_kb: 8192, psram_kb: 2048, wifi: true, bluetooth: true, platform: "arduino-esp32", fqbn: "esp32:esp32:adafruit_feather_esp32_v2", pio_board: "adafruit_feather_esp32_v2", qt_power_pin: 2, mass_g: 6 },
     pins: featherV2Pins(),
+    // the STEMMA QT socket carries GND, the switched 3.3 V, SDA and SCL; 5 V on the USB-C socket's power pins is the USB pin's rail
+    spots: [...FEATHER_QT.spots, { id: "USB_5V", pin: "V5", label: "USB-C socket: 5 V" }, { id: "USB_GND", pin: "GND", label: "USB-C socket: GND" }],
+    conns: [FEATHER_QT.conn, { id: "USB", name: "USB-C socket", pins: ["USB_5V", "USB_GND"], cable: { colors: ["red", "black"], gauge: 24 }, keyed: true, how: "The plug goes in either way up." }],
     geom: {
       g: "board",
       dims: { w: 50.8, d: 22.86, t: 1.6 },
@@ -737,6 +760,68 @@ export const ELECTRONICS: CatalogPart[] = [
     source: "https://www.pololu.com/product/2130",
   },
 
+  // ---- servo drivers ----
+  {
+    id: "pca9685_servo_16",
+    kind: "motor_driver",
+    name: "PCA9685 16-channel 12-bit PWM servo driver board (assembled)",
+    generic: true,
+    summary: "Sixteen servo outputs from two I2C wires (0x40): servo and ESC leads plug straight onto its 3-pin channels, with no soldering. Each channel is GND, V+ and the pulse. The logic runs from VCC (the controller's 3.3 V); servo power comes in on V+, from the screw terminal or from a BEC lead plugged onto any channel. With VCC off its outputs stop, and it comes back asleep with every output off. 62.5 x 25.4 mm, four 3 mm holes.",
+    specs: { driver: "PCA9685", iface: "i2c", i2c_addr: "0x40", channels: 16, resolution_bits: 12, osc_mhz: 25, v_min: 2.3, v_max: 5.5, servo_v_max: 6, mass_g: 9 },
+    pins: [
+      pwrIn("VCC", 2.3, 5.5, { label: "VCC", vabs: 6, draw: 0.006, note: "Logic supply: the controller's logic voltage (3.3 V for an ESP32), never the servo supply. The board's I2C pull-ups go to it" }),
+      gnd(),
+      { id: "SCL", type: "in", vmax: 5.5, vih: 2.0, bus: "i2c_scl", required: true },
+      { id: "SDA", type: "in", vmax: 5.5, vih: 2.0, bus: "i2c_sda", required: true },
+      input("OE", 5.5, 2.0, { label: "OE", note: "Output enable, pulled low on the board (outputs on): leave it open. High turns every output off" }),
+      pwrIn("VP", 4.5, 6, { label: "V+", vabs: 10, draw: 0, note: "Servo power: 5 to 6 V on the screw terminal, or from a BEC lead plugged onto a channel. Every channel's middle pin is on it" }),
+      ...Array.from({ length: 16 }, (_, k): PinDef => ({ id: `P${k}`, type: "out", v: 3.3, vref: "VCC", label: `PWM ${k}`, note: k === 0 ? "Pulse out, at VCC's level, through 220 Ω" : undefined })),
+    ],
+    // every channel is a column of three pins: GND by the board's edge, V+ in the middle, the pulse inside
+    spots: [
+      ...Array.from({ length: 16 }, (_, k): SpotDef[] => [{ id: `G${k}`, pin: "GND", label: `channel ${k}: GND` }, { id: `V${k}`, pin: "VP", label: `channel ${k}: V+` }]).flat(),
+      { id: "T_VP", pin: "VP", label: "power terminal: V+" },
+      { id: "T_GND", pin: "GND", label: "power terminal: GND" },
+    ],
+    conns: [
+      ...Array.from({ length: 16 }, (_, k): ConnDef => ({ id: `CH${k}`, name: `channel ${k}`, pins: [`G${k}`, `V${k}`, `P${k}`], how: "The plug's dark wire (brown or black) goes on the row by the board's edge, the light one (orange, yellow or white) on the inside row." })),
+      { id: "POWER", name: "power terminal", pins: ["T_VP", "T_GND"], how: "Loosen the screw, push the bare end in under the clamp and tighten. Follow the + and − printed by the terminals." },
+    ],
+    // sizes from Adafruit's board (product 815), which the assembled ones copy: 2.45 x 1.0 in, holes 2.2 x 0.75 in apart.
+    // The channels are four blocks of four with one pin's gap between blocks; the 6-pin control header is a
+    // right-angle one at the -X end (GND, OE, SCL, SDA, VCC, V+ from +Y), the 2-way power terminal at the middle of +Y
+    geom: {
+      g: "board",
+      dims: { w: 62.5, d: 25.4, t: 1.6 },
+      holes: [
+        [-27.94, -9.525],
+        [27.94, -9.525],
+        [-27.94, 9.525],
+        [27.94, 9.525],
+      ],
+      hole_d: 3,
+      features: [
+        { kind: "chip", x: -3, y: 2.6, w: 9.7, d: 6.4, h: 1.1 },
+        { kind: "terminal", x: 0, y: 8.9, w: 10.16, d: 7.6, h: 10 },
+        { kind: "header", x: -19.05, y: -7.62, w: 10.16, d: 7.62, h: 8.5 },
+        { kind: "header", x: -6.35, y: -7.62, w: 10.16, d: 7.62, h: 8.5 },
+        { kind: "header", x: 6.35, y: -7.62, w: 10.16, d: 7.62, h: 8.5 },
+        { kind: "header", x: 19.05, y: -7.62, w: 10.16, d: 7.62, h: 8.5 },
+        { kind: "header", x: -30, y: 0, w: 2.5, d: 15.24, h: 2.5 },
+      ],
+      color: "#1d4f9c",
+    },
+    price_usd: 8,
+    buy: [{ vendor: "Phipps Electronics (AU)", url: "https://www.phippselectronics.com/product/pca9685-16-channel-12-bit-pwm-servo-driver-i2c-interface/" }, { vendor: "Marketplace", search: "PCA9685 16 channel servo driver board assembled headers" }],
+    source: "https://learn.adafruit.com/16-channel-pwm-servo-driver/pinouts",
+    notes: [
+      "Buy one with its pin headers and terminal block already fitted (most are; Adafruit's own, product 815, comes with them loose).",
+      "The assembled boards differ a little: follow the names printed by the pins and the + and − by the terminal, and check the hole spacing before printing a mount.",
+      "Its I2C pull-ups are 10 kΩ to VCC, so VCC must be the controller's logic voltage.",
+      "It starts asleep with every output off; the firmware sets 50 Hz and wakes it.",
+    ],
+  },
+
   // ---- stepper drivers ----
   {
     id: "a4988",
@@ -856,6 +941,8 @@ export const ELECTRONICS: CatalogPart[] = [
     summary: "22.2 V nominal (19.8 to 25.2 V), 1.3 Ah, about 29 Wh, 78 x 34 x 50 mm, 246 g. 120C pack (240C bursts): the XT60 plug, not the cells, limits it, to about 30 A continuous and 60 A in bursts.",
     specs: { cells: 6, chemistry: "LiPo", v_nom: 22.2, v_max: 25.2, v_min: 19.8, capacity_mah: 1300, c_rating: 120, i_cont: 30, i_burst: 60, energy_wh: 28.9, connector: "XT60", mass_g: 246 },
     pins: batteryPins(22.2, 19.8, 25.2, 30),
+    // its own 12 AWG lead with the XT60 on it (the lead's length is assumed), and the balance lead for the charger
+    conns: [{ id: "LEAD", name: "lead", pins: ["POS", "NEG"], lead: { mm: 80, gauge: 12, colors: ["red", "black"], insulation: "silicone", end: "XT60 socket" } }],
     geom: { g: "box", style: "lipo", dims: { w: 78, d: 34, h: 50, r: 3, band: 18 }, color: "#1d2128", color2: "#e3342f", material: "ABS" },
     price_usd: 28,
     buy: [{ vendor: "Phaser FPV (AU)", url: "https://phaserfpv.com.au/products/chinahobbyline-1300mah-6s-120c-lipo-battery-xt60-dg" }],
@@ -1039,6 +1126,52 @@ export const ELECTRONICS: CatalogPart[] = [
     price_usd: 2,
     buy: [{ vendor: "Marketplace", search: "XT60 connector pair" }],
   },
+  {
+    id: "xt60_pigtail",
+    kind: "connector",
+    name: "XT60 plug on a 12 AWG pigtail, 100 mm",
+    generic: true,
+    summary: "The mate of a battery's XT60 with 100 mm of 12 AWG silicone wire already soldered on: the battery plugs into it, and its two bare ends go on to the fuse and the speed controller. 30 A continuous (60 A bursts).",
+    specs: { rating_a: 30, rating_burst_a: 60, mass_g: 13 },
+    pins: [{ id: "POS_A", type: "passive", through: "POS_B" }, { id: "POS_B", type: "passive", through: "POS_A" }, { id: "NEG_A", type: "passive", through: "NEG_B" }, { id: "NEG_B", type: "passive", through: "NEG_A" }],
+    conns: [
+      { id: "PLUG", name: "XT60 plug", pins: ["POS_A", "NEG_A"], keyed: true, how: "It only fits one way round. Push until the two halves meet." },
+      { id: "TAILS", name: "pigtail", pins: ["POS_B", "NEG_B"], lead: { mm: 100, gauge: 12, colors: ["red", "black"], insulation: "silicone", end: "bare end" } },
+    ],
+    geom: { g: "box", style: "xt", dims: { w: 16, d: 8, h: 16, r: 1 }, color: "#e8b423" },
+    price_usd: 2.5,
+    buy: [{ vendor: "Phaser FPV (AU)", url: "https://phaserfpv.com.au/products/xt60-male-with-sheath-connector-pigtail-10cm-12awg-silicon-wire" }],
+  },
+  {
+    id: "wago_221_412",
+    kind: "connector",
+    name: "Wago 221-412 lever connector, 2 wires up to 4 mm²",
+    maker: "Wago",
+    mpn: "221-412",
+    summary: "Joins two wires with no soldering or crimping: lift a lever, push in a wire stripped 11 mm, close the lever. 0.14 to 4 mm² (24 to 12 AWG), solid or stranded, 32 A. The clear case shows the wire is fully in. 18.6 x 13.1 x 8.3 mm.",
+    specs: { rating_a: 32, v_max: 450, ways: 2, wire_mm2_min: 0.14, wire_mm2_max: 4, strip_mm: 11, mass_g: 2.5 },
+    pins: [{ id: "A", type: "passive", through: "B", required: true }, { id: "B", type: "passive", through: "A", required: true }],
+    geom: { g: "box", style: "wago", dims: { w: 13.1, d: 18.6, h: 8.3, r: 1.2 }, color: "#dfe4ea", color2: "#f08a1c", material: "PC" },
+    price_usd: 0.8,
+    buy: [{ vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/wago-221-series-lever-nut-2-conductor-compact-splicing-connector.html" }],
+    source: "https://www.wago.com/global/installation-terminal-blocks-and-connectors/splicing-connector-with-levers/p/221-412",
+    notes: ["A wire thinner than 0.14 mm² (26 AWG and finer): strip it 20 mm and fold the bare end back on itself before pushing it in.", "Both wires go in the same end. Pull each one after closing its lever."],
+  },
+  {
+    id: "wago_221_612",
+    kind: "connector",
+    name: "Wago 221-612 lever connector, 2 wires up to 6 mm²",
+    maker: "Wago",
+    mpn: "221-612",
+    summary: "The bigger lever connector, for battery leads: joins two wires of 0.5 to 6 mm² (20 to 10 AWG) with no soldering or crimping, 41 A. Lift a lever, push in a wire stripped 12 mm, close the lever. 21.1 x 16 x 10.1 mm.",
+    specs: { rating_a: 41, v_max: 450, ways: 2, wire_mm2_min: 0.5, wire_mm2_max: 6, strip_mm: 12, mass_g: 4.5 },
+    pins: [{ id: "A", type: "passive", through: "B", required: true }, { id: "B", type: "passive", through: "A", required: true }],
+    geom: { g: "box", style: "wago", dims: { w: 16, d: 21.1, h: 10.1, r: 1.4 }, color: "#dfe4ea", color2: "#f08a1c", material: "PC" },
+    price_usd: 1.2,
+    buy: [{ vendor: "element14 (AU)", url: "https://au.element14.com/wago/221-612/terminal-block-pluggable-2pos/dp/2856918" }],
+    source: "https://www.wago.com/global/installation-terminal-blocks-and-connectors/splicing-connector-with-levers/p/221-612",
+    notes: ["Both wires go in the same end. Pull each one after closing its lever: a battery lead that slips out is a short circuit waiting to happen."],
+  },
 
   {
     id: "skywalker_60a_v2",
@@ -1046,24 +1179,36 @@ export const ELECTRONICS: CatalogPart[] = [
     name: "Hobbywing Skywalker 60A V2 ESC (3-6S, 5 V 7 A switching BEC)",
     maker: "Hobbywing",
     mpn: "Skywalker 60A V2",
-    summary: "Brushless ESC: 60 A continuous, 80 A for 10 s, 3 to 6S LiPo, RC throttle pulse 1000 to 2000 µs, signal-loss cut, 5 V 7 A switching BEC for the servos. 73 x 30 x 12 mm, 68 g, 12 AWG battery and 14 AWG motor leads.",
-    specs: { i_cont: 60, i_burst: 80, cells_min: 3, cells_max: 6, v_min: 9.9, v_max: 25.2, bec_v: 5, bec_a: 7, v_out: 5, i_out: 7, v_in_min: 9.9, efficiency: 0.88, bec: "switching", pwm_min_us: 1000, pwm_max_us: 2000, arm_ms: 1500, signal_loss_ms: 250, mass_g: 68 },
+    summary: "Brushless ESC: 60 A continuous, 80 A for 10 s, 3 to 6S LiPo, RC throttle pulse 1100 to 1940 µs as it leaves the factory, stops the motor 0.25 s after its signal is lost, 5 V 7 A switching BEC for the servos. 73 x 30 x 12 mm, 68 g, 12 AWG battery and 14 AWG motor leads.",
+    specs: { i_cont: 60, i_burst: 80, cells_min: 3, cells_max: 6, v_min: 9.9, v_max: 25.2, bec_v: 5, bec_a: 7, v_out: 5, i_out: 7, v_in_min: 9.9, efficiency: 0.88, bec: "switching", pwm_min_us: 1100, pwm_max_us: 1940, arm_ms: 1500, signal_loss_ms: 250, mass_g: 68 },
     pins: [
       pwrIn("B_PLUS", 9.9, 25.2, { label: "Battery + (red, 12 AWG)", vabs: 26, draw: 0.05 }),
       gnd("B_MINUS", "Battery − (black, 12 AWG)"),
       motorOut("PHASE_A", "M", 60, 80, "Motor A (14 AWG, 4 mm bullet)"),
       motorOut("PHASE_B", "M", 60, 80, "Motor B (14 AWG, 4 mm bullet)"),
       motorOut("PHASE_C", "M", 60, 80, "Motor C (14 AWG, 4 mm bullet)"),
-      input("SIG", 5.5, 2.0, { label: "Throttle signal (white)", required: true, note: "RC pulse: 1000 µs stop, 2000 µs full after the throttle-range calibration. It arms only after seeing low throttle at power-up, and stops the motor about 0.25 s after the pulses stop" }),
+      input("SIG", 5.5, 2.0, { label: "Throttle signal (white)", required: true, note: "RC pulse: as it leaves the factory, 1100 µs and under is stop and 1940 µs is full (a throttle-range calibration changes that). It arms only after seeing a stop pulse at power-up, and stops the motor 0.25 s after the pulses stop" }),
       pwrOut("BEC_5V", 5, 7, { label: "BEC + (red)", note: "Switching BEC: 5 V for the servos and receiver, up to 7 A" }),
       gnd("BEC_GND", "BEC − (black)"),
+    ],
+    // its leads as sold: bare 12 AWG to the battery, 14 AWG with 4 mm bullet sockets to the motor, and the thin
+    // signal and BEC lead with a 3-way servo plug (its length is assumed)
+    conns: [
+      { id: "BATTERY", name: "battery leads", pins: ["B_PLUS", "B_MINUS"], lead: { mm: 100, gauge: 12, colors: ["red", "black"], insulation: "silicone", end: "bare end" } },
+      { id: "MOTOR", name: "motor leads", pins: ["PHASE_A", "PHASE_B", "PHASE_C"], lead: { mm: 100, gauge: 14, colors: ["black", "black", "black"], insulation: "silicone", end: "4 mm bullet socket", joint: "bullet" }, how: "Any lead onto any of the motor's three. If the fan turns the wrong way, swap two of them." },
+      { id: "SIGNAL", name: "signal lead", pins: ["BEC_GND", "BEC_5V", "SIG"], lead: { mm: 250, gauge: 26, colors: ["black", "red", "white"], end: "3-way servo plug" } },
     ],
     geom: { g: "box", style: "esc", dims: { w: 73, d: 30, h: 12, r: 2, band: 10 }, color: "#1b1e23", color2: "#2f6ad8", material: "PVC" },
     price_usd: 46,
     buy: [{ vendor: "Hobbytech Toys (AU)", url: "https://hobbytechtoys.com.au/products/hobbywing-skywalker-60a-v2-esc-3-6s" }],
     source: "https://www.hobbywing.com/en/products/skywalker-60a-v2",
-    notes: ["Do the throttle-range calibration once (full throttle at power-up, then low) with the fan clamped and hands clear.", "Turn its signal-loss protection on, so a broken signal wire (the e-stop) stops the motor.", "Swap any two motor wires to reverse the fan."],
-    tests: ["Throttle-range calibration and a spin-up on the bench with the fan clamped"],
+    notes: [
+      "Leave its throttle range as it leaves the factory (1100 to 1940 µs, in its manual): generated firmware is set to it, so there is no full-throttle calibration to do. Its manual does not give the fastest pulse rate it takes; 50 Hz always works.",
+      "It stops the motor by itself 0.25 s after its signal stops, which is what an e-stop in the signal relies on.",
+      "Its two thin yellow leads (reverse brake signal and programming) stay unplugged: tape them back along the ESC.",
+      "Swap any two motor wires to reverse the fan.",
+    ],
+    tests: ["A spin-up on the bench with the fan clamped: it should start turning just above the stop pulse and stop within a second of the signal lead being pulled"],
   },
   {
     id: "fuse_holder_maxi",
@@ -1073,9 +1218,49 @@ export const ELECTRONICS: CatalogPart[] = [
     summary: "For battery leads above the 40 A an ATC blade can take: MAXI fuses come in 20 to 80 A. Set rating: to the fuse you fit.",
     specs: { rating_a: 50, v_max: 32 },
     pins: [{ id: "IN", type: "passive", through: "OUT", required: true }, { id: "OUT", type: "passive", through: "IN", required: true }],
+    // a heavy lead out of each end, to cut to length (their length and colour are typical)
+    conns: [
+      { id: "LEAD_IN", name: "lead", pins: ["IN"], lead: { mm: 120, gauge: 10, colors: ["red"], end: "bare end" } },
+      { id: "LEAD_OUT", name: "other lead", pins: ["OUT"], lead: { mm: 120, gauge: 10, colors: ["red"], end: "bare end" } },
+    ],
     geom: { g: "box", style: "fuse_maxi", dims: { w: 46, d: 20, h: 26, r: 3 }, color: "#20242a" },
     price_usd: 8,
     buy: [{ vendor: "Jaycar (AU)", url: "https://www.jaycar.com.au/search?text=maxi%20fuse%20holder" }],
+  },
+  {
+    id: "fuse_holder_blade_screw",
+    kind: "fuse",
+    name: "Inline blade fuse holder with screw terminals (ATO, up to 30 A)",
+    maker: "Jaycar",
+    mpn: "SZ2044",
+    summary: "A standard (ATO) blade fuse holder with a screw terminal in each end: push a stripped wire into each end and tighten its screw, so nothing is crimped or soldered. 10 to 20 AWG wire, 30 A at 32 V DC at most. Sold without a fuse: set rating: to the blade you fit.",
+    specs: { rating_a: 30, rating_max_a: 30, v_max: 32, wire_awg_min: 20, wire_awg_max: 10, strip_mm: 8, mass_g: 18 },
+    pins: [{ id: "IN", type: "passive", through: "OUT", required: true }, { id: "OUT", type: "passive", through: "IN", required: true }],
+    // drawn from holders of this kind (Jaycar gives no sizes): the wires go in the two ends, the blade plugs into the top
+    geom: { g: "box", style: "fuse_blade", dims: { w: 62, d: 21, h: 20, r: 2 }, color: "#1b1f25", color2: "#3fae5a" },
+    price_usd: 9,
+    buy: [{ vendor: "Jaycar (AU)", url: "https://www.jaycar.com.au/30a-32vdc-standard-blade-fuse-holder-with-screw-terminals/p/SZ2044" }],
+    source: "https://www.jaycar.com.au/30a-32vdc-standard-blade-fuse-holder-with-screw-terminals/p/SZ2044",
+    notes: [
+      "Its size is not on Jaycar's page: it is drawn 62 x 21 x 20 mm, like other holders of this kind. Measure yours before printing what it sits on.",
+      "Strip each wire 8 mm, push it right in and tighten the screw hard, then pull the wire to check it holds.",
+    ],
+  },
+  {
+    id: "terminal_strip_30a_way",
+    kind: "connector",
+    name: "Screw terminal strip 30 A, one way cut from a 12-way strip",
+    maker: "Jaycar",
+    mpn: "HM3198",
+    summary: "One way of a 30 A nylon terminal strip, cut off with a knife: a brass tube with two screws that joins two wires end to end, with no crimping or soldering. Takes wire up to 5.6 mm across (10 AWG).",
+    specs: { rating_a: 30, v_max: 450, ways: 1, wire_d_max: 5.6, strip_mm: 9, mass_g: 7 },
+    pins: [{ id: "A", type: "passive", through: "B", required: true }, { id: "B", type: "passive", through: "A", required: true }],
+    // 164.5 mm over 12 ways (Jaycar); its width and height are typical of 30 A strips
+    geom: { g: "box", style: "terminal_way", dims: { w: 13.7, d: 22, h: 18, r: 1 }, color: "#ece9df", color2: "#b9975b", material: "PA66" },
+    price_usd: 3,
+    buy: [{ vendor: "Jaycar (AU)", url: "https://www.jaycar.com.au/30-amp-12-way-screw-terminal-strip/p/HM3198" }],
+    source: "https://www.jaycar.com.au/30-amp-12-way-screw-terminal-strip/p/HM3198",
+    notes: ["A wire goes in each end and meets the other in the middle: strip 9 mm, push it in to the middle and tighten the screw on its side. Pull each wire after tightening."],
   },
   {
     id: "xt90s_pair",
@@ -1108,6 +1293,9 @@ export const ELECTRONICS: CatalogPart[] = [
       { id: "INT1", type: "out", v: 3.3, label: "I1" },
       { id: "INT2", type: "out", v: 3.3, label: "I2" },
     ],
+    // the two STEMMA QT sockets are the same bus: a cable in, and one on to the next board
+    spots: [...IMU_QT1.spots, ...IMU_QT2.spots],
+    conns: [IMU_QT1.conn, IMU_QT2.conn],
     geom: {
       g: "board",
       dims: { w: 25.6, d: 17.8, t: 1.6 },
@@ -1201,11 +1389,67 @@ export const ELECTRONICS: CatalogPart[] = [
       { id: "SIG_P", type: "term", label: "green (S+)" },
       { id: "SIG_N", type: "term", label: "white (S−)" },
     ],
+    // its four fine wires, about 200 mm, with tinned ends
+    conns: [{ id: "LEAD", name: "four wires", pins: ["EXC_P", "EXC_N", "SIG_N", "SIG_P"], lead: { mm: 200, gauge: 28, colors: ["red", "black", "white", "green"], end: "tinned end" } }],
     // two tapped holes at each end, through the bar (assumed M4, 10 mm apart: some 1 kg bars take M5)
     geom: { g: "box", style: "load_cell", dims: { w: 75, d: 12.7, h: 12.7, r: 0.5, hole_depth: 12.7 }, holes: [[-32.5, 0], [-22.5, 0], [22.5, 0], [32.5, 0]], hole_d: 3.3, color: "#c9ced6", material: "Aluminum 6061" },
     price_usd: 3,
     buy: [{ vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/makerverse-1kg-load-cell.html" }],
     notes: ["Bolt one end to the frame and load the other, with a gap under the loaded end so the bar can bend. Keep the load under 1 kg (it survives 1.5 kg).", "The holes are assumed M4, two at each end 10 mm apart: check yours before printing a mount (some take M5)."],
+  },
+  {
+    id: "nau7802_breakout",
+    kind: "sensor",
+    name: "Adafruit NAU7802 24-bit ADC for load cells (STEMMA QT)",
+    maker: "Adafruit",
+    mpn: "4538",
+    summary: "24-bit bridge ADC with a gain of 1 to 128 for one load cell (a second input on the current revision), 10 to 320 samples a second over I2C (0x2A). The load cell's four wires go in its screw terminals, which come fitted, and it plugs in with a STEMMA QT cable: nothing to solder. It makes the cell's excitation itself (2.4 to 4.5 V). 3 to 5 V. 25.3 x 23.0 mm.",
+    specs: { iface: "i2c", i2c_addr: "0x2A", chip: "NAU7802", rate_sps: 80, gain: 128, avdd: 3.0, v_min: 3, v_max: 5, mass_g: 2.3 },
+    pins: [
+      pwrIn("VIN", 3, 5.5, { label: "VIN", vabs: 6, draw: 0.003 }),
+      gnd(),
+      { id: "SCL", type: "in", vmax: 5.5, vih: 2.0, bus: "i2c_scl", required: true },
+      { id: "SDA", type: "in", vmax: 5.5, vih: 2.0, bus: "i2c_sda", required: true },
+      { id: "DRDY", type: "out", v: 3.3, vref: "VIN", label: "DRDY", note: "High when a sample is ready (the firmware can also ask over I2C)" },
+      pwrOut("E_PLUS", 3, 0.01, { label: "E+", note: "Bridge excitation from the chip's own regulator, set by the firmware (3.0 V): the load cell's red wire" }),
+      gnd("E_MINUS", "E−"),
+      { id: "A_MINUS", type: "term", label: "A−", note: "Bridge signal −: the load cell's white wire" },
+      { id: "A_PLUS", type: "term", label: "A+", note: "Bridge signal +: the load cell's green wire" },
+      { id: "B_MINUS", type: "term", label: "B−", note: "Second input − (current revision)" },
+      { id: "B_PLUS", type: "term", label: "B+", note: "Second input +" },
+    ],
+    spots: [...IMU_QT1.spots, ...IMU_QT2.spots],
+    conns: [
+      IMU_QT1.conn,
+      IMU_QT2.conn,
+      { id: "CELL", name: "load cell terminals", pins: ["E_PLUS", "E_MINUS", "A_MINUS", "A_PLUS"], how: "Loosen each screw, push the wire's tinned end in under its clamp and tighten. The names are printed by the terminals." },
+    ],
+    // the board's size is Adafruit's; the hole positions and the order of the six terminals are assumed (follow the
+    // names printed by the terminals, and check the holes before printing a mount)
+    geom: {
+      g: "board",
+      dims: { w: 25.3, d: 23, t: 1.6 },
+      holes: [
+        [-10.16, -8.96],
+        [10.16, -8.96],
+      ],
+      hole_d: 2.5,
+      features: [
+        { kind: "chip", x: 0, y: -1.2, w: 4, d: 5, h: 1.5 },
+        { kind: "socket", x: -10.55, y: 0.6, w: 4.2, d: 6, h: 3 },
+        { kind: "socket", x: 10.55, y: 0.6, w: 4.2, d: 6, h: 3 },
+        { kind: "terminal", x: 0, y: 7.9, w: 21, d: 7.2, h: 8.5 },
+      ],
+      color: "#16181b",
+    },
+    price_usd: 5.95,
+    buy: [{ vendor: "Core Electronics (AU)", url: "https://core-electronics.com.au/adafruit-nau7802-24-bit-adc-stemma-qt-qwiic.html" }, { vendor: "Adafruit", url: "https://www.adafruit.com/product/4538" }],
+    source: "https://learn.adafruit.com/adafruit-nau7802-24-bit-adc-stemma-qt-qwiic/pinouts",
+    notes: [
+      "The terminal block has come fitted since January 2024, with six terminals since June 2025 (E+, E−, A−, A+ and the second input B−, B+); older ones have four.",
+      "The pin header comes loose: leave it off and plug the board in with a STEMMA QT cable.",
+      "After power-up the firmware runs its offset calibration once and waits for it, then reads 80 samples a second.",
+    ],
   },
   {
     id: "makerverse_load_cell_amp",

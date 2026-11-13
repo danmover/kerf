@@ -429,6 +429,56 @@ export function bedTurn(w: number, d: number, W: number, D: number): number | un
   return best;
 }
 
+/**
+ * The same for a footprint that is not a rectangle: an L, a V or an arch fits across the corners of a bed its bounding
+ * box does not. pos holds the part's points, `stride` numbers each, with the footprint's two coordinates at offsets
+ * ox and oy (only their convex hull matters). Returns the turn about the vertical, in whole degrees from 0 to 179,
+ * that leaves the most room on a bx × by bed, and the footprint's size after it; undefined when no turn fits.
+ */
+export function footprintTurn(pos: ArrayLike<number>, stride: number, ox: number, oy: number, bx: number, by: number): { deg: number; w: number; d: number } | undefined {
+  const pts: [number, number][] = [];
+  for (let i = 0; i + stride <= pos.length; i += stride) pts.push([pos[i + ox], pos[i + oy]]);
+  if (!pts.length) return undefined;
+  pts.sort((a, b) => a[0] - b[0] || a[1] - b[1]);
+  const cross = (o: [number, number], a: [number, number], b: [number, number]) => (a[0] - o[0]) * (b[1] - o[1]) - (a[1] - o[1]) * (b[0] - o[0]);
+  const half = (order: [number, number][]) => {
+    const h: [number, number][] = [];
+    for (const p of order) {
+      while (h.length >= 2 && cross(h[h.length - 2], h[h.length - 1], p) <= 0) h.pop();
+      h.push(p);
+    }
+    return h;
+  };
+  const lower = half(pts);
+  const upper = half([...pts].reverse());
+  const hull = lower.length > 1 ? lower.slice(0, -1).concat(upper.slice(0, -1)) : lower;
+  let best: { deg: number; w: number; d: number } | undefined;
+  let room = -1e-6;
+  for (let deg = 0; deg < 180; deg++) {
+    const t = (deg * Math.PI) / 180;
+    const c = Math.cos(t);
+    const s = Math.sin(t);
+    let x0 = Infinity;
+    let x1 = -Infinity;
+    let y0 = Infinity;
+    let y1 = -Infinity;
+    for (const [x, y] of hull) {
+      const u = x * c - y * s;
+      const v = x * s + y * c;
+      if (u < x0) x0 = u;
+      if (u > x1) x1 = u;
+      if (v < y0) y0 = v;
+      if (v > y1) y1 = v;
+    }
+    const r = Math.min(bx - (x1 - x0), by - (y1 - y0));
+    if (r > room + 1e-9) {
+      room = r;
+      best = { deg, w: x1 - x0, d: y1 - y0 };
+    }
+  }
+  return best;
+}
+
 /** Whether a part of this extent (its own x, y, z) fits the machine, and its size in words; the envelope check's test. */
 export function envelopeFit(ext: V3, env: NonNullable<Rules["envelope"]>): { fits: boolean; dims: string } {
   const size = env.size;
@@ -455,7 +505,18 @@ export function envelopeFit(ext: V3, env: NonNullable<Rules["envelope"]>): { fit
 function envelope(c: Ctx, env: NonNullable<Rules["envelope"]>): ProcessFinding {
   const ext: V3 = [c.hi[0] - c.lo[0], c.hi[1] - c.lo[1], c.hi[2] - c.lo[2]];
   const size = env.size;
-  const { fits, dims } = envelopeFit(ext, env);
+  let { fits, dims } = envelopeFit(ext, env);
+  if (!fits && env.frame) {
+    // its bounding box fits no way: its real outline may, turned across the bed's corners (an L, a V, an arch)
+    const b = env.frame;
+    const ax = Math.abs(b[0]) > 0.99 ? 0 : Math.abs(b[1]) > 0.99 ? 1 : 2;
+    const [u, v] = [0, 1, 2].filter((i) => i !== ax);
+    const t = ext[ax] <= size[2] + 1e-6 ? footprintTurn(c.m.pos, 3, u, v, size[0], size[1]) : undefined;
+    if (t) {
+      fits = true;
+      dims = `${dims}, laid ${t.deg}° across the bed, where its outline takes ${fmt(t.w, 1)} × ${fmt(t.d, 1)} mm`;
+    }
+  }
   return fits
     ? { rule: "envelope", status: "pass", title: `Fits the ${env.what}`, detail: `${dims}, within ${size.map((v) => fmt(v)).join(" × ")} mm` }
     : {

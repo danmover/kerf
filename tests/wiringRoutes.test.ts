@@ -6,14 +6,14 @@
 
 import { describe, expect, it } from "vitest";
 import type { V3 } from "../src/kernel/recipe";
-import { routeWithField, type RouteGeometry, type RoutePlaced } from "../src/machine/harness/route";
+import { routeWithField, type RouteGeometry, type RoutePlaced, type RouteWire } from "../src/machine/harness/route";
 import { Solids } from "../src/machine/harness/solids";
 import { runWiring } from "../src/machine/harness/wiringRun";
 import { flowZones, inCone, type FlowZone } from "../src/machine/harness/flow";
 import type { PivotJoint } from "../src/machine/harness/pivots";
 import { wiringItems } from "../src/machine/harness/checks";
 import { plugFor } from "../src/machine/harness/plugs";
-import type { Harness, HarnessWire, PlugEnd } from "../src/machine/harness/harness";
+import { buildHarness, leadLength, routeRequests, type Harness, type HarnessWire, type PlugEnd } from "../src/machine/harness/harness";
 import { catalogPart } from "../src/machine/catalog";
 import { componentPositions, wireList } from "../src/machine/wiring";
 import { evaluate } from "../src/lang/evaluator";
@@ -85,6 +85,138 @@ describe("cables and a ducted fan's airflow", () => {
   });
 });
 
+describe("wires dressed as a harness", () => {
+  // a plate with a block standing on it and a low box either side of the block
+  const geos = [box([-100, -80, -6], [100, 80, 0]), box([-15, -80, 0], [15, 20, 40]), box([-96, -30, 0], [-80, 30, 12]), box([80, -30, 0], [96, 30, 12])];
+  const placed: RoutePlaced[] = ["plate", "block", "left", "right"].map((id, geo) => ({ geo, m: IDENTITY, id }));
+  const Z: V3 = [0, 0, 1];
+  const route = (wires: RouteWire[]) => routeWithField({ geos, placed, wires }, new Solids(geos, placed)).result.wires;
+  const middle = (pts: V3[]) => pts.slice(Math.floor(pts.length * 0.2), Math.floor(pts.length * 0.8));
+  const nearest = (p: V3, pts: V3[]) => Math.min(...pts.map((q) => dist(p, q)));
+  // the point a given length along a run
+  const along = (pts: V3[], s: number): V3 => {
+    for (let i = 1; i < pts.length; i++) {
+      const l = dist(pts[i - 1], pts[i]);
+      if (s <= l) return [0, 1, 2].map((k) => pts[i - 1][k] + ((pts[i][k] - pts[i - 1][k]) * s) / (l || 1)) as V3;
+      s -= l;
+    }
+    return pts[pts.length - 1];
+  };
+  // the tightest bend of a run: the circle through points 2 mm apart along it
+  const tightest = (pts: V3[]) => {
+    const total = pts.slice(1).reduce((t, p, i) => t + dist(pts[i], p), 0);
+    let r = Infinity;
+    for (let s = 0; s + 4 <= total; s += 0.5) {
+      const [a, b, c] = [along(pts, s), along(pts, s + 2), along(pts, s + 4)];
+      const [ab, bc, ca] = [dist(a, b), dist(b, c), dist(c, a)];
+      const h = (ab + bc + ca) / 2;
+      const area = Math.sqrt(Math.max(0, h * (h - ab) * (h - bc) * (h - ca)));
+      if (area > 1e-9) r = Math.min(r, (ab * bc * ca) / (4 * area));
+    }
+    return r;
+  };
+  // three wires between a three-pin plug on each box, the block in the way
+  const three: RouteWire[] = [0, 1, 2].map((k) => ({ id: `W${k + 1}`, a: { p: [-74, (k - 1) * 2.54, 6], dir: X }, b: { p: [74, (k - 1) * 2.54, 6], dir: neg(X) }, d: 1.5 }));
+
+  it("runs the wires between two plugs as one cable, side by side all the way", () => {
+    const runs = route(three);
+    expect(runs.map((r) => r.id)).toEqual(["W1", "W2", "W3"]);
+    for (const [a, b] of [[0, 1], [0, 2], [1, 2]]) {
+      const gaps = middle(runs[a].points).map((p) => nearest(p, runs[b].points));
+      // touching: never through each other, never drifting apart
+      expect(Math.min(...gaps)).toBeGreaterThan(1.5 - 0.05);
+      expect(Math.max(...gaps)).toBeLessThan(1.5 + 0.6);
+    }
+    for (const r of runs) {
+      expect(r.straight).toBe(false);
+      // each ends on its own pin
+      const w = three.find((x) => x.id === r.id)!;
+      expect(dist(r.points[0], w.a.p)).toBeLessThan(1e-6);
+      expect(dist(r.points[r.points.length - 1], w.b.p)).toBeLessThan(1e-6);
+      // round the block's end on the plate, not up over it
+      expect(Math.max(...r.points.map((p) => p[2]))).toBeLessThan(12);
+      expect(tightest(r.points)).toBeGreaterThan(3);
+    }
+  });
+
+  it("gathers wires that run the other way into the same cable", () => {
+    const mixed = three.map((w, k) => (k === 1 ? { ...w, a: w.b, b: w.a } : w));
+    const runs = route(mixed);
+    const gaps = middle(runs[0].points).map((p) => nearest(p, runs[1].points));
+    expect(Math.max(...gaps)).toBeLessThan(1.5 + 0.6);
+    // the turned-round wire still runs from its own a to its own b
+    expect(dist(runs[1].points[0], mixed[1].a.p)).toBeLessThan(1e-6);
+    expect(dist(runs[1].points[runs[1].points.length - 1], mixed[1].b.p)).toBeLessThan(1e-6);
+  });
+
+  it("gathers a short row of leads into one cable, each beside the next, though the outer two are too far apart to pair up", () => {
+    // three leads 9 mm apart on a 46 mm run, like a motor's to its speed controller: wires that short pair up over
+    // 16 mm, the outer two are 18 mm apart, and each is beside the middle one
+    const row = (pitch: number): RouteWire[] => [0, 1, 2].map((k) => ({ id: `W${k + 1}`, a: { p: [28, 40 + (k - 1) * pitch, 6], dir: X }, b: { p: [74, 40 + (k - 1) * pitch, 6], dir: neg(X) }, d: 1.5 }));
+    const closest = (runs: { points: V3[] }[], a: number, b: number) => Math.min(...runs[a].points.map((p) => nearest(p, runs[b].points)));
+    const runs = route(row(9));
+    // all three touch in the middle of the run
+    for (const [a, b] of [[0, 1], [1, 2], [0, 2]]) {
+      expect(closest(runs, a, b)).toBeGreaterThan(1.5 - 0.05);
+      expect(closest(runs, a, b)).toBeLessThan(1.5 + 0.6);
+    }
+    runs.forEach((r, k) => {
+      expect(dist(r.points[0], row(9)[k].a.p)).toBeLessThan(1e-6);
+      expect(dist(r.points[r.points.length - 1], row(9)[k].b.p)).toBeLessThan(1e-6);
+    });
+    // a row wider than wires ever gather over stays as it is: the far lead keeps to itself
+    const wide = route(row(12));
+    expect(closest(wide, 0, 1)).toBeLessThan(1.5 + 0.6);
+    expect(closest(wide, 0, 2)).toBeGreaterThan(8);
+  });
+
+  it("takes a wire through the point the design ties it at", () => {
+    const w: RouteWire = { id: "W1", a: { p: [-74, 0, 6], dir: X }, b: { p: [74, 0, 6], dir: neg(X) }, d: 1.5 };
+    const fine = (pts: V3[]) => pts.flatMap((p, i) => (i ? [0.25, 0.5, 0.75, 1].map((t) => [0, 1, 2].map((k) => pts[i - 1][k] + (p[k] - pts[i - 1][k]) * t) as V3) : [p]));
+    // on its own it rounds the block's end; tied down 40 mm further out, it goes out to the tie and comes back
+    const tie: V3 = [0, 62, 4];
+    const [free] = route([w]);
+    expect(nearest(tie, fine(free.points))).toBeGreaterThan(25);
+    const [tied] = route([{ ...w, via: [{ c: tie, axis: Z, at: tie, here: true }] }]);
+    expect(tied.straight).toBe(false);
+    expect(nearest(tie, fine(tied.points))).toBeLessThan(4);
+    expect(tied.length).toBeGreaterThan(free.length + 40);
+    expect(dist(tied.points[0], w.a.p)).toBeLessThan(1e-6);
+    expect(dist(tied.points[tied.points.length - 1], w.b.p)).toBeLessThan(1e-6);
+  });
+
+  it("leaves wires that only start together to go their own ways", () => {
+    const apart: RouteWire[] = [three[0], { ...three[1], b: { p: [0, 60, 6], dir: neg(Y) } }];
+    const runs = route(apart);
+    const gaps = middle(runs[0].points).map((p) => nearest(p, runs[1].points));
+    expect(Math.max(...gaps)).toBeGreaterThan(20);
+  });
+
+  it("leaves a plug straight, and comes back past it in a bend the cable can make", () => {
+    // a heavy lead out of the top of the left box to a plug that faces up on the plate, behind the block
+    const lead: RouteWire = { id: "W1", a: { p: [-88, 20, 18], dir: Z }, b: { p: [60, -60, 6], dir: Z }, d: 3.6 };
+    const [run] = route([lead]);
+    const pts = run.points;
+    const out = along(pts, 2);
+    expect((out[2] - pts[0][2]) / dist(out, pts[0])).toBeGreaterThan(0.9);
+    const back = [...pts].reverse();
+    const into = along(back, 2);
+    expect((into[2] - back[0][2]) / dist(into, back[0])).toBeGreaterThan(0.9);
+    // no fold anywhere: the old dressing left bends of well under a millimetre at the plugs
+    expect(tightest(pts)).toBeGreaterThan(3);
+  });
+
+  it("lays a heavy cable down on the plate it runs along", () => {
+    const [run] = route([{ id: "W1", a: { p: [-60, 50, 2.5], dir: X }, b: { p: [60, 50, 2.5], dir: neg(X) }, d: 3.6 }]);
+    const zs = middle(run.points).map((p) => p[2]);
+    // its underside a quarter of a millimetre off the plate, not a grid cell above it
+    expect(Math.min(...zs)).toBeGreaterThan(1.8);
+    expect(Math.max(...zs)).toBeLessThan(1.8 + 0.25 + 0.5);
+    // and dead straight
+    expect(run.length).toBeLessThan(120 + 1);
+  });
+});
+
 describe("cables across a pivot", () => {
   // a block on a pivot along X at z = 100, between two posts that carry its bearings; a box on the base and a chip
   // on the block, wired together
@@ -111,6 +243,39 @@ describe("cables across a pivot", () => {
     const info = wiringItems(h, run.findings!, [], model).find((i) => i.id === "wiring:pivots")!;
     expect(info.status).toBe("info");
     expect(info.detail).toMatch(/slack/);
+  });
+
+  it("crosses where the design says, in a loop of slack, when the joint gives a cables: point", () => {
+    // 45 mm out from the axis, in the open beside the block: far from the axis by intent
+    const marked: PivotJoint = { ...joint, cables: [0, -45, 100] };
+    const run = runWiring({ geos, placed, wires: [] }, { harness: h, mounts: [], screws: [], pivots: [marked] });
+    const c = run.findings!.pivots!;
+    expect(c).toHaveLength(1);
+    expect(c[0].loop).toBe(true);
+    expect(dist(c[0].at!, [0, -45, 100])).toBeLessThan(8);
+    expect(c[0].r!).toBeGreaterThan(36);
+    const w = run.result.wires[0];
+    expect(Math.min(...w.points.map((p) => dist(p, c[0].at!)))).toBeLessThan(6);
+    const model = { parts: [], scenarios: [{ spec: { mechanism: { items: [{ k: "pivot", name: "tilt", limits: [-30, 30] }] } } }] } as unknown as Model;
+    const items = wiringItems(h, run.findings!, [], model);
+    // a loop by intent is told how long to be, not warned about
+    expect(items.find((i) => i.id === "wiring:pivot:tilt")).toBeUndefined();
+    const loop = items.find((i) => i.id === "wiring:pivot-loop:tilt")!;
+    expect(loop.status).toBe("info");
+    expect(loop.detail).toMatch(/free loop of about \d+ mm/);
+  });
+
+  it("reads a pivot's cables: point from the design", () => {
+    const m = evaluate(`design "Turntable"
+part plate { process: false  body box(80, 80, 6, at: (0, 0, 40)) }
+scenario "Spin" {
+  mechanism: sim.mechanism(sim.pivot(plate, at: (0, 0, 40), axis: Z, limits: (-45deg, 45deg), cables: (0, -50, 36)))
+  firmware: none
+  duration: 1s
+}
+`);
+    const it = m.scenarios![0].spec.mechanism!.items.find((x) => x.k === "pivot")!;
+    expect(it.k === "pivot" && it.cables).toEqual([0, -50, 36]);
   });
 
   it("goes the short way round without the pivot", () => {
@@ -210,5 +375,64 @@ describe("a ducted fan's leads and airflow", () => {
     expect(inCone(intake, [0, 0, 120])).toBeGreaterThan(0);
     expect(inCone(jet, [0, 0, 0])).toBeGreaterThan(0);
     expect(inCone(jet, [120, 0, 0])).toBe(-1);
+  });
+});
+
+describe("a wire tied down where the design says", () => {
+  const src = (via: string) => `
+design "Tied"
+component esc = lib.esc("skywalker_60a_v2") { at: (0, 0, 0) }
+component feather = lib.controller("feather_esp32_v2") { at: (120, 0, 0) }
+wire feather.A1 -> esc.SIG { via: ${via} }
+`;
+
+  it("reads one point or a list from the design, and hands them to the router in the wire's order", () => {
+    const one = evaluate(src("(60, 40, 5)"));
+    expect(one.machine!.wires[0].via).toEqual([[60, 40, 5]]);
+    const many = evaluate(src("[(90, 40, 5), (30, 40, 5)]"));
+    expect(many.machine!.wires[0].via).toEqual([[90, 40, 5], [30, 40, 5]]);
+    expect(wireList(many.machine!).find((r) => r.via)?.via).toEqual([[90, 40, 5], [30, 40, 5]]);
+    const req = routeRequests(buildHarness(many as Model)).find((w) => w.via);
+    expect(req?.via?.map((v) => v.c)).toEqual([[90, 40, 5], [30, 40, 5]]);
+    expect(req?.via?.every((v) => v.here)).toBe(true);
+  });
+
+  it("says what via: takes when it is given something else", () => {
+    for (const bad of ['"up the leg"', "(60, 40)", "[]"]) {
+      const m = evaluate(src(bad));
+      expect(m.diagnostics.map((d) => d.message).join(" ")).toMatch(/via: is where the wire is tied down/);
+      expect(m.machine?.wires ?? []).toEqual([]);
+    }
+  });
+});
+
+describe("a socket in the gap behind a board", () => {
+  // a plate, a wall standing on it, and a board on pillars 4 mm off the wall (as a controller stands off a spine):
+  // the socket is on the board's hidden face and points along the gap, towards the board's end 8 mm away
+  const Z: V3 = [0, 0, 1];
+  const geos = [box([-60, -40, -6], [60, 40, 0]), box([-30, -3, 0], [30, 0, 40]), box([-25, 4, 6], [25, 5.6, 30])];
+  const placed: RoutePlaced[] = ["plate", "wall", "board"].map((id, geo) => ({ geo, m: IDENTITY, id }));
+  const dense = (pts: V3[]) => pts.flatMap((p, i) => (i ? [0.25, 0.5, 0.75, 1].map((t) => [0, 1, 2].map((k) => pts[i - 1][k] + (p[k] - pts[i - 1][k]) * t) as V3) : [p]));
+  const inBoard = (p: V3) => p[0] > -25 && p[0] < 25 && p[1] > 4.05 && p[1] < 5.55 && p[2] > 6 && p[2] < 30;
+
+  it("leaves by the open end of the gap, not through the board to the free space in front of it", () => {
+    // to a plug standing on the plate in front of the board
+    const w: RouteWire = { id: "W1", a: { p: [-17, 2, 18], dir: neg(X) }, b: { p: [0, 30, 4], dir: Z }, d: 1.2 };
+    const [run] = routeWithField({ geos, placed, wires: [w] }, new Solids(geos, placed)).result.wires;
+    expect(run.straight).toBe(false);
+    expect(dense(run.points).filter(inBoard)).toEqual([]);
+    // out past the board's end (or over its top or under its bottom edge) before it comes round to the front
+    const front = run.points.findIndex((p) => p[1] > 5.6);
+    expect(front).toBeGreaterThan(0);
+    const turn = run.points[front];
+    expect(turn[0] < -25 || turn[0] > 25 || turn[2] > 30 || turn[2] < 6).toBe(true);
+  });
+
+  it("keeps a thick lead straight for a diameter and a half past its plug, not for its bend radius again", () => {
+    const a = end("esc", "B_PLUS", [0, 0, 0], X);
+    const b = end("fuse", "OUT", [50, 0, 0], neg(X));
+    expect(leadLength(wire("W1", a, b, 3.6))).toBeCloseTo(6, 6);
+    expect(leadLength(wire("W2", a, b, 5))).toBeCloseTo(7.5, 6);
+    expect(leadLength(wire("W3", a, b, 1.2))).toBeCloseTo(6, 6);
   });
 });

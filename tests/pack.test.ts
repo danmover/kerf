@@ -457,6 +457,14 @@ part short { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(20
     // one that fits square stays square
     expect(made.find((p) => p.part.name === "short")!.orientation).not.toMatch(/across it/);
     expect(layAcross(new Float32Array([0, 0, 0, 200, 50, 0]), [200, 50, 20], [256, 256])).toBeUndefined();
+    // an arch whose bounding box fits no way is turned by its outline
+    const tri = layAcross(new Float32Array([-130, 0, 0, 130, 0, 0, 0, 150, 0]), [260, 150, 10], [256, 256])!;
+    expect(tri.deg % 90).toBe(45);
+    const xs = [0, 3, 6].map((i) => tri.positions[i]);
+    const ys = [1, 4, 7].map((i) => tri.positions[i]);
+    expect(Math.max(...xs) - Math.min(...xs)).toBeLessThan(200);
+    expect(Math.max(...ys) - Math.min(...ys)).toBeLessThan(200);
+    expect(Math.abs(Math.max(...xs) + Math.min(...xs))).toBeLessThan(1e-3);
   }, 120000);
 
   it("lays each tunneller part the way its process says it prints", async () => {

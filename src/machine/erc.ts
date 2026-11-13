@@ -909,6 +909,9 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
       const side = reach(n, [out], link);
       const after = n.segs.filter((sg) => side.has(sg.a.key) && side.has(sg.b.key) && sg.gauge !== undefined);
       const fname = `${f.name}${f.count > 1 ? `[${i}]` : ""}`;
+      // a holder's contacts are rated too: a bigger blade than it takes lets them overheat before the fuse blows
+      const most = Number(part.specs.rating_max_a ?? 0);
+      if (most && rating > most) item(c, `fuse-holder:${fname}`, "fail", `${fname}: fuse too big for its holder`, `${part.name} takes fuses up to ${fmtNum(most)} A, and a ${fmtNum(rating)} A fuse is set for it: its contacts could overheat before the fuse blows. Fit a ${fmtNum(most)} A fuse or smaller, or use a bigger holder.`, [f.name], f.span);
       // the run that carries least is what overheats first
       const thinnest = after.sort((x, y) => awgAmpacity(x.gauge!, x.insulation) - awgAmpacity(y.gauge!, y.insulation))[0];
       const through = n.pins.filter((p) => side.has(p.key)).reduce((a, p) => a + pinLoad(p, n), 0);

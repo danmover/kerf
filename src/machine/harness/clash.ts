@@ -8,7 +8,7 @@
 import type { V3 } from "../../kernel/recipe";
 import { PLUG_BACK, PULL, SPLICE_LEN, leadLength, plugBox, type Harness, type HarnessWire, type PlugEnd, type Splice } from "./harness";
 import type { SignedField } from "./relax";
-import type { RoutedWire } from "./route";
+import { TIE_REACH, type RoutedWire } from "./route";
 import type { OBox, Skip, SolidItem, Solids } from "./solids";
 import type { PivotCrossing } from "./pivots";
 import type { TravelPlan } from "./travel";
@@ -118,7 +118,18 @@ export interface WiringFindings {
   flow?: { wire: string; zone: number; part: string; comp: string; kind: "intake" | "jet"; length: number; at: V3 }[];
   /** where cables cross the design's pivots, and how far from each axis */
   pivots?: (PivotCrossing & { at?: V3; r?: number })[];
+  /** a part's own lead or a bought cable that is shorter than the run it has to cover (filled in after routing, wiringRun.ts) */
+  reach?: Reach[];
   ms: number;
+}
+
+/** A lead or bought cable of fixed length against the run it has to cover, mm. */
+export interface Reach {
+  wire: string;
+  /** "servo_1's own lead", "STEMMA QT cable, 100 mm" */
+  lead: string;
+  have: number;
+  need: number;
 }
 
 /** The cable's outside may press this far into a part, or into another cable, before it counts (mm, or a share of the radius). */
@@ -126,8 +137,6 @@ const PRESS = 0.3;
 /** Ties every this far along a surface, mm; and the first one this close to a plug, for strain relief. */
 const TIE_EVERY = 100;
 const RELIEF_WITHIN = 60;
-/** A cable may reach this far from a surface and still be tied to it, mm. */
-const TIE_REACH = 6;
 /** how far a part's own multi-wire lead carries its wires together before they part, mm */
 const OWN_LEAD = 60;
 /** Longer than this with nothing to tie to: it hangs free, mm. */

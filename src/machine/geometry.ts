@@ -39,6 +39,24 @@ export interface GeomArgs {
 
 const num = (d: Record<string, number>, k: string, def: number) => (typeof d[k] === "number" ? d[k] : def);
 
+/**
+ * Where a servo's side stickers are (in its frame, `at` on the top face): x the middle, w long, from z0 up h,
+ * standing `proud` off each side face; the middle case's box (base) for telling a servo drawn this way.
+ * Null when the case is too short for one. The 3D view prints the label on it (ui/viewport/parts/decorate.ts).
+ */
+export function servoStickerBox(d: Record<string, number>): { x: number; w: number; z0: number; h: number; proud: number; base: V3 } | null {
+  const w = num(d, "w", 40.7);
+  const h = num(d, "h", 37);
+  const ft = num(d, "flange_t", 2.5);
+  const fz = num(d, "flange_z", 10);
+  const sx = num(d, "shaft_x", 10);
+  const zb = -h + Math.min(8, Math.max(3, h * 0.2));
+  const z0 = zb + 0.8;
+  const lh = -fz - ft - 0.7 - z0;
+  if (lh <= 3) return null;
+  return { x: -sx, w: w * 0.8, z0, h: lh, proud: 0.12, base: [-sx, 0, zb] };
+}
+
 function circlePts(n: number, r: number, start = 0): V3[] {
   return Array.from({ length: n }, (_, i) => {
     const a = ((start + (360 * i) / n) * Math.PI) / 180;
@@ -94,7 +112,7 @@ function radialBlade(a: number, r0: number, r1: number, z: number, c0: number, c
  * pockets) and the extra solids (labels, heatsinks, lids, boots), all inside
  * the catalog envelope so mounts, trays and clash checks see the same box.
  */
-function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPart, w: number, dd: number, h: number, r: number): { base?: ShapeRecipe; cuts: ShapeRecipe[]; solids: CompSolid[]; color?: string } {
+function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPart, w: number, dd: number, h: number, r: number): { base?: ShapeRecipe; cuts: ShapeRecipe[]; solids: CompSolid[]; color?: string; finish?: string } {
   const g = p.geom;
   const one = (shape: ShapeRecipe): PartRecipe => ({ base: shape, ops: [] });
   switch (style) {
@@ -163,6 +181,47 @@ function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPar
         ],
       };
     }
+    // an inline blade fuse holder with screw terminals: a low base with a wire port in each end and a terminal
+    // screw sunk in its top beside it, and the blade fuse standing in the middle (in its rating's colour)
+    case "fuse_blade": {
+      const hb = h * 0.6;
+      const port = Math.min(dd, hb) * 0.42;
+      const sx = w / 2 - Math.min(9, w * 0.15);
+      const fw = Math.min(19.1, w * 0.4);
+      const ft = Math.min(5.2, dd * 0.3);
+      const screws: ShapeRecipe[] = [-sx, sx].map((x): ShapeRecipe => ({ t: "cyl", d: 5.4, h: 1.2, at: [x, 0, hb - 1.6], dir: ZP }));
+      return {
+        base: box(w, dd, hb, Z0, r),
+        cuts: [
+          { t: "hole", d: port, depth: w * 0.16, at: [-w / 2, 0, hb * 0.4], dir: XP },
+          { t: "hole", d: port, depth: w * 0.16, at: [w / 2, 0, hb * 0.4], dir: XN },
+          ...[-sx, sx].map((x): ShapeRecipe => ({ t: "hole", d: 6.6, depth: 1.6, at: [x, 0, hb], dir: ZN })),
+        ],
+        color: g.color ?? "#1b1f25",
+        solids: [
+          solid("screws", `${p.name} terminal screws`, one({ t: "union", shapes: screws }), "#c9ced6", "Steel"),
+          solid("blade", `${p.name} blade fuse`, one(box(fw, ft, h - hb, [0, 0, hb], 0.8)), g.color2 ?? "#3fae5a", "PA66"),
+        ],
+      };
+    }
+    // one way of a nylon terminal strip: the body with a wire port in each end (Y) and a screw tower over each,
+    // the two brass screws sunk in the towers
+    case "terminal_way": {
+      const hb = h * 0.62;
+      const tw = Math.min(w * 0.72, 9);
+      const ty = dd / 2 - dd * 0.27;
+      const port = Math.min(w * 0.45, hb * 0.6);
+      const towers: ShapeRecipe[] = [-ty, ty].map((y): ShapeRecipe => ({ t: "cyl", d: tw, h: h - hb, at: [0, y, hb], dir: ZP }));
+      return {
+        base: { t: "union", shapes: [box(w, dd, hb, Z0, r), ...towers] },
+        cuts: [
+          { t: "hole", d: port, depth: dd * 0.3, at: [0, -dd / 2, hb * 0.42], dir: YP },
+          { t: "hole", d: port, depth: dd * 0.3, at: [0, dd / 2, hb * 0.42], dir: [0, -1, 0] },
+          ...[-ty, ty].map((y): ShapeRecipe => ({ t: "hole", d: tw * 0.62, depth: (h - hb) * 0.5, at: [0, y, h], dir: ZN })),
+        ],
+        solids: [solid("screws", `${p.name} screws`, one({ t: "union", shapes: [-ty, ty].map((y): ShapeRecipe => ({ t: "cyl", d: tw * 0.58, h: 1.2, at: [0, y, h - (h - hb) * 0.5], dir: ZP })) }), g.color2 ?? "#b9975b", "Brass")],
+      };
+    }
     // a mated XT-series pair: the female housing below, the male above it on a slightly smaller body, the
     // polarity chamfers on the +Y corners of both
     case "xt": {
@@ -175,11 +234,30 @@ function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPar
         solids: [solid("male", `${p.name} male`, { base: box(w - 0.8, dd - 0.8, hm, [0, 0, h - hm], r), ops: ch(hm, h - hm).map((shape) => ({ op: "cut" as const, shape })) }, g.color2 ?? "#e3a81e", "PA66")],
       };
     }
+    // a Wago 221 lever connector: the clear case with a wire port for each lever in its -Y end, and the orange
+    // levers lying closed along the top
+    case "wago": {
+      const n = Math.max(2, Number(p.specs?.ways) || 2);
+      const pitch = w / n;
+      const lev = Math.min(2.4, h * 0.28);
+      const bodyH = h - lev;
+      const port = Math.min(pitch * 0.62, bodyH * 0.6);
+      const xs = Array.from({ length: n }, (_, k) => (k - (n - 1) / 2) * pitch);
+      return {
+        base: box(w, dd, bodyH, Z0, r),
+        cuts: xs.map((x): ShapeRecipe => ({ t: "hole", d: port, depth: dd * 0.45, at: [x, -dd / 2, bodyH * 0.45], dir: YP })),
+        solids: [
+          solid("levers", `${p.name} levers`, one({ t: "union", shapes: xs.map((x) => box(pitch * 0.72, dd * 0.7, lev, [x, dd * 0.13, bodyH], 0.5)) }), g.color2 ?? "#f08a1c", "PA66"),
+        ],
+      };
+    }
     // a bar load cell: the strain gauges under a pad of white potting in a pocket in the middle of the top
     case "load_cell": {
       const pw = Math.min(14, w * 0.3);
       const pd = dd * 0.7;
       return {
+        // a bar cell is bead-blasted or anodised aluminium, matte silver: not a mirror
+        finish: "bead-blasted",
         cuts: [box(pw, pd, 0.6, [0, 0, h - 0.6], 0.5)],
         solids: [solid("gauge", `${p.name} gauge potting`, one(box(pw - 0.4, pd - 0.4, 0.6, [0, 0, h - 0.6], 0.4)), "#ece8dc", "Silicone")],
       };
@@ -660,11 +738,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
         ops: screwsAt.flatMap(([x, y]) => [box(slotL, 0.3, 0.3, [x, y, -h + sdepth - hh - 0.05]), box(0.3, slotL, 0.3, [x, y, -h + sdepth - hh - 0.05])].map((shape) => ({ op: "cut" as const, shape }))),
       };
       // a sticker on each side of the middle case, below the tabs, with the maker's and the model's names as bars
-      const lz0 = zb + 0.8;
-      const lh = -fz - ft - 0.7 - lz0;
-      const lw = w * 0.8;
+      // (the 3D view prints the real label over it and hides the bars)
+      const sb = servoStickerBox(d);
+      const lz0 = sb?.z0 ?? 0;
+      const lh = sb?.h ?? 0;
+      const lw = sb?.w ?? 0;
       const stickers: CompSolid[] = [];
-      if (lh > 3) {
+      if (sb) {
         // a thin plate on each face (0.12 mm proud, the print 0.24), both sunk a little into the case so no gap shows
         const plate = (len: number, ph: number, x: number, z: number, proud: number, r: number) => [1, -1].map((sy) => box(len, proud + 0.1, ph, [x, sy * (dd / 2 + (proud - 0.1) / 2), z], r));
         stickers.push(solid("label", `${p.name} label`, { base: { t: "union", shapes: plate(lw, lh, cx, lz0, 0.12, 0.3) }, ops: [] }, look.label ?? "#15171b", "PVC"));
@@ -733,7 +813,7 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
           ...(look?.cuts ?? []).map((shape) => ({ op: "cut" as const, shape })),
         ],
       };
-      const solids = [solid("", p.name, body, look?.color ?? g.color ?? "#2b3038", g.material ?? "ABS"), ...(look?.solids ?? [])];
+      const solids = [{ ...solid("", p.name, body, look?.color ?? g.color ?? "#2b3038", g.material ?? "ABS"), ...(look?.finish ? { finish: look.finish } : {}) }, ...(look?.solids ?? [])];
       const band = look ? 0 : num(d, "band", 0);
       if (band > 0) solids.push(solid("wrap", `${p.name} label`, { base: { t: "box", w: w + 0.4, d: dd + 0.4, h: band, at: [0, 0, (h - band) / 2], r: r + 0.2 }, ops: [] }, g.color2 ?? "#3d6fd6", "PETG"));
       return {
