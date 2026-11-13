@@ -47,7 +47,8 @@ import { projectScripts } from "../app/project";
 import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
 import { toggleWiring } from "./wiringView";
-import { openSchematic } from "./MachinePanel";
+import { openFirmwareSection, openSchematic } from "./MachinePanel";
+import { useSimPane } from "./sim/DebugPanel";
 import { openPrintPlates } from "./make/MakePanel";
 import { RulerIcon, toggleMeasure } from "./viewport/MeasureTool";
 import { FilterIcon, openSetNamer, recallSet } from "./viewport/PickLayer";
@@ -502,6 +503,57 @@ export function findItems(ctx: FindContext): FindItem[] {
         icon: <Icon.Chip size={14} />,
         run: () => openSchematic(),
       });
+    if (model?.machine?.firmware.length) {
+      push({
+        id: "build:firmware",
+        group: "Machines",
+        title: "Firmware code",
+        detail: "Kerf's code written from the wiring, or a sketch of your own in its place, checked as it would compile for the board",
+        keywords: "firmware code sketch arduino ino c c++ cpp source edit write own code your own code ide compile verify ram memory libraries fastled neopixel accelstepper liquidcrystal lcd sd card servo wire spi timerone eeprom",
+        icon: <Icon.Code size={14} />,
+        pane: "panel",
+        run: () => openFirmwareSection(),
+      });
+      push(
+        ask(
+          "ask:own-firmware",
+          "Machines",
+          "Write the firmware by hand",
+          "Claude writes the sketch itself, with the libraries that suit the parts, then tests it on the simulated board",
+          "own code custom firmware hand written handwritten write sketch arduino library libraries fastled accelstepper rewrite firmware",
+          'Write this machine\'s firmware as its own code (code: "own") instead of Kerf\'s: the libraries that suit its parts, every pin from the wiring, and a check that it compiles for the board. Then run its scenario in the debugger and tell me what the pins and buses did.',
+          <Icon.Code size={14} />,
+        ),
+      );
+      if (model.scenarios?.length) {
+        const simPane = (pane: "debug" | "signals") => () => {
+          useSimPane.setState({ pane });
+          useView.setState({ dockTab: "sim", dockOpen: true });
+        };
+        push(
+          {
+            id: "sim:debug",
+            group: "Machines",
+            title: "Debug the firmware",
+            detail: "Breakpoints, watches and logpoints on the simulated board: stop the run, read the variables, step line by line",
+            keywords: "debugger debug debugging breakpoint breakpoints conditional breakpoint watch watches watch expression logpoint tracepoint step step over step into step out call stack locals variables globals pause halt gdb jtag swd",
+            icon: <Icon.Code size={14} />,
+            pane: "panel",
+            run: simPane("debug"),
+          },
+          {
+            id: "sim:signals",
+            group: "Machines",
+            title: "Logic analyser",
+            detail: "What every pin and bus did in a run: levels, PWM, pulses, UART text, I2C and SPI transfers, ADC readings",
+            keywords: "logic analyzer analyser oscilloscope scope signals pins waveform waveforms timing diagram edges pulses pwm duty serial uart i2c spi adc decode protocol decoder saleae sigrok",
+            icon: <Icon.Graph size={14} />,
+            pane: "panel",
+            run: simPane("signals"),
+          },
+        );
+      }
+    }
     if (model && hasFitting(model)) push({ id: "view:fitting", group: "View", title: "How it goes on", detail: "Watch it fitted, and what keeps it there", keywords: "fit fitting mount install clip band attach", icon: <Icon.Assemble size={14} />, tag: useFitView.getState().on ? "on" : undefined, run: () => (useFitView.getState().on ? useFitView.setState({ on: false }) : playFitting()) });
 
     // ── exports ──

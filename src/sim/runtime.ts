@@ -26,6 +26,7 @@ import type { SimRequest, SimResponse } from "./protocol";
 import type { ScenarioDef, ScenarioSpec } from "./scenario";
 import { VARIANTS, type VariantName } from "./worlds/common";
 import { resultBytes, saveRun, savedRuns } from "./saved";
+import { withOwnCode } from "../app/firmwareCode";
 
 export { resultBytes };
 
@@ -279,7 +280,7 @@ function start(def: ScenarioDef, spec: ScenarioSpec, model: Model, key: string, 
   runs.set(def.label, { label: def.label, key, status: "waiting", progress: Object.fromEntries(spec.variants.map((v) => [v, 0])), result: prev?.result, stale: !!prev?.result, startedAt: performance.now(), savedAt: prev?.savedAt });
   const projectId = useProject.getState().current?.id;
   for (const variant of spec.variants) {
-    queue.push({ id: ++nextId, label: def.label, key, variant, projectId, req: { id: nextId, spec, machine: model.machine ?? emptyMachine(), designName: model.name, variant } });
+    queue.push({ id: ++nextId, label: def.label, key, variant, projectId, req: { id: nextId, spec, machine: withOwnCode(model.machine) ?? emptyMachine(), designName: model.name, variant } });
   }
 }
 
@@ -321,7 +322,7 @@ export function loadSavedRuns(projectId: string): Promise<void> {
 let waitingForGeometry = false;
 
 /** The spec a run uses: a mechanism resolved against the built parts. null while the parts are still building. */
-function runSpecOf(def: ScenarioDef, model: Model): ScenarioSpec | { error: string } | null {
+export function runSpecOf(def: ScenarioDef, model: Model): ScenarioSpec | { error: string } | null {
   if (!def.spec.mechanism) return def.spec;
   const st = useDesign.getState();
   const built = st.model !== model || st.stage === "checking" || st.stage === "refining" || st.stage === "done" || st.kernelStatus === "error";
@@ -365,7 +366,7 @@ function schedule(model: Model, force?: string) {
       runs.set(def.label, spec === null ? { label: def.label, key: "", status: "waiting", progress: {}, result: prev?.result, stale: !!prev?.result, startedAt: performance.now(), savedAt: prev?.savedAt } : { label: def.label, key: "", status: "error", error: spec.error, progress: {}, stale: false, startedAt: performance.now() });
       continue;
     }
-    const key = scenarioKey(spec, model.machine, model.name);
+    const key = scenarioKey(spec, withOwnCode(model.machine), model.name);
     const run = runs.get(def.label);
     if (run && run.key === key && force !== def.label && run.status !== "idle") continue;
     const hit = cache.get(key)?.r;
@@ -568,7 +569,12 @@ export function startSimRuntime() {
   registerReportPass("simulations", simItems, 30);
   // closing a project leaves its model loaded, so follow the project itself too
   useProject.subscribe((s, prev) => {
-    if (s.current?.id === prev.current?.id) return;
+    if (s.current?.id === prev.current?.id) {
+      // a firmware block's own code changed: its scenarios run it
+      const m = useDesign.getState().model;
+      if (s.current && s.current.firmware !== prev.current?.firmware && m?.machine?.firmware.some((f) => f.settings.code === "own")) scheduleSoon(m);
+      return;
+    }
     resetSim();
     if (s.current) void loadSavedRuns(s.current.id);
   });

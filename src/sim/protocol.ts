@@ -3,6 +3,8 @@
 
 import type { MachineData } from "../machine/types";
 import type { RunResult } from "./engine/run";
+import type { DebugSpec } from "./mcu";
+import type { SignalSpec } from "./engine/probes";
 import type { ScenarioSpec } from "./scenario";
 import type { VariantName } from "./worlds/common";
 
@@ -12,6 +14,10 @@ export interface SimRequest {
   machine: MachineData;
   designName: string;
   variant: VariantName;
+  /** run under the firmware debugger */
+  debug?: DebugSpec;
+  /** record the pins and buses for the logic analyser */
+  signals?: SignalSpec;
 }
 
 export type SimResponse =

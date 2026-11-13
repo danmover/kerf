@@ -154,7 +154,9 @@ export function projectRoutes(deps: Deps) {
         const lines = Array.isArray((extra as { branches?: unknown }).branches) ? { branches: (extra as { branches: unknown[] }).branches, ...(typeof (extra as { branch?: unknown }).branch === "string" ? { branch: (extra as { branch: string }).branch } : {}) } : {};
         // and so do its scripts
         const scripts = Array.isArray((extra as { scripts?: unknown }).scripts) ? { scripts: (extra as { scripts: unknown[] }).scripts } : {};
-        const entry = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...lines, ...scripts };
+        // and its firmware blocks' own code
+        const firmware = Array.isArray((extra as { firmware?: unknown }).firmware) ? { firmware: (extra as { firmware: unknown[] }).firmware } : {};
+        const entry = { format: "kerf-project", version: imports.length ? 2 : 1, name: p.name, source: p.source, template: p.template, createdAt: p.created_at, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports } : {}), ...lines, ...scripts, ...firmware };
         yield (first ? "" : ",") + JSON.stringify(entry);
         first = false;
       }

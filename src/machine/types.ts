@@ -427,6 +427,13 @@ export interface FirmwareDef {
   board?: string;
   settings: Record<string, number | string | boolean>;
   span: Span;
+  /** the block's own code (settings.code "own"), from the project: the app adds it, the design source never holds it */
+  own?: OwnFirmware;
+}
+
+/** Firmware written by the user or Claude in place of the code Kerf generates: the sketch's files, flat as in an Arduino sketch folder. */
+export interface OwnFirmware {
+  files: { path: string; content: string }[];
 }
 
 export interface TestDef {

@@ -26,9 +26,13 @@ import { fmtNum } from "../../lang/values";
 import { Icon, StatusIcon } from "../icons";
 import { useChatDraft } from "../chatDraft";
 import { Plot } from "./Plot";
+import { SdCardView } from "./SdCardView";
 import { DisplayView } from "./DisplayView";
 import { Calibrate } from "./Calibrate";
 import { mmss, savedWhen, seek, togglePlayback, useSelectedScenario } from "./simUi";
+import { DebugPanel, useSimPane } from "./DebugPanel";
+import { SignalsPanel } from "./SignalsPanel";
+import { Segmented } from "../common";
 import "../../styles/sim.css";
 
 type Status = "pass" | "warn" | "fail" | "pending" | "info";
@@ -60,6 +64,7 @@ export function SimPanel() {
   const runs = useSim((s) => s.runs);
   const [adding, setAdding] = useState(false);
   const [calibrating, setCalibrating] = useState(false);
+  const pane = useSimPane((s) => s.pane);
   if (!model) return <div className="an-body mono dim">Building the design…</div>;
   if (calibrating) return <Calibrate model={model} onDone={() => setCalibrating(false)} />;
   if (!defs.length || !def) return <EmptyState model={model} onCalibrate={() => setCalibrating(true)} />;
@@ -89,20 +94,41 @@ export function SimPanel() {
           </button>
         )}
         <div className="grow" />
+        {firmwareRun(def) && (
+          <Segmented
+            id="sim-pane"
+            value={pane}
+            onChange={(p) => useSimPane.setState({ pane: p })}
+            options={[
+              { value: "results", label: "Results", title: "The verdict, numbers, plots and what happened" },
+              { value: "debug", label: "Debug", title: "The firmware under the debugger: breakpoints, stepping, variables and watches" },
+              { value: "signals", label: "Signals", title: "Logic analyser and scope: the pins, PWM, serial, I2C and SPI over time" },
+            ]}
+          />
+        )}
         <HeadControls def={def} run={run} />
       </div>
-      <div className="sim-body">
-        <div className="sim-col">
-          <Verdict def={def} run={run} />
-          {vrun && <Stats def={def} v={vrun} />}
-          {vrun && <Assumptions v={vrun} run={run!} />}
+      {pane === "debug" && firmwareRun(def) ? (
+        <DebugPanel def={def} />
+      ) : pane === "signals" && firmwareRun(def) ? (
+        <SignalsPanel def={def} />
+      ) : (
+        <div className="sim-body">
+          <div className="sim-col">
+            <Verdict def={def} run={run} />
+            {vrun && <Stats def={def} v={vrun} />}
+            {vrun && <Assumptions v={vrun} run={run!} />}
+          </div>
+          <div className="sim-col">{vrun ? <Plots def={def} v={vrun} /> : <Waiting run={run} />}</div>
+          <div className="sim-col">{vrun ? <Happenings v={vrun} /> : <div className="dim mono" style={{ fontSize: 11.5 }}>Events and the firmware's console show here once the run is in.</div>}</div>
         </div>
-        <div className="sim-col">{vrun ? <Plots def={def} v={vrun} /> : <Waiting run={run} />}</div>
-        <div className="sim-col">{vrun ? <Happenings v={vrun} /> : <div className="dim mono" style={{ fontSize: 11.5 }}>Events and the firmware's console show here once the run is in.</div>}</div>
-      </div>
+      )}
     </div>
   );
 }
+
+/** The scenario runs Arduino firmware on the virtual chip (not a printer's, not physics alone). */
+const firmwareRun = (def: ScenarioDef) => def.spec.world.kind !== "printer" && !def.spec.physicsOnly;
 
 function HeadControls({ def, run }: { def: ScenarioDef; run?: SimRun }) {
   const auto = useSim((s) => s.auto);
@@ -580,6 +606,7 @@ function Happenings({ v }: { v: VariantRun }) {
           <DisplayView d={d} t={t} scale={2} />
         </div>
       ))}
+      {v.sdCards?.map((c) => <SdCardView key={c.name} card={c} />)}
       <div className="sim-tabs" role="tablist">
         <button role="tab" aria-selected={tab === "events"} className={tab === "events" ? "on" : ""} onClick={() => setTab("events")}>
           events {v.events.length}

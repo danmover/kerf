@@ -8,7 +8,6 @@ import { useDesign } from "../core/engine";
 import { useView, revealSpan, select } from "../app/view";
 import { useProject } from "../app/project";
 import { exportBuildPack } from "../app/exports";
-import { toast } from "../app/ui";
 import { checkItems, cutList, madeParts, readiness, testPlan, type PlanItem, type Readiness } from "../machine/pack";
 import { showWire } from "./wiringView";
 import { routedRuns, updateHarness, useHarness } from "../machine/harness/runtime";
@@ -32,12 +31,27 @@ import { hasCircuit } from "../machine/circuit/netlist";
 import { servicePlanFor } from "../machine/runtime";
 import { intervalText, lifeText, schedule, type ServicePlan } from "../machine/service";
 import { useSim } from "../sim/runtime";
+import { useOwnCode } from "../app/firmwareCode";
+import { Firmware, showFirmwareFile } from "./firmware/FirmwareView";
 
 type Section = "overview" | "sound" | "board" | "belts" | "wiring" | "calcs" | "firmware" | "tests" | "service";
 
 /** Remembered while the dock switches tabs. */
 const useBuildView = create<{ section: Section; wiring: "diagram" | "schematic" | "list"; file: string; openCalcs: string[] }>(() => ({ section: "overview", wiring: "diagram", file: "", openCalcs: [] }));
 const go = (section: Section) => useBuildView.setState({ section });
+
+/** A firmware file in Build → Firmware, by the name the sketch knows it by (from the debugger). */
+export function openFirmwareFile(block: string, name: string, line?: number) {
+  showFirmwareFile(block, name, line);
+  useBuildView.setState({ section: "firmware" });
+  useView.setState({ dockTab: "build", dockOpen: true });
+}
+
+/** Build → Firmware, from the find palette. */
+export function openFirmwareSection() {
+  useBuildView.setState({ section: "firmware" });
+  useView.setState({ dockTab: "build", dockOpen: true });
+}
 
 /** The build tab's schematic sheet, from the find palette. */
 export function openSchematic() {
@@ -86,7 +100,8 @@ export function MachinePanel() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [model, m, routes, routeStatus],
   );
-  const fw = useMemo(() => (model && m ? generateFirmware(m, model.name || name) : []), [model, m, name]);
+  const own = useOwnCode(m);
+  const fw = useMemo(() => (model && own ? generateFirmware(own, model.name || name) : []), [model, own, name]);
   // lives count runs of the machine's job once its simulation has run
   const simRuns = useSim((s) => s.runs);
   const service = useMemo(() => (model && m ? servicePlanFor(model) : null), [model, m, simRuns]);
@@ -131,7 +146,7 @@ export function MachinePanel() {
             ...(belts ? [{ value: "belts" as const, label: <>Belts{m.belts.length > 1 && <span className="seg-n">{m.belts.length}</span>}</>, title: "Timing belts: path, tension, pluck notes and stiffness" }] : []),
             { value: "wiring", label: <>Wiring{rows.length > 0 && <span className="seg-n">{rows.length}</span>}</>, title: "Wiring diagram and wire list" },
             { value: "calcs", label: <>Calculations{m.calcs.length > 0 && <span className="seg-n">{m.calcs.length}</span>}</>, title: "Engineering calculations with their working" },
-            { value: "firmware", label: <>Firmware{fwFiles > 0 && <span className="seg-n">{fwFiles}</span>}</>, title: "Code generated to match the wiring" },
+            { value: "firmware", label: <>Firmware{fwFiles > 0 && <span className="seg-n">{fwFiles}</span>}</>, title: "The firmware: Kerf's code written from the wiring, or your own" },
             { value: "tests", label: <>Test plan{plan.length > 0 && <span className="seg-n">{plan.length}</span>}</>, title: "What to test before relying on the machine" },
             ...(service?.items.length ? [{ value: "service" as const, label: <>Service<span className="seg-n">{service.items.length}</span></>, title: "What wears out and when, and the maintenance schedule" }] : []),
           ]}
@@ -872,192 +887,6 @@ function Calcs({ m, items }: { m: MachineData; items: CheckItem[] }) {
           </div>
         );
       })}
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------- firmware
-
-const TARGET_WORD: Record<FirmwareOutput["target"], string> = { arduino: "Arduino", klipper: "Klipper", marlin: "Marlin", reprapfirmware: "RepRapFirmware", none: "not generated" };
-
-/** Light highlighting: comments, preprocessor lines, strings and section headers. */
-function highlight(line: string, ext: string): ReactNode {
-  if (ext === "md") return /^#{1,6}\s/.test(line) ? <span className="h">{line}</span> : line;
-  if (ext === "cfg" || ext === "ini" || ext === "conf") {
-    if (/^\s*[#;]/.test(line)) return <span className="c">{line}</span>;
-    if (/^\s*\[.*\]\s*$/.test(line)) return <span className="h">{line}</span>;
-    const k = line.search(/\s[#;]/);
-    return k >= 0 ? (
-      <>
-        {line.slice(0, k)}
-        <span className="c">{line.slice(k)}</span>
-      </>
-    ) : (
-      line
-    );
-  }
-  // C and C++: find a // comment outside strings
-  const out: ReactNode[] = [];
-  let i = 0;
-  let start = 0;
-  const pre = /^\s*#/.test(line);
-  const flush = (end: number, cls?: string) => {
-    if (end > start) out.push(cls || pre ? <span key={out.length} className={cls ?? "d"}>{line.slice(start, end)}</span> : line.slice(start, end));
-    start = end;
-  };
-  while (i < line.length) {
-    const ch = line[i];
-    if (ch === '"' || ch === "'") {
-      flush(i);
-      let j = i + 1;
-      while (j < line.length && line[j] !== ch) j += line[j] === "\\" ? 2 : 1;
-      i = Math.min(line.length, j + 1);
-      flush(i, "s");
-      continue;
-    }
-    if (ch === "/" && (line[i + 1] === "/" || line[i + 1] === "*")) {
-      flush(i);
-      i = line.length;
-      flush(i, "c");
-      break;
-    }
-    if (ch === "*" && /^\s*\*/.test(line.slice(0, i + 1)) && i === line.search(/\S/)) {
-      flush(i);
-      i = line.length;
-      flush(i, "c");
-      break;
-    }
-    i++;
-  }
-  flush(line.length);
-  return out;
-}
-
-function Firmware({ fw }: { fw: FirmwareOutput[] }) {
-  const sel = useBuildView((s) => s.file);
-  if (!fw.length) {
-    return (
-      <div className="mp-pad">
-        <div className="empty-state">
-          No firmware block yet. Add one, for example <span className="mono">firmware main {"{"} board: ctrl {"}"}</span>, and Kerf writes code that matches the wiring: pin numbers, motor directions and limits.
-        </div>
-      </div>
-    );
-  }
-  // the selection is "<block>/<path>" or "<block>#pins"
-  const keyOf = (f: FirmwareOutput, path: string) => `${f.name}/${path}`;
-  const all = fw.flatMap((f) => f.files.map((file) => ({ f, file, key: keyOf(f, file.path) })));
-  const pinsFor = fw.find((f) => sel === `${f.name}#pins`);
-  const current = pinsFor ? undefined : (all.find((x) => x.key === sel) ?? all[0]);
-  const block = pinsFor ?? current?.f ?? fw[0];
-  const content = current?.file.content ?? "";
-  const base = current?.file.path.split("/").pop() ?? "";
-  const ext = base.split(".").pop()?.toLowerCase() ?? "";
-  const lines = content.replace(/\n$/, "").split("\n");
-  const copy = () =>
-    navigator.clipboard
-      .writeText(content)
-      .then(() => toast({ kind: "success", title: `Copied ${base}`, detail: "Paste it into the Arduino IDE or your editor." }))
-      .catch(() => toast({ kind: "warn", title: "Could not copy", detail: "The browser blocked the clipboard. Use Download instead." }));
-  return (
-    <div className="mp-fw">
-      <div className="mp-fw-side">
-        {fw.map((f) => (
-          <div key={f.name} className="mp-fw-block">
-            <div className="mp-fw-name">
-              <Icon.Chip size={14} style={{ color: "var(--text-3)" }} />
-              <span className="mono">{f.name}</span>
-              <span className={`chip ${f.target === "none" ? "warn" : ""}`} style={{ height: 17, fontSize: 9.5 }}>
-                {TARGET_WORD[f.target]}
-              </span>
-            </div>
-            <div className="mp-sub" style={{ margin: "3px 0 6px" }}>
-              {f.summary}
-            </div>
-            {f.files.map((file) => {
-              const key = keyOf(f, file.path);
-              const active = current?.key === key;
-              return (
-                <button key={key} className={`mp-file ${active ? "active" : ""}`} onClick={() => useBuildView.setState({ file: key })} data-tip={file.path}>
-                  <Icon.Doc size={13} />
-                  {file.path.split("/").pop()}
-                  <span className="n">{file.content.replace(/\n$/, "").split("\n").length}</span>
-                </button>
-              );
-            })}
-            {f.pinTable.length > 0 && (
-              <button className={`mp-file ${pinsFor === f ? "active" : ""}`} onClick={() => useBuildView.setState({ file: `${f.name}#pins` })}>
-                <Icon.List size={13} />
-                pin map
-                <span className="n">{f.pinTable.length}</span>
-              </button>
-            )}
-          </div>
-        ))}
-      </div>
-      <div className="mp-fw-main">
-        {block.warnings.length > 0 && (
-          <ul className="mp-fw-warn">
-            {block.warnings.map((w, i) => (
-              <li key={i}>{w}</li>
-            ))}
-          </ul>
-        )}
-        {pinsFor ? (
-          <div className="mp-pins">
-            <table className="bom">
-              <thead>
-                <tr>
-                  <th>Signal</th>
-                  <th>Controller pin</th>
-                  <th>Wired to</th>
-                </tr>
-              </thead>
-              <tbody>
-                {pinsFor.pinTable.map((p, i) => (
-                  <tr key={i}>
-                    <td>{p.signal}</td>
-                    <td className="mono" style={{ color: "var(--text)" }}>
-                      {p.pin}
-                    </td>
-                    <td className="mono">{p.wire}</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
-        ) : current ? (
-          <>
-            <div className="mp-toolbar">
-              <span className="mono" style={{ fontSize: 12, color: "var(--text)" }}>
-                {current.file.path}
-              </span>
-              <span className="mono dim" style={{ fontSize: 11 }}>
-                {plural(lines.length, "line")}
-              </span>
-              <div className="grow" />
-              <button className="btn sm" onClick={copy}>
-                <Icon.Copy size={13} /> Copy
-              </button>
-              <button className="btn sm" onClick={() => download(content, base, "text/plain")}>
-                <Icon.Download size={13} /> Download
-              </button>
-            </div>
-            <pre className="mp-code">
-              {lines.map((l, i) => (
-                <div key={i}>
-                  <span className="ln">{i + 1}</span>
-                  {highlight(l, ext)}
-                </div>
-              ))}
-            </pre>
-          </>
-        ) : (
-          <div className="mp-pad">
-            <div className="empty-state">{block.summary}</div>
-          </div>
-        )}
-      </div>
     </div>
   );
 }

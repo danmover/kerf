@@ -8,11 +8,13 @@
 import type { MachineData } from "../../machine/types";
 import { measuredPart } from "../../machine/measured";
 import { generateFirmware } from "../../machine/firmware";
-import { boardForPart, CError, Halt, loadFirmware } from "../mcu";
+import { boardForPart, CError, Halt, loadFirmware, type DebugResult, type DebugSpec } from "../mcu";
 import { Plant, fieldResults } from "./plant";
 import { BusServo } from "./busServo";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
+import { SignalRecorder, type SignalSpec, type SignalTrace } from "./probes";
 import type { DisplayFrame } from "./devices";
+import { displayLook, peripheralResults, type DisplayLook, type SdCardRun } from "./peripherals";
 import type { PrintTrace } from "../printer/run";
 
 export type { DisplayFrame };
@@ -48,6 +50,10 @@ export interface RunOptions {
   frameHz?: number;
   /** progress, 0..1, for each variant as it runs */
   onProgress?: (variant: VariantName, done: number) => void;
+  /** run the firmware under the debugger: breakpoints, watches, stops on its mistakes */
+  debug?: DebugSpec;
+  /** record the pins and buses for the logic analyser */
+  signals?: SignalSpec;
 }
 
 export interface Frames {
@@ -106,6 +112,12 @@ export interface VariantRun {
   displays: DisplayRun[];
   /** a printer run: every move as it really happened */
   print?: PrintTrace;
+  /** what the debugger recorded, when the run was debugged */
+  debug?: DebugResult;
+  /** the microSD cards and the files the firmware left on them */
+  sdCards?: SdCardRun[];
+  /** the pins and buses over the run, when it recorded them */
+  signals?: SignalTrace;
 }
 
 export interface DisplayRun {
@@ -113,6 +125,8 @@ export interface DisplayRun {
   w: number;
   h: number;
   frames: DisplayFrame[];
+  /** a character LCD's cells, colours and last text (an OLED has none) */
+  look?: DisplayLook;
 }
 
 export interface RunResult {
@@ -163,6 +177,7 @@ const SETTLED = /^(done|fault|finished|stopped|stop|idle|error|bench|waiting|rea
 function runVariant(opts: RunOptions, variant: VariantName, seed: number, files: Record<string, string>, mcuName: string, board: ReturnType<typeof boardForPart>): VariantRun {
   const wall0 = Date.now();
   const hal = new SimHal(board, { seed });
+  const probe = opts.signals ? (hal.probe = new SignalRecorder(hal, opts.signals)) : null;
   const inj = opts.faults?.length ? new FaultInjector(opts.faults, rngFrom(seed * 131 + 3)) : undefined;
   const world0 = opts.world(variant, seed);
   const world = (inj ? inj.wrap(world0) : world0) as typeof world0;
@@ -240,7 +255,7 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
   for (const c of opts.console ?? []) hal.typeAt(c.t, c.text.endsWith("\n") ? c.text : c.text + "\n");
   let loopMax = 0;
   try {
-    fwRef = loadFirmware(files, board, hal);
+    fwRef = loadFirmware(files, board, hal, undefined, opts.debug);
     hal.bindVectors(fwRef.fw);
     watch = watchList(fwRef.fw.globals as Map<string, { t: { k: string } }>);
     fwRef.fw.reset();
@@ -378,10 +393,13 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     results,
     summary,
     scene: world.scene(),
-    displays: plant.displays.map((d) => (d.tick(hal.cyc, true), { name: d.name, w: d.w, h: d.h, frames: d.frames })),
+    displays: plant.displays.map((d) => (d.tick(hal.cyc, true), { name: d.name, w: d.w, h: d.h, frames: d.frames, ...displayLook(d) })),
+    ...peripheralResults(plant),
     assumptions: [...plant.assumptions, ...(world.assumptions ?? [])],
     notes,
     limits: [...world.limits, "The firmware runs as compiled C++ on a cycle-counted virtual chip, not as the real AVR machine code: timing is close but not exact.", "Electrical: average-voltage motor models, no wiring resistance or electrical noise."],
+    ...(fwRef?.fw.debug ? { debug: fwRef.fw.debug() } : {}),
+    ...(probe ? { signals: probe.result(hal.cyc) } : {}),
   };
 }
 

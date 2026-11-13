@@ -7,6 +7,8 @@ import { detailImportsLoaded, recipeUsesImport } from "../core/imports";
 import { bomCsv, download, safeFileName, writeStl } from "../persist/files";
 import { configVerdict, familyTableCsv, readConfig, type ConfigVerdict } from "../core/configs";
 import { buildPack } from "../machine/pack";
+import { generateFirmware } from "../machine/firmware";
+import { withOwnCode } from "./firmwareCode";
 import { boardSpecs } from "../machine/boards";
 import { boardProblems, gerberZip, routeBoards } from "../machine/boardPack";
 import { safeName } from "../machine/pcb/gerber";
@@ -154,7 +156,9 @@ async function makeBuildPack() {
     });
     // cut lengths measured along the 3D cable routes, the same ones the wiring view draws
     const routed = await routeNow(model);
-    const files = buildPack(model, report, { name, step, boards, routed, use: simUse(model), meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
+    // firmware blocks that run their own code put it in the pack, not Kerf's
+    const firmware = model.machine?.firmware.some((f) => f.settings.code === "own") ? generateFirmware(withOwnCode(model.machine), model.name || name) : undefined;
+    const files = buildPack(model, report, { name, step, boards, routed, use: simUse(model), firmware, meshFor: (p) => meshes.get(p.hash)?.final ?? meshes.get(p.hash)?.preview });
     const folder = `${packName(name)} build pack`;
     const data = zip(files.map((f) => ({ path: `${folder}/${f.path}`, data: f.data })));
     download(data, `${folder}.zip`, "application/zip");

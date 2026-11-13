@@ -20,6 +20,7 @@ import { onAccount, sessionEnded, useAccount } from "./account";
 import { adoptBranches, applyRemoteProject, closeProject, onProjectDeleted, onProjectOpen, refreshProjects, useProject } from "../app/project";
 import { MAIN, joinBranches } from "../core/branches";
 import { cleanScripts } from "../scripts/records";
+import { cleanFirmwareCode } from "../machine/firmware/ownCode";
 import { loadChat, resetChat, useChat } from "../ai/chat";
 import { toast } from "../app/ui";
 
@@ -410,6 +411,10 @@ async function download(id: string, local: ProjectRecord | null) {
   const scripts = cleanScripts(rec.scripts, { keepOnChange: true });
   if (scripts) rec.scripts = scripts;
   else delete rec.scripts;
+  // and its firmware blocks' own code
+  const firmware = cleanFirmwareCode(rec.firmware);
+  if (firmware) rec.firmware = firmware;
+  else delete rec.firmware;
   await db.put("projects", rec);
   meta.projects[id] = { rev: project.rev, at: rec.updatedAt, thumb: thumbSig(rec.thumbnail), chatAt: m?.chatAt ?? 0, src: srcHash(rec.source), adirty: m?.adirty, filesPending: complete ? undefined : Date.now() };
   changedHere = true;

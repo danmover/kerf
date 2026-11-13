@@ -17,6 +17,7 @@ import { BusServo, ServoBus } from "./busServo";
 import { servoBuses } from "../../machine/busServos";
 import { Steppers } from "./steppers";
 import { Sensing } from "./sensors";
+import { attachPeripheral } from "./peripherals";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
 
@@ -298,6 +299,7 @@ export class Plant implements PlantPort, PlantView {
         this.display(mc, part);
         continue;
       }
+      if (attachPeripheral(this, mc, part)) continue;
       switch (part.kind) {
         case "battery":
           if (bench) {

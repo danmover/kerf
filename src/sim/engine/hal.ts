@@ -7,6 +7,9 @@
 import type { Board } from "../mcu/board";
 import { Halt, type FnRef, type Hal, type IoRegister } from "../mcu/vm";
 import { MODELLED_VECTORS } from "../mcu/registers";
+import type { ProbeHooks } from "./probes";
+import { AvrChip, Esp32Timers, type ChipTimers, type ChipVector } from "./timers";
+import { SpiBus } from "./spi";
 
 /** What the board needs from the electrical plant around it. */
 export interface PlantPort {
@@ -134,6 +137,8 @@ export class SimHal implements Hal {
   powerFail: string | null = null;
 
   plant: PlantPort | null = null;
+  /** the logic analyser, when the run records signals: told of every pin change and bus transfer */
+  probe: ProbeHooks | null = null;
 
   // pins
   mode: Uint8Array;
@@ -204,6 +209,15 @@ export class SimHal implements Hal {
   private regs = new Map<string, IoRegister>();
   /** conversions the ADC finished through its registers */
   adcConversions = 0;
+  /** the ATmega328P's ports, timers and pin interrupts as their registers drive them */
+  avr: AvrChip | null = null;
+  /** the ESP32's hardware timers (timerBegin) */
+  espTimers: Esp32Timers | null = null;
+  /** the SPI bus and the devices on its chip-select pins */
+  spi: SpiBus;
+  private chips: ChipTimers[] = [];
+  /** millis() and micros() count timer 0's overflows on the AVR: core cycles, which run at coreRate × the clock */
+  private core = { rate: 1, cyc0: 0, at0: 0 };
 
   constructor(
     public board: Board,
@@ -218,6 +232,9 @@ export class SimHal implements Hal {
     this.ext = new Int8Array(n).fill(-1);
     this.eeprom = opts.eeprom ?? new Uint8Array(board.eepromBytes).fill(0xff);
     for (const [pin, irq] of Object.entries(board.interrupts)) this.irqOfPin.set(+pin, irq);
+    if (board.arch === "esp32") this.chips.push((this.espTimers = new Esp32Timers(this)));
+    else if (board.mcu === "ATmega328P") this.chips.push((this.avr = new AvrChip(this)));
+    this.spi = new SpiBus(this);
     let s = (opts.seed ?? 1) >>> 0 || 1;
     this.rng = () => {
       s ^= s << 13;
@@ -225,6 +242,10 @@ export class SimHal implements Hal {
       s ^= s << 5;
       return (s >>> 0) / 4294967296;
     };
+  }
+
+  get arch(): "avr" | "esp32" {
+    return this.board.arch ?? "avr";
   }
 
   /** seconds since power-up */
@@ -253,13 +274,18 @@ export class SimHal implements Hal {
         // whatever is due first: a pin change, or the plant's next step
         const te = this.events.peekT();
         if (te <= this.cyc && te <= this.nextStep) {
-          const [, pin, level] = this.events.pop();
-          this.applyPin(pin, level);
+          const [at, pin, level] = this.events.pop();
+          this.applyPin(pin, level, at);
           continue;
         }
         const ta = this.adc.done;
         if (ta <= this.cyc && ta <= this.nextStep && ta <= te) {
           this.adcComplete();
+          continue;
+        }
+        const tc = this.chipNext();
+        if (tc <= this.cyc && tc <= this.nextStep && tc <= te) {
+          for (const c of this.chips) if (c.next <= this.cyc) c.due(this.cyc);
           continue;
         }
         if (this.cyc >= this.nextStep) {
@@ -286,13 +312,53 @@ export class SimHal implements Hal {
             this.runAdcVector();
             continue;
           }
+          const v = this.takeVector();
+          if (v) {
+            this.runVector(v);
+            continue;
+          }
         }
         break;
       }
     } finally {
       this.servicing = false;
     }
-    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity, this.inIsr ? this.isrStart + this.isrHang : Infinity);
+    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.chipNext(), this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity, this.inIsr ? this.isrStart + this.isrHang : Infinity);
+  }
+
+  private chipNext(): number {
+    let n = Infinity;
+    for (const c of this.chips) if (c.next < n) n = c.next;
+    return n;
+  }
+
+  /** the highest-priority timer or pin-change handler waiting to run */
+  private takeVector(): ChipVector | null {
+    for (const c of this.chips) {
+      const v = c.take();
+      if (v) return v;
+    }
+    return null;
+  }
+
+  /** run a timer or pin-change handler, as the chip does: interrupts off inside it, its flag already cleared */
+  private runVector(v: ChipVector) {
+    const c0 = this.cyc;
+    this.inIsr = true;
+    this.isrStart = c0;
+    this.nextEvt = Math.min(this.nextEvt, c0 + this.isrHang);
+    const was = this.intEnabled;
+    this.intEnabled = false;
+    this.cyc += v.entry;
+    try {
+      v.fn.call(v.args ?? []);
+    } finally {
+      this.cyc += v.exit;
+      this.inIsr = false;
+      this.intEnabled = was;
+      this.isrCount++;
+      this.isrCycles += this.cyc - c0;
+    }
   }
 
   spend(cycles: number): void {
@@ -318,11 +384,13 @@ export class SimHal implements Hal {
     this.applyPin(pin, level);
   }
 
-  private applyPin(pin: number, level: number) {
+  private applyPin(pin: number, level: number, at = this.cyc) {
     const before = this.level(pin);
     this.ext[pin] = level;
+    this.probe?.pin(pin, at);
     const after = this.level(pin);
     if (before === after) return;
+    this.avr?.pinChanged(pin);
     const irq = this.irqOfPin.get(pin);
     if (irq === undefined || !this.irqFn[irq]) return;
     const m = this.irqMode[irq];
@@ -396,11 +464,14 @@ export class SimHal implements Hal {
     if (!this.validPin(pin, "pinMode")) return;
     this.mode[pin] = mode === 1 ? Mode.OUTPUT : mode === 2 ? Mode.PULLUP : Mode.INPUT;
     if (mode !== 1) this.duty[pin] = -1;
+    this.avr?.pinModeChanged(pin);
+    this.probe?.pin(pin, this.cyc);
   }
 
   digitalWrite(pin: number, v: number): void {
     if (pin < 0 || pin >= this.mode.length) return;
     if (this.board.analogOnly.includes(pin)) return;
+    if (this.duty[pin] >= 0 || this.pwmSet.has(pin)) this.avr?.pwmOff(pin);
     this.duty[pin] = -1;
     if (this.mode[pin] === Mode.OUTPUT) {
       this.latch[pin] = v ? 1 : 0;
@@ -408,6 +479,8 @@ export class SimHal implements Hal {
     }
     // writing HIGH to an input turns its pull-up on, as on the AVR
     else this.mode[pin] = v ? Mode.PULLUP : Mode.INPUT;
+    this.avr?.pinChanged(pin);
+    this.probe?.pin(pin, this.cyc);
   }
 
   digitalRead(pin: number): number {
@@ -441,10 +514,14 @@ export class SimHal implements Hal {
     const max = (1 << this.board.adcBits) - 1;
     if (v === undefined) {
       // a floating input reads whatever charge is left on the sample capacitor
-      return Math.floor(200 + this.rng() * 300);
+      const r = Math.floor(200 + this.rng() * 300);
+      this.probe?.adc(p, this.cyc, NaN, r);
+      return r;
     }
     const noise = (this.rng() + this.rng() - 1) * 0.7;
-    return Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    const r = Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    this.probe?.adc(p, this.cyc, v, r);
+    return r;
   }
 
   /** the ESP32 core's analogReadMilliVolts(): the reading in millivolts, through the chip's calibration */
@@ -462,6 +539,8 @@ export class SimHal implements Hal {
     if (!(pin in this.board.pwm) || blocked) {
       this.duty[pin] = -1;
       this.latch[pin] = v >= 128 ? 1 : 0;
+      this.avr?.pinChanged(pin);
+      this.probe?.pin(pin, this.cyc);
       if (!(pin in this.board.pwm)) this.fault(`analogWrite(${pin}): pin ${pin} has no PWM on the ${this.board.name}, so it just switches fully on or off`, "firmware", 0);
       return;
     }
@@ -474,6 +553,9 @@ export class SimHal implements Hal {
       this.duty[pin] = -1;
       this.latch[pin] = 1;
     } else this.duty[pin] = v / max;
+    // the core sets the pin's timer compare register; a timer the sketch set up itself makes the PWM from it
+    this.avr?.analogWritten(pin, v);
+    this.probe?.pin(pin, this.cyc);
   }
 
   /**
@@ -501,6 +583,7 @@ export class SimHal implements Hal {
     this.pwmSet.set(pin, { hz, bits: Math.round(bits) });
     this.mode[pin] = Mode.OUTPUT;
     if (this.duty[pin] < 0) this.latch[pin] = 0;
+    this.probe?.pin(pin, this.cyc);
     return true;
   }
 
@@ -520,6 +603,7 @@ export class SimHal implements Hal {
       this.duty[pin] = -1;
       this.latch[pin] = 1;
     } else this.duty[pin] = duty / full;
+    this.probe?.pin(pin, this.cyc);
     return true;
   }
 
@@ -555,7 +639,7 @@ export class SimHal implements Hal {
 
   setInterrupts(on: boolean): void {
     this.intEnabled = on;
-    if (on && !this.inIsr && (this.irqPending.some(Boolean) || this.adc.pending)) this.nextEvt = this.cyc;
+    if (on && !this.inIsr && (this.irqPending.some(Boolean) || this.adc.pending || this.chips.length)) this.nextEvt = this.cyc;
   }
 
   // ---------- I/O registers: the ADC and SREG ----------
@@ -563,9 +647,12 @@ export class SimHal implements Hal {
   /** Take the firmware's ISR() handlers: the ones this board runs, and a fault for each it never would. */
   bindVectors(fw: { fnNames: string[]; call(name: string): unknown }) {
     for (const n of fw.fnNames.filter((x) => /_vect$/.test(x))) {
-      if (MODELLED_VECTORS.includes(n)) this.vectors.set(n, { fnName: n, call: () => fw.call(n) });
-      else this.fault(`ISR(${n}) never runs: the simulator runs ISR(ADC_vect) and attachInterrupt() handlers, not ${n.slice(0, -5).replace(/_/g, " ")} interrupts yet`, "firmware", 0);
+      const ref = { fnName: n, call: () => fw.call(n) };
+      if (MODELLED_VECTORS.includes(n)) this.vectors.set(n, ref);
+      else if (!this.avr?.bind(n, ref))
+        this.fault(`ISR(${n}) never runs: the simulator runs the ADC, timer 0/1/2 compare and overflow, pin-change and INT0/INT1 vectors and attachInterrupt() handlers, not ${n.slice(0, -5).replace(/_/g, " ")} interrupts yet`, "firmware", 0);
     }
+    this.avr?.reschedule();
   }
 
   register(name: string): IoRegister | undefined {
@@ -644,6 +731,7 @@ export class SimHal implements Hal {
         );
         break;
     }
+    r ??= this.avr?.register(name);
     if (r) this.regs.set(name, r);
     return r;
   }
@@ -724,7 +812,9 @@ export class SimHal implements Hal {
     }
     if (v === undefined) return Math.floor(200 + this.rng() * 300);
     const noise = (this.rng() + this.rng() - 1) * 0.7;
-    return Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    const r = Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    if (mux < this.board.analog.length) this.probe?.adc(this.board.analog[mux], at, v, r);
+    return r;
   }
 
   /** ISR(ADC_vect): the hardware clears ADIF as the handler starts */
@@ -751,22 +841,56 @@ export class SimHal implements Hal {
     }
   }
 
+  get hwTimers() {
+    return this.espTimers ?? undefined;
+  }
+
+  setVector(name: string, fn: FnRef | null) {
+    if (!this.avr) return this.fault(`${name.replace(/_vect$/, "")}: the ${this.board.name} has no such interrupt`, "firmware", 0);
+    this.avr.setHandler(name as Parameters<AvrChip["setHandler"]>[0], fn);
+    this.avr.reschedule();
+  }
+
+  /** the cycles millis() and micros() have counted: the clock's own, unless the sketch changed timer 0 */
+  private coreCyc(): number {
+    const c = this.core;
+    return c.rate === 1 && c.at0 === 0 ? this.cyc : c.cyc0 + (this.cyc - c.at0) * c.rate;
+  }
+
+  /** timer 0 now overflows at another rate (its prescaler or mode changed): the core's time runs that much faster */
+  setCoreRate(rate: number) {
+    this.core = { rate, cyc0: this.coreCyc(), at0: this.cyc };
+  }
+
   millis(): number {
-    return Math.floor((this.cyc * 1000) / this.fcpu) >>> 0;
+    return Math.floor((this.coreCyc() * 1000) / this.fcpu) >>> 0;
   }
 
   micros(): number {
     // the AVR core counts in 4 µs steps (timer 0 at 64 cycles a tick on 16 MHz); the ESP32's timer in 1 µs ones
     if (this.board.arch === "esp32") return Math.floor(this.cyc / (this.fcpu / 1e6)) >>> 0;
-    return (Math.floor(this.cyc / (this.fcpu / 250000)) * 4) >>> 0;
+    return (Math.floor(this.coreCyc() / (this.fcpu / 250000)) * 4) >>> 0;
+  }
+
+  /** delay(): it waits on micros(), so it runs at the core's rate */
+  delayMs(ms: number) {
+    const r = this.core.rate;
+    if (r <= 0) {
+      this.fault("delay() never returns: timer 0 no longer overflows with its interrupt on, so the time it waits on stands still", "firmware", 0);
+      this.spend(this.endCyc - this.cyc);
+      return;
+    }
+    this.spend((ms * this.fcpu) / 1000 / r);
   }
 
   tone(pin: number, freq: number): void {
     this.toneHz.set(pin, freq);
+    this.probe?.pin(pin, this.cyc);
   }
 
   noTone(pin: number): void {
     this.toneHz.delete(pin);
+    this.probe?.pin(pin, this.cyc);
   }
 
   // ---------- serial ----------
@@ -798,6 +922,7 @@ export class SimHal implements Hal {
       }
       const last = this.txEnds.length > this.txHead ? this.txEnds[this.txEnds.length - 1] : this.cyc;
       this.txEnds.push(Math.max(last, this.cyc) + bc);
+      this.probe?.tx(0, b & 255, this.txEnds[this.txEnds.length - 1], bc);
       if (this.txHead > 4096) {
         this.txEnds = this.txEnds.slice(this.txHead);
         this.txHead = 0;
@@ -846,7 +971,8 @@ export class SimHal implements Hal {
 
   private deliverSerial() {
     while (this.rxQueue.length && this.rxQueue[0].t <= this.cyc) {
-      const { b } = this.rxQueue.shift()!;
+      const { t, b } = this.rxQueue.shift()!;
+      this.probe?.rx(0, b, t, this.byteCycles());
       if (this.rxBuf.length < this.board.serialRx) this.rxBuf.push(b);
       else this.fault("Serial receive buffer overflowed (64 bytes): read Serial more often", "firmware", 0);
     }
@@ -913,6 +1039,7 @@ export class SimHal implements Hal {
       const last = u.txEnds.length > u.txHead ? u.txEnds[u.txEnds.length - 1] : this.cyc;
       const end = Math.max(last, this.cyc) + bc;
       u.txEnds.push(end);
+      this.probe?.tx(port, b & 255, end, bc);
       if (u.txHead > 4096) {
         u.txEnds = u.txEnds.slice(u.txHead);
         u.txHead = 0;
@@ -933,7 +1060,8 @@ export class SimHal implements Hal {
     const u = this.uarts.get(port);
     if (!u) return [];
     while (u.rxQueue.length && u.rxQueue[0].t <= this.cyc) {
-      const { b } = u.rxQueue.shift()!;
+      const { t, b } = u.rxQueue.shift()!;
+      this.probe?.rx(port, b, t, Math.round((10 * this.fcpu) / u.baud));
       if (u.rxBuf.length < this.board.serialRx) u.rxBuf.push(b);
       else if (!u.overflowed) {
         u.overflowed = true;
@@ -982,7 +1110,9 @@ export class SimHal implements Hal {
       return 4;
     }
     const dev = this.plant?.i2c(addr);
+    const t0 = this.cyc;
     this.wireTime(dev ? bytes.length : 0);
+    this.probe?.i2c(addr, "w", bytes, !!dev, t0, this.cyc);
     if (!dev) return 2;
     dev.write(bytes, this.cyc);
     return 0;
@@ -994,8 +1124,11 @@ export class SimHal implements Hal {
       return [];
     }
     const dev = this.plant?.i2c(addr);
+    const t0 = this.cyc;
     this.wireTime(dev ? n : 0);
-    return dev ? dev.read(n, this.cyc) : [];
+    const got = dev ? dev.read(n, this.cyc) : [];
+    this.probe?.i2c(addr, "r", got, !!dev, t0, this.cyc);
+    return got;
   }
 
   // ---------- EEPROM, servos, faults ----------
@@ -1017,6 +1150,7 @@ export class SimHal implements Hal {
   servoPulse(pin: number, us: number | null): void {
     if (us === null) this.servoUs.delete(pin);
     else this.servoUs.set(pin, us);
+    this.probe?.pin(pin, this.cyc);
   }
 
   fault(msg: string, file: string, line: number): void {

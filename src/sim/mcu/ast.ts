@@ -1,6 +1,6 @@
 // Syntax tree for the C/C++ subset the virtual microcontroller runs: what
 // Arduino sketches use (functions, globals, structs, enums, arrays, pointers
-// and references, static locals, switch, casts), not templates or classes.
+// and references, static locals, switch, casts, function pointers), not templates or classes.
 
 import type { CType } from "./ctypes";
 
@@ -22,7 +22,8 @@ export type Expr = Pos &
     | { k: "cond"; c: Expr; a: Expr; b: Expr }
     | { k: "call"; fn: Expr; args: Expr[] }
     | { k: "idx"; a: Expr; i: Expr }
-    | { k: "mem"; a: Expr; name: string; arrow: boolean }
+    /** targs: a library method's template arguments, worked out while parsing (FastLED.addLeds<WS2812B, 6, GRB>) */
+    | { k: "mem"; a: Expr; name: string; arrow: boolean; targs?: number[] }
     | { k: "cast"; type: CType; a: Expr }
     | { k: "sizeofT"; type: CType }
     | { k: "sizeofE"; a: Expr }
@@ -76,4 +77,6 @@ export interface Program {
   consts: Map<string, { v: number; type: CType }>;
   /** string literals' total size outside F() (they take RAM on AVR) */
   ramStrings: number;
+  /** every struct type by name, the libraries' (CRGB) among them */
+  structs: Map<string, Extract<CType, { k: "struct" }>>;
 }

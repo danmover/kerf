@@ -985,6 +985,8 @@ class Evaluator {
         const settings = this.machineProps(s.items, null, "firmware");
         const board = str(settings.board);
         if (board && !this.comps.has(board)) throw new EvalError(`firmware board: "${board}" is not a component`, s.span);
+        if (settings.code !== undefined && settings.code !== "own" && settings.code !== "generated")
+          throw new EvalError('firmware code: should be "own" (run the code written for this block in Build → Firmware) or "generated" (the code Kerf writes from the wiring, the default)', s.span);
         this.machine.firmware.push({ name: s.name, board, settings, span: s.span });
         return;
       }

@@ -29,7 +29,8 @@ export type CType =
   | { k: "float"; bits: 32 | 64 }
   | { k: "ptr"; to: CType }
   | { k: "arr"; of: CType; n: number }
-  | { k: "struct"; name: string; fields: StructField[]; size: number; complete: boolean }
+  /** lib: declared by a library's header (FastLED's CRGB), so the library's C++ for it applies (LibStruct) */
+  | { k: "struct"; name: string; fields: StructField[]; size: number; complete: boolean; lib?: boolean }
   | { k: "enum"; name: string; base: CType }
   | { k: "fn"; ret: CType; params: CType[]; variadic?: boolean }
   | { k: "ref"; to: CType }
@@ -110,9 +111,12 @@ export function sizeOf(t: CType, abi: Abi): number {
     case "fn":
       return abi.ptrBytes;
     case "class":
-      return 4;
+      return t.name in CLASS_BYTES ? Math.round(CLASS_BYTES[t.name] * (abi.ptrBytes > 2 ? 1.5 : 1)) : 4;
   }
 }
+
+/** bytes a library object takes on the AVR (its fields as the library's header declares them) */
+const CLASS_BYTES: Record<string, number> = { File: 17, LiquidCrystal: 22, LiquidCrystal_I2C: 13, AccelStepper: 66, MultiStepper: 41 };
 
 export function typeName(t: CType): string {
   switch (t.k) {
