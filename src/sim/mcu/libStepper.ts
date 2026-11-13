@@ -49,12 +49,12 @@ export interface StepperObj {
   backward: FnRef | null;
 }
 
-/** cycles of float work, AVR (no FPU) and ESP32 */
-const cost = (hal: Hal, avr: number) => (hal.arch === "esp32" ? avr / 8 : avr);
+/** cycles of float work: the AVR's (no FPU), and a 32-bit core's (ESP32, RP2040, STM32) */
+const cost = (hal: Hal, avr: number) => ((hal.arch ?? "avr") !== "avr" ? avr / 8 : avr);
 
 function pinWrite(hal: Hal, pin: number, v: number) {
   hal.digitalWrite(pin, v);
-  burn(hal, hal.arch === "esp32" ? 30 : 56);
+  burn(hal, (hal.arch ?? "avr") !== "avr" ? 30 : 56);
 }
 
 function setOutputPins(hal: Hal, s: StepperObj, mask: number) {

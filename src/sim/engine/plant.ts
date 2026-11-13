@@ -20,6 +20,7 @@ import { Sensing } from "./sensors";
 import { attachPeripheral } from "./peripherals";
 import type { I2CDevice, PlantPort, SimHal } from "./hal";
 import { FREE_LOAD, type DriveIO, type PlantView, type World, type WorldEvent } from "../worlds/types";
+import { mcuPin, pinLabel } from "../mcu/board";
 
 export type Src = { kind: "mcu"; pin: number } | { kind: "high" } | { kind: "low" } | { kind: "none"; def: number };
 
@@ -528,11 +529,7 @@ export class Plant implements PlantPort, PlantView {
   // ---------- netlist helpers ----------
 
   arduinoPin(mcu: string | undefined): number | undefined {
-    if (!mcu) return undefined;
-    const m = /^A(\d+)$/.exec(mcu);
-    if (m) return this.board.analog[+m[1]];
-    const n = Number(mcu);
-    return Number.isInteger(n) ? n : undefined;
+    return mcuPin(this.board, mcu);
   }
 
   netOf(comp: string, pin: string, index = 0): Net | undefined {
@@ -775,7 +772,7 @@ export class Plant implements PlantPort, PlantView {
 
   /** the board's Wire pins, as its pinout names them */
   private i2cPins() {
-    return this.board.arch === "esp32" ? `GPIO${this.board.sda} (SDA) and GPIO${this.board.scl} (SCL)` : "A4 and A5";
+    return `${pinLabel(this.board, this.board.sda)} (SDA) and ${pinLabel(this.board, this.board.scl)} (SCL)`;
   }
 
   /** a brushless ESC, its BEC as a regulator, and the motor on its three phase wires */

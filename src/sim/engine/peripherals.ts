@@ -7,6 +7,7 @@
 import type { Net } from "../../machine/erc";
 import type { CatalogPart, MachineComponent } from "../../machine/types";
 import { SdCard, type SdFileReport } from "../mcu/sdcard";
+import { pinLabel } from "../mcu/board";
 import type { Ssd1306 } from "./devices";
 import { Hd44780, Pcf8574Lcd } from "./lcd";
 import type { Plant } from "./plant";
@@ -114,7 +115,7 @@ function lcdI2c(p: Plant, mc: MachineComponent, part: CatalogPart) {
   const sda = p.mcuPinFor(mc.name, "SDA");
   const scl = p.mcuPinFor(mc.name, "SCL");
   if (sda !== p.board.sda || scl !== p.board.scl) {
-    if (sda >= 0 || scl >= 0) p.notes.push(`${mc.name}: SDA and SCL must go to the ${p.board.name}'s Wire pins (${p.board.arch === "esp32" ? `GPIO${p.board.sda} and GPIO${p.board.scl}` : "A4 and A5"}); it is not on the bus.`);
+    if (sda >= 0 || scl >= 0) p.notes.push(`${mc.name}: SDA and SCL must go to the ${p.board.name}'s Wire pins (${pinLabel(p.board, p.board.sda)} and ${pinLabel(p.board, p.board.scl)}); it is not on the bus.`);
     return;
   }
   const lcd = newLcd(p, mc, part);

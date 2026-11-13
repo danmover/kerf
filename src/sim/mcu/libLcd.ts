@@ -58,7 +58,7 @@ const objOf = (obj: C) => (obj.lv ? obj.lv.get : obj.ev) as (f: unknown[]) => un
 /** a library digitalWrite: the pin changes and the call takes its time (about 3.5 µs on the AVR's core) */
 function pinWrite(hal: Hal, pin: number, v: number) {
   hal.digitalWrite(pin, v);
-  burn(hal, hal.arch === "esp32" ? 30 : 56);
+  burn(hal, (hal.arch ?? "avr") !== "avr" ? 30 : 56);
 }
 
 const us = (hal: Hal, n: number) => hal.spend((n * hal.fcpu) / 1e6);

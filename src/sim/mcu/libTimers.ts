@@ -32,7 +32,8 @@ function reg(ctx: Ctx, name: string) {
 }
 
 function avrOnly(ctx: Ctx, pos: Pos) {
-  if (!ctx.hal.register?.("TCCR1B")) ctx.error("TimerOne drives the ATmega328P's timer 1 (Uno, Nano): this board has no such timer. On the ESP32 use timerBegin() and timerAlarm()", pos);
+  if (!ctx.hal.register?.("TCCR1B"))
+    ctx.error(`TimerOne drives the ATmega328P's timer 1 (Uno, Nano)${(ctx.hal.arch ?? "avr") === "avr" ? `: the simulator models that chip's timers, not the ${ctx.hal.board?.mcu ?? "board"}'s` : ": this board has no such timer. On the ESP32 use timerBegin() and timerAlarm()"}`, pos);
 }
 
 function setPeriod(ctx: Ctx, us: number) {
@@ -145,7 +146,8 @@ const timerOf = (p: unknown): object | null => {
 
 /** the ESP32 core declares these; another board's build stops at the first one */
 function espOnly(name: string, ctx: Ctx, pos: Pos) {
-  if (!ctx.hal.hwTimers) ctx.error(`'${name}' was not declared in this scope: ${name}() is part of the ESP32 core. On the Uno or Nano use timer 1 (TimerOne, or its registers)`, pos);
+  const b = ctx.hal.board;
+  if (!ctx.hal.hwTimers) ctx.error(`'${name}' was not declared in this scope: ${name}() is part of the ESP32 core${!b || b.mcu === "ATmega328P" ? ". On the Uno or Nano use timer 1 (TimerOne, or its registers)" : `, which the ${b.name} does not run`}`, pos);
 }
 
 function esp(name: string, params: Parameters<typeof def>[1], ret: Parameters<typeof def>[2], cyc: number, run: (v: unknown[], ctx: Ctx, pos: Pos) => unknown, defaults: unknown[] = []): LibFn {

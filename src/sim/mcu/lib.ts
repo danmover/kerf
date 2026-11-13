@@ -320,6 +320,39 @@ function mathFn(name: string, cyc: number, fn: (...x: number[]) => number, n = 1
   return def(name, (n === 1 ? ["double"] : ["double", "double"]) as PK[], "double", cyc, (v) => fn(...(v as number[])));
 }
 
+const readResolution = def("analogReadResolution", ["int"], "void", 20, ([bits], c) => c.hal.readResolution?.(bits));
+
+/** analogWriteFrequency() and analogWriteResolution(): per pin on the ESP32 core 3.x, for every pin on the RP2040 and STM32 cores. */
+function pwmSetter(name: string, what: "hz" | "bits"): LibFn {
+  const perPin = def(name, ["u8", "ulong"], "void", 400, ([p, v], c) => {
+    c.hal.pwmAttach?.(p, what === "hz" ? v : -1, what === "bits" ? v : -1, name);
+  });
+  const all = corePwm(name, what, ["rp2040", "stm32"]);
+  return (args, ctx, pos) => {
+    const arch = ctx.hal.arch ?? "avr";
+    if (arch === "esp32") {
+      if (args.length === 1) ctx.error(`${name}(value) is the RP2040 and STM32 cores' call: the ESP32 core 3.x takes ${name}(pin, value), one pin at a time`, pos);
+      return perPin(args, ctx, pos);
+    }
+    if (args.length === 2 && arch !== "avr") ctx.error(`${name}(pin, value) is the ESP32 core's call: the ${ctx.hal.board?.name ?? "board"}'s core takes ${name}(value), for every pin at once`, pos);
+    return all(args, ctx, pos);
+  };
+}
+
+/** A PWM setting the RP2040 and STM32 cores make for every pin at once; the other cores do not declare it. */
+function corePwm(name: string, what: "hz" | "bits" | "range", arches: string[]): LibFn {
+  const d = def(name, ["ulong"], "void", 200, ([v], c) => c.hal.pwmGlobal?.(what, v));
+  return (args, ctx, pos) => {
+    const arch = ctx.hal.arch ?? "avr";
+    if (!arches.includes(arch))
+      ctx.error(
+        `'${name}' was not declared in this scope: ${arch === "avr" ? "the AVR core's analogWrite() is 8 bits at its timers' own rates (set a timer's registers, or use TimerOne, for others)" : `${name}() is part of the ${arches.includes("stm32") ? "RP2040 and STM32 cores" : "RP2040 core"}`}`,
+        pos,
+      );
+    return d(args, ctx, pos);
+  };
+}
+
 function randomNext(s: LibState): number {
   // avr-libc random(): Park-Miller minimal standard
   let x = s.seed;
@@ -359,11 +392,18 @@ const libFuncs: Record<string, LibFn> = {
     c.hal.pinMode(p, 0);
     return 1;
   }),
-  analogWriteFrequency: def("analogWriteFrequency", ["u8", "ulong"], "void", 400, ([p, hz], c) => {
-    c.hal.pwmAttach?.(p, hz, -1, "analogWriteFrequency");
-  }),
-  analogWriteResolution: def("analogWriteResolution", ["u8", "u8"], "void", 400, ([p, bits], c) => {
-    c.hal.pwmAttach?.(p, -1, bits, "analogWriteResolution");
+  analogWriteFrequency: pwmSetter("analogWriteFrequency", "hz"),
+  analogWriteResolution: pwmSetter("analogWriteResolution", "bits"),
+  // arduino-pico's own names for the PWM rate and full scale
+  analogWriteFreq: corePwm("analogWriteFreq", "hz", ["rp2040"]),
+  analogWriteRange: corePwm("analogWriteRange", "range", ["rp2040"]),
+  analogReadResolution: (args, ctx, pos) => {
+    if ((ctx.hal.arch ?? "avr") === "avr") ctx.error("'analogReadResolution' was not declared in this scope: the AVR core's analogRead() is always 10 bits", pos);
+    return readResolution(args, ctx, pos);
+  },
+  // avr/power.h: Adafruit's Trinket sketches set the clock divider to 1 when they are built for 16 MHz
+  clock_prescale_set: def("clock_prescale_set", ["u8"], "void", 4, ([d], c, pos) => {
+    if (d) c.fault(`clock_prescale_set(clock_div_${2 ** d}): the simulator runs the chip at the board's ${c.hal.fcpu / 1e6} MHz and does not divide its clock`, pos);
   }),
   millis: def("millis", [], "ulong", 30, (_v, c) => c.hal.millis()),
   micros: def("micros", [], "ulong", 40, (_v, c) => c.hal.micros()),
@@ -1450,7 +1490,7 @@ const btSerial: LibClass = {
 };
 
 export const LIB_FUNCS: Record<string, LibFn> = dict({ ...libFuncs, ...espTimerFuncs, SPISettings: spiSettingsFn, ...FASTLED_FUNCS });
-export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Serial1: serialObject(1), Serial2: serialObject(2), Wire: wire, EEPROM: eeprom, Timer1: timerOne, SPI: spiObject, SD: sdObject, ...FASTLED_OBJECTS });
+export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Serial1: serialObject(1), Serial2: serialObject(2), Serial3: serialObject(3), Wire: wire, EEPROM: eeprom, Timer1: timerOne, SPI: spiObject, SD: sdObject, ...FASTLED_OBJECTS });
 export const LIB_CLASSES: Record<string, LibClass> = dict({
   Servo: servo,
   Adafruit_NeoPixel: neoPixel,

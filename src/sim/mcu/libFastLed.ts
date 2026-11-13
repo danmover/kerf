@@ -424,7 +424,7 @@ const elapsed = (unit: number, now: number, prev: number) => (unit === 0 ? (now 
 // ---------- arguments ----------
 
 /** cycles on the chip: an AVR does this 8-bit maths in a few instructions each; the ESP32 in about half */
-const cy = (ctx: Ctx, avr: number) => (ctx.hal.arch === "esp32" ? Math.ceil(avr / 2) : avr);
+const cy = (ctx: Ctx, avr: number) => ((ctx.hal.arch ?? "avr") !== "avr" ? Math.ceil(avr / 2) : avr);
 
 function fastLedType(ctx: Ctx, name: string, pos: Pos): CType {
   const t = ctx.structType?.(name);
@@ -948,7 +948,7 @@ function addLeds(args: C[], ctx: Ctx, pos: Pos): C {
       hz = targs[4] ?? chip.hz;
     }
     // hardware SPI tops out at half the CPU clock (8 MHz on a 16 MHz AVR); FastLED's bit-banged SPI at about 2 MHz there
-    const top = ctx.hal.arch === "esp32" ? (hwSpi ? 40e6 : 8e6) : hwSpi ? ctx.hal.fcpu / 2 : 2e6;
+    const top = (ctx.hal.arch ?? "avr") !== "avr" ? (hwSpi ? Math.min(40e6, ctx.hal.fcpu / 2) : 8e6) : hwSpi ? ctx.hal.fcpu / 2 : 2e6;
     hz = Math.max(1, Math.min(hz, top));
   }
   if (!ORDER_NAME.has(order)) return ctx.error("The colour order must be one of RGB, RBG, GRB, GBR, BRG or BGR", pos);
@@ -1636,7 +1636,7 @@ const easeQuad = (ctx: Ctx, i: number) => {
   i &= 255;
   let j = i & 0x80 ? 255 - i : i;
   // the AVR's assembly keeps one more bit of the square than the C version
-  if (ctx.hal.arch !== "esp32") j = ((j * (j + 1)) >> 7) & 255;
+  if ((ctx.hal.arch ?? "avr") === "avr") j = ((j * (j + 1)) >> 7) & 255;
   else j = (scale8(j, j) << 1) & 255;
   return i & 0x80 ? 255 - j : j;
 };

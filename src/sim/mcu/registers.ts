@@ -31,7 +31,9 @@ export const AVR_REGISTERS = new Set([
 ]);
 
 export const UNMODELLED_REGISTER = (name: string, mcu: string) =>
-  `${name} is an ${mcu} register the simulator does not model yet. It models the ports (PORTx, DDRx, PINx), timers 0, 1 and 2 (TCCRnA/B, TCNTn, OCRnA/B, ICR1, TIMSKn, TIFRn), the external and pin-change interrupts (EICRA, EIMSK, EIFR, PCICR, PCIFR, PCMSKn), the ADC (ADMUX, ADCSRA, ADCSRB, ADCL, ADCH, ADC, DIDR0), the I2C clock (TWBR, TWSR) and SREG; use the Arduino functions (SPI.transfer, Serial) for the rest`;
+  mcu !== "ATmega328P"
+    ? `${name} is an ${mcu} register the simulator does not model: it models the ATmega328P's (Uno, Nano), and SREG on every AVR. Use the Arduino functions (digitalWrite, analogRead, Serial, SPI.transfer) on the ${mcu}`
+    : `${name} is an ${mcu} register the simulator does not model yet. It models the ports (PORTx, DDRx, PINx), timers 0, 1 and 2 (TCCRnA/B, TCNTn, OCRnA/B, ICR1, TIMSKn, TIFRn), the external and pin-change interrupts (EICRA, EIMSK, EIFR, PCICR, PCIFR, PCMSKn), the ADC (ADMUX, ADCSRA, ADCSRB, ADCL, ADCH, ADC, DIDR0), the I2C clock (TWBR, TWSR) and SREG; use the Arduino functions (SPI.transfer, Serial) for the rest`;
 
 /** Interrupt vectors the board runs when the firmware defines them with ISR(). */
 export const MODELLED_VECTORS = ["ADC_vect"];

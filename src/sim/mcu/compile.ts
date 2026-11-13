@@ -947,7 +947,10 @@ class Compiler {
   /** A register of the chip's peripherals (ADCSRA, SREG): every read and write goes to the board. */
   ioRegister(name: string, e: Pos): C {
     const r = this.hal.register?.(name);
-    if (!r) return this.fail(UNMODELLED_REGISTER(name, "ATmega328P"), e);
+    if (!r) {
+      const b = this.hal.board;
+      return this.fail(b && (b.arch ?? "avr") !== "avr" ? `'${name}' was not declared in this scope: it is an AVR register, and the ${b.name}'s ${b.mcu} has none` : UNMODELLED_REGISTER(name, b?.mcu ?? "ATmega328P"), e);
+    }
     const t = intType(r.bits, false, r.bits === 8 ? "uint8_t" : "uint16_t");
     const mask = r.bits === 8 ? 0xff : 0xffff;
     const cell = new Proxy([] as unknown[], {

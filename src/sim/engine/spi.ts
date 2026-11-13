@@ -29,8 +29,8 @@ export class SpiBus implements SpiPort {
   private said = new Set<string>();
 
   constructor(private h: SimHal) {
-    // the AVR core's SPI starts at F_CPU/4; the ESP32's SPI.begin() at 1 MHz
-    this.hz = h.board.arch === "esp32" ? 1e6 : h.fcpu / 4;
+    // the AVR core's SPI starts at F_CPU/4; the ESP32's SPI.begin() at 1 MHz, the RP2040's and STM32's at SPISettings()' 4 MHz
+    this.hz = h.board.arch === "esp32" ? 1e6 : (h.board.arch ?? "avr") === "avr" ? h.fcpu / 4 : 4e6;
   }
 
   private warn(msg: string) {
@@ -41,6 +41,10 @@ export class SpiBus implements SpiPort {
 
   private get esp() {
     return this.h.board.arch === "esp32";
+  }
+
+  private get avr() {
+    return (this.h.board.arch ?? "avr") === "avr";
   }
 
   get pins() {
@@ -59,14 +63,14 @@ export class SpiBus implements SpiPort {
     const h = this.h;
     const p = h.board.spi;
     if (!p) return this.warn(`SPI.begin(): the ${h.board.name} has no SPI pins the simulator knows`);
-    if (!this.esp) {
+    if (this.avr) {
       // as the AVR core does: SS high (its pull-up) before it becomes an output, so nothing is selected by it
       if (h.mode[p.ss] !== 1) h.digitalWrite(p.ss, 1);
       h.pinMode(p.ss, 1);
     }
     h.pinMode(p.sck, 1);
     h.pinMode(p.mosi, 1);
-    if (this.esp) h.pinMode(p.miso, 0);
+    if (!this.avr) h.pinMode(p.miso, 0);
     this.on = true;
   }
 
@@ -81,6 +85,11 @@ export class SpiBus implements SpiPort {
     if (this.esp) {
       // the ESP32 divides its 80 MHz APB clock by a whole number
       this.hz = 80e6 / Math.max(1, Math.ceil(80e6 / hz - 1e-9));
+      return;
+    }
+    if (this.h.board.arch === "rp2040") {
+      // the RP2040's SPI divides its clock by a whole number, 2 at the least
+      this.hz = this.h.fcpu / Math.max(2, Math.ceil(this.h.fcpu / hz - 1e-9));
       return;
     }
     // the AVR's SPISettings: the fastest of F_CPU/2 ... F_CPU/128 at or below the clock asked for
@@ -120,7 +129,7 @@ export class SpiBus implements SpiPort {
    */
   private cycles(n: number, calls: number): number {
     const per = (8 * this.h.fcpu) / this.hz;
-    return n * (per + (this.esp ? 0 : 4)) + calls * (this.esp ? this.h.fcpu * 1e-6 : 10);
+    return n * (per + (this.avr ? 4 : 0)) + calls * (this.avr ? 10 : this.h.fcpu * 1e-6);
   }
 
   private spendCycles(c: number) {
@@ -137,9 +146,9 @@ export class SpiBus implements SpiPort {
       return out.map(() => 0);
     }
     const p = h.board.spi;
-    if (!this.esp && p && h.mode[p.ss] !== 1 && h.level(p.ss) === 0) {
-      // the ATmega328P's SPI turns slave when SS is a low input, and the transfer never finishes
-      this.warn(`SS (pin ${p.ss}) is an input reading low: the ATmega328P's SPI drops out of master mode, so it stops sending. Keep pin ${p.ss} an output, even when another pin is the chip select`);
+    if (this.avr && p && h.mode[p.ss] !== 1 && h.level(p.ss) === 0) {
+      // the AVR's SPI turns slave when SS is a low input, and the transfer never finishes
+      this.warn(`SS (pin ${p.ss}) is an input reading low: the ${h.board.mcu}'s SPI drops out of master mode, so it stops sending. Keep pin ${p.ss} an output, even when another pin is the chip select`);
       this.spendCycles(this.cycles(out.length, 1));
       return out.map(() => 0);
     }
