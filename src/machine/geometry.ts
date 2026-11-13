@@ -163,6 +163,47 @@ function boxLook(style: NonNullable<CatalogPart["geom"]["style"]>, p: CatalogPar
         ],
       };
     }
+    // an inline blade fuse holder with screw terminals: a low base with a wire port in each end and a terminal
+    // screw sunk in its top beside it, and the blade fuse standing in the middle (in its rating's colour)
+    case "fuse_blade": {
+      const hb = h * 0.6;
+      const port = Math.min(dd, hb) * 0.42;
+      const sx = w / 2 - Math.min(9, w * 0.15);
+      const fw = Math.min(19.1, w * 0.4);
+      const ft = Math.min(5.2, dd * 0.3);
+      const screws: ShapeRecipe[] = [-sx, sx].map((x): ShapeRecipe => ({ t: "cyl", d: 5.4, h: 1.2, at: [x, 0, hb - 1.6], dir: ZP }));
+      return {
+        base: box(w, dd, hb, Z0, r),
+        cuts: [
+          { t: "hole", d: port, depth: w * 0.16, at: [-w / 2, 0, hb * 0.4], dir: XP },
+          { t: "hole", d: port, depth: w * 0.16, at: [w / 2, 0, hb * 0.4], dir: XN },
+          ...[-sx, sx].map((x): ShapeRecipe => ({ t: "hole", d: 6.6, depth: 1.6, at: [x, 0, hb], dir: ZN })),
+        ],
+        color: g.color ?? "#1b1f25",
+        solids: [
+          solid("screws", `${p.name} terminal screws`, one({ t: "union", shapes: screws }), "#c9ced6", "Steel"),
+          solid("blade", `${p.name} blade fuse`, one(box(fw, ft, h - hb, [0, 0, hb], 0.8)), g.color2 ?? "#3fae5a", "PA66"),
+        ],
+      };
+    }
+    // one way of a nylon terminal strip: the body with a wire port in each end (Y) and a screw tower over each,
+    // the two brass screws sunk in the towers
+    case "terminal_way": {
+      const hb = h * 0.62;
+      const tw = Math.min(w * 0.72, 9);
+      const ty = dd / 2 - dd * 0.27;
+      const port = Math.min(w * 0.45, hb * 0.6);
+      const towers: ShapeRecipe[] = [-ty, ty].map((y): ShapeRecipe => ({ t: "cyl", d: tw, h: h - hb, at: [0, y, hb], dir: ZP }));
+      return {
+        base: { t: "union", shapes: [box(w, dd, hb, Z0, r), ...towers] },
+        cuts: [
+          { t: "hole", d: port, depth: dd * 0.3, at: [0, -dd / 2, hb * 0.42], dir: YP },
+          { t: "hole", d: port, depth: dd * 0.3, at: [0, dd / 2, hb * 0.42], dir: [0, -1, 0] },
+          ...[-ty, ty].map((y): ShapeRecipe => ({ t: "hole", d: tw * 0.62, depth: (h - hb) * 0.5, at: [0, y, h], dir: ZN })),
+        ],
+        solids: [solid("screws", `${p.name} screws`, one({ t: "union", shapes: [-ty, ty].map((y): ShapeRecipe => ({ t: "cyl", d: tw * 0.58, h: 1.2, at: [0, y, h - (h - hb) * 0.5], dir: ZP })) }), g.color2 ?? "#b9975b", "Brass")],
+      };
+    }
     // a mated XT-series pair: the female housing below, the male above it on a slightly smaller body, the
     // polarity chamfers on the +Y corners of both
     case "xt": {

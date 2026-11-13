@@ -249,10 +249,10 @@ export interface GeomSpec {
   material?: string;
   /**
    * box class only: draw the details of a known kind of part inside the same
-   * envelope (lipo, esc, fuse_maxi, xt, load_cell, wago), so mount and clash checks
+   * envelope (lipo, esc, fuse_maxi, fuse_blade, terminal_way, xt, load_cell, wago), so mount and clash checks
    * see the box they always did
    */
-  style?: "lipo" | "esc" | "fuse_maxi" | "xt" | "load_cell" | "wago";
+  style?: "lipo" | "esc" | "fuse_maxi" | "fuse_blade" | "terminal_way" | "xt" | "load_cell" | "wago";
   /**
    * servo class only: how the real case looks. mid is the middle case's colour (with the tabs; an alloy
    * middle takes mid_material), label and text the sticker on its sides, spline the output shaft's colour

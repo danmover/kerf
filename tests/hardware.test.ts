@@ -327,7 +327,7 @@ describe("electronics drawn as the real part", () => {
 
   it("details a LiPo, an ESC, a fuse holder, an XT pair, a lever connector and a load cell inside the same envelope", () => {
     const styled = CATALOG.filter((p) => p.geom.g === "box" && p.geom.style);
-    expect(new Set(styled.map((p) => p.geom.style))).toEqual(new Set(["lipo", "esc", "fuse_maxi", "xt", "wago", "load_cell"]));
+    expect(new Set(styled.map((p) => p.geom.style))).toEqual(new Set(["lipo", "esc", "fuse_maxi", "fuse_blade", "terminal_way", "xt", "wago", "load_cell"]));
     for (const p of styled) {
       const { w, d, h } = p.geom.dims;
       const g = buildGeometry(p, {});

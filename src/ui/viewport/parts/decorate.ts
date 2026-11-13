@@ -216,6 +216,23 @@ function planFor(p: EvalPart, c: CatalogPart): Plan | null {
           },
         };
       }
+      case "fuse_blade": {
+        // the fuse's rating, as it is moulded into the top of the blade
+        const fw = Math.min(19.1, w * 0.4);
+        const ft = Math.min(5.2, dd * 0.3);
+        const amps = num(c.specs.rating_a, 0);
+        const k = `blade:${amps}`;
+        return {
+          key: `${k}:${w}x${dd}x${h}`,
+          hides: [],
+          build: (tex) => {
+            const o = new THREE.Group();
+            const m = printMat(tex(k, () => moulded(12, 5, [amps ? String(amps) : "ATO"], "#eef7f0")), true, { roughness: 0.5, clearcoat: 0.2 });
+            o.add(labelPlane("+z", 0, 0, h + LIFT, Math.min(fw * 0.55, 10), Math.min(ft * 0.85, 4.4), m));
+            return o;
+          },
+        };
+      }
       case "fuse_maxi": {
         const boot = Math.min(5, w * 0.12);
         const L = w - 2 * boot;

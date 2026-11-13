@@ -336,6 +336,16 @@ export const PLUGS: Record<string, PlugTable> = {
     IN: { kind: "lead", at: [-23, 0, 13], out: NX, row: Y, ways: 1 },
     OUT: { kind: "lead", at: [23, 0, 13], out: X, row: Y, ways: 1 },
   },
+  // inline blade fuse holder with a screw terminal in each end (Jaycar SZ2044): a stripped wire goes straight in
+  fuse_holder_blade_screw: {
+    IN: { kind: "bare", at: [-31, 0, 8], out: NX, row: Y, ways: 1 },
+    OUT: { kind: "bare", at: [31, 0, 8], out: X, row: Y, ways: 1 },
+  },
+  // one way of a terminal strip: a wire in each end of its brass tube
+  terminal_strip_30a_way: {
+    A: { kind: "bare", at: [0, -11, 7], out: NY, row: X, ways: 1 },
+    B: { kind: "bare", at: [0, 11, 7], out: Y, row: X, ways: 1 },
+  },
   // ATC blade fuse holder with a screw terminal at each end
   fuse_holder_atc: {
     IN: { kind: "ring", at: [-17, 0, 22], out: NX, row: Y, ways: 1 },
