@@ -22,11 +22,13 @@ import {
 } from "./ctypes";
 import { CError } from "./lex";
 import type { C, Ctx, Ev, Frame, LV } from "./ir";
-import { LIB_FUNCS, LIB_OBJECTS, LIB_CLASSES, newClassInstance, newLibState, resetLibState } from "./lib";
+import { LIB_FUNCS, LIB_OBJECTS, LIB_CLASSES, LIB_SCOPED, LIB_STRUCTS, newClassInstance, newLibState, resetLibState } from "./lib";
+import type { LibStruct } from "./libBase";
 import { castView, needsView } from "./mem";
 import { AVR_REGISTERS, UNMODELLED_REGISTER } from "./registers";
 import type { FnRef, Hal, Ptr } from "./vm";
 import { Halt } from "./vm";
+import type { DebugResult, FirmwareDebugger, SiteScope } from "./debug";
 
 const NORMAL = 0;
 const BREAK = 1;
@@ -89,6 +91,8 @@ export interface Firmware {
   staticRam: number;
   /** run the global initialisers (power-up) */
   reset(): void;
+  /** what the debugger recorded, when the firmware was compiled with one */
+  debug?: () => DebugResult;
 }
 
 const wrapInt = (t: CType): ((x: number) => number) => {
@@ -107,8 +111,8 @@ const wrapInt = (t: CType): ((x: number) => number) => {
   }
 };
 
-export function compileFirmware(prog: Program, T: Types, hal: Hal): Firmware {
-  return new Compiler(prog, T, hal).build();
+export function compileFirmware(prog: Program, T: Types, hal: Hal, dbg?: FirmwareDebugger): Firmware {
+  return new Compiler(prog, T, hal, dbg).build();
 }
 
 class Compiler {
@@ -129,6 +133,7 @@ class Compiler {
     private prog: Program,
     private T: Types,
     private hal: Hal,
+    private dbg?: FirmwareDebugger,
   ) {
     const self = this;
     this.ctx = {
@@ -136,6 +141,10 @@ class Compiler {
       abi: T.abi,
       hal,
       lib: newLibState(),
+      structType: (name) => {
+        const st = prog.structs?.get(name);
+        return st?.lib ? st : undefined;
+      },
       error(msg: string, pos: Pos): never {
         throw new CError(msg, pos.file, pos.line);
       },
@@ -164,6 +173,7 @@ class Compiler {
       this.ginit.push({ slot, make: this.initMaker(g) });
     }
     for (const fo of this.fns.values()) if (fo.def.body) this.compileFn(fo);
+    this.dbg?.bind(this.G, this.globalsInfo);
     // statics found while compiling functions were added to the globals
     for (const info of this.globalsInfo.values()) void info;
     this.staticRam = ram + this.staticExtra;
@@ -179,6 +189,7 @@ class Compiler {
       read: (name) => this.readGlobal(name),
       globals: this.globalsInfo,
       staticRam: this.staticRam,
+      ...(this.dbg ? { debug: () => this.dbg!.result() } : {}),
       reset: () => {
         for (let i = 0; i < this.G.length; i++) this.G[i] = undefined;
         resetLibState(this.ctx.lib);
@@ -222,11 +233,14 @@ class Compiler {
     this.stackBytes += fo.frameBytes;
     hal.stack(this.stackBytes);
     if (frame.length < fo.nslots) frame.length = fo.nslots;
+    const dbg = this.dbg;
+    dbg?.enter(fo.name, frame);
     try {
       fo.body!(frame);
     } finally {
       this.depth--;
       this.stackBytes -= fo.frameBytes;
+      dbg?.leave();
     }
     hal.cyc += CYC.ret;
     const r = this.ret;
@@ -252,7 +266,7 @@ class Compiler {
       case "fn":
         return null;
       case "class":
-        return newClassInstance(t.name);
+        return newClassInstance(t.name, this.ctx);
       default:
         return 0;
     }
@@ -284,6 +298,12 @@ class Compiler {
       const make = LIB_CLASSES[t.name]?.construct;
       // Type name = Type(arguments); builds it the same way
       if (init.k === "call" && init.fn.k === "id" && init.fn.name === t.name && make) return make(init.args.map((x) => this.expr(x)), this.ctx, init).ev;
+      // a copy of another one (File f = SD.open(...)): a library object is a handle, so both name the same thing
+      if (init.k !== "init") {
+        const c = this.rvalue(this.expr(init));
+        const ct = strip(c.t);
+        if (ct.k === "class" && ct.name === t.name) return c.ev;
+      }
       if (init.k !== "init" || !make) throw new CError(`${t.name} cannot be set up that way here: declare it as ${t.name} name; or ${t.name} name(arguments);`, init.file, init.line);
       return make(init.items.map((x) => this.expr(x)), this.ctx, init).ev;
     }
@@ -389,7 +409,47 @@ class Compiler {
     };
   }
 
+  /** A statement; with a debugger, it hears of the statement before it runs. */
   stmt(s: Stmt): St {
+    const dbg = this.dbg;
+    if (!dbg || !this.cur || s.k === "block" || s.k === "empty" || s.k === "case" || s.k === "default") return this.stmtCore(s);
+    // the scope before the statement: a declaration's own name isn't set yet when it stops there
+    const si = dbg.site(s, this.cur.name, this.siteScope());
+    const inner = this.stmtCore(s);
+    return (f) => {
+      dbg.at(si, f);
+      return inner(f);
+    };
+  }
+
+  /** The variables in scope here, and a way to compile an expression here later (the debugger's watches). */
+  siteScope(): SiteScope {
+    const snap = this.scopes.map((m) => new Map(m));
+    const fo = this.cur;
+    const seen = new Map<string, SiteScope["vars"][number]>();
+    for (const m of snap)
+      for (const [name, sym] of m) {
+        if (sym.k === "l") seen.set(name, { name, slot: sym.slot, t: sym.t, global: false });
+        else if (sym.k === "g") seen.set(name, { name, slot: sym.slot, t: sym.t, global: true });
+      }
+    return {
+      vars: [...seen.values()],
+      compile: (e) => {
+        const saved = { scopes: this.scopes, cur: this.cur };
+        this.scopes = snap;
+        this.cur = fo;
+        try {
+          const c = this.rvalue(this.expr(e));
+          return { ev: c.ev, t: c.t };
+        } finally {
+          this.scopes = saved.scopes;
+          this.cur = saved.cur;
+        }
+      },
+    };
+  }
+
+  stmtCore(s: Stmt): St {
     const hal = this.hal;
     switch (s.k) {
       case "block":
@@ -652,10 +712,19 @@ class Compiler {
 
   /** Condition: anything scalar, tested against zero. */
   cond(e: Expr): C {
-    const c = this.rvalue(this.expr(e));
+    const c = this.truthOf(this.rvalue(this.expr(e)));
     const t = strip(c.t);
     if (!isArith(t) && t.k !== "ptr") this.fail(`A condition needs a number or pointer, not ${typeName(t)}`, e);
     return c;
+  }
+
+  /** A library object tested as a condition (if (file), !file) goes through its operator bool. */
+  truthOf(c: C): C {
+    const t = strip(c.t);
+    const truthy = t.k === "class" ? LIB_CLASSES[t.name]?.truthy : this.libStruct(t)?.truthy;
+    if (!truthy) return c;
+    const ev = c.lv ? c.lv.get : c.ev;
+    return { t: BOOL, ev: (f) => (truthy(ev(f)) ? 1 : 0), cost: c.cost + 4, pos: c.pos };
   }
 
   /** Arrays decay to pointers, references read through, functions become function references. */
@@ -669,10 +738,21 @@ class Compiler {
     return c;
   }
 
-  convertTo(c: C, to: CType, pos: Pos): C {
+  /** the library's C++ for a struct its header declares (FastLED's CRGB): operators, conversions, member functions */
+  libStruct(t: CType): LibStruct | undefined {
+    const s = strip(t);
+    return s.k === "struct" && s.lib ? LIB_STRUCTS[s.name] : undefined;
+  }
+
+  convertTo(c: C, to: CType, pos: Pos, explicit = false): C {
     const from = strip(c.t);
     to = strip(to);
     if (to.k === "void") return { ...c, t: VOID };
+    // a library struct's conversion operators: (uint32_t)leds[i], a palette passed as CRGB*
+    if (from.k === "struct" && !(to.k === "struct" && to.name === from.name)) {
+      const out = this.libStruct(from)?.to?.(c, to, explicit, this.ctx, pos);
+      if (out) return out;
+    }
     if (isArith(to)) {
       if (from.k === "ptr" && to.k === "bool") {
         const ev = c.ev;
@@ -696,8 +776,11 @@ class Compiler {
       this.fail(`Cannot use ${typeName(from)} as a pointer`, pos);
     }
     if (to.k === "struct") {
-      if (from.k !== "struct" || from.name !== to.name) this.fail(`Cannot use ${typeName(from)} as ${typeName(to)}`, pos);
-      return c;
+      if (from.k === "struct" && from.name === to.name) return c;
+      // a library's converting constructor: CRGB c = CRGB::Red; leds[i] = CHSV(h, 255, 255);
+      const made = this.libStruct(to)?.from?.(c, to, this.ctx, pos);
+      if (made) return made;
+      this.fail(`Cannot use ${typeName(from)} as ${typeName(to)}`, pos);
     }
     if (to.k === "fn") return c;
     if (to.k === "class") {
@@ -778,7 +861,7 @@ class Compiler {
         const from = strip(a.t);
         if (to.k === "ptr" && isIntegral(from) && a.cv !== 0) this.fail("Casting a number to a pointer is not supported", e);
         if (to.k === "ptr" && from.k === "ptr") return this.retarget(a, from.to, to);
-        return this.convertTo(a, to, e);
+        return this.convertTo(a, to, e, true);
       }
       case "sizeofT":
         return this.numConst(sizeOf(e.type, this.T.abi), this.T.sizeT, e);
@@ -802,6 +885,12 @@ class Compiler {
     if (name === "NULL") return { t: { k: "ptr", to: VOID }, ev: () => null, cost: 0, cv: 0, pos: e };
     const s = this.lookup(name);
     if (!s) {
+      if (name.includes("::")) {
+        const scoped = LIB_SCOPED[name];
+        if (scoped) return scoped([], this.ctx, e);
+        const [cls, member] = name.split("::");
+        return this.fail(LIB_CLASSES[cls] || LIB_OBJECTS[cls] ? `${cls} has no ${member} in the simulator` : `"${name}" is not declared`, e);
+      }
       if (AVR_REGISTERS.has(name)) return this.ioRegister(name, e);
       const asValue = LIB_OBJECTS[name]?.["@value"];
       if (asValue) return asValue([], this.ctx, e);
@@ -858,7 +947,10 @@ class Compiler {
   /** A register of the chip's peripherals (ADCSRA, SREG): every read and write goes to the board. */
   ioRegister(name: string, e: Pos): C {
     const r = this.hal.register?.(name);
-    if (!r) return this.fail(UNMODELLED_REGISTER(name, "ATmega328P"), e);
+    if (!r) {
+      const b = this.hal.board;
+      return this.fail(b && (b.arch ?? "avr") !== "avr" ? `'${name}' was not declared in this scope: it is an AVR register, and the ${b.name}'s ${b.mcu} has none` : UNMODELLED_REGISTER(name, b?.mcu ?? "ATmega328P"), e);
+    }
     const t = intType(r.bits, false, r.bits === 8 ? "uint8_t" : "uint16_t");
     const mask = r.bits === 8 ? 0xff : 0xffff;
     const cell = new Proxy([] as unknown[], {
@@ -876,6 +968,14 @@ class Compiler {
     const ta = strip(a.t);
     const tb = strip(b.t);
     const T = this.T;
+    // a library struct's operators: leds[i] + CRGB(10, 0, 0), leds[i] == CRGB::Black
+    const sa = this.libStruct(ta);
+    const sb = this.libStruct(tb);
+    if (sa || sb) {
+      const r = sa?.binary?.(op, a, b, this.ctx, pos) ?? (sb !== sa ? sb?.binary?.(op, a, b, this.ctx, pos) : null);
+      if (r) return r;
+      this.fail(`Cannot use ${op} on ${typeName(ta)} and ${typeName(tb)}`, pos);
+    }
     // pointers
     if (ta.k === "ptr" || tb.k === "ptr") return this.pointerOp(op, a, b, pos);
     if (!isArith(ta) || !isArith(tb)) this.fail(`Cannot use ${op} on ${typeName(ta)} and ${typeName(tb)}`, pos);
@@ -1073,7 +1173,8 @@ class Compiler {
         pos,
       };
     }
-    const same = (p: Ptr | null, q: Ptr | null) => (p === null || q === null ? p === q : p.m === q.m && p.i === q.i);
+    // a function pointer holds the function itself
+    const same = (p: Ptr | null, q: Ptr | null) => (p === null || q === null || !p.m || !q.m ? p === q : p.m === q.m && p.i === q.i);
     const isNull = (c: C) => c.cv === 0;
     if (op === "==" || op === "!=") {
       const eq = op === "==";
@@ -1093,6 +1194,11 @@ class Compiler {
     if (e.op === "&") {
       const a = this.expr(e.a);
       if (a.t.k === "fn") return a;
+      // a library object handed back by a call (&FastLED.addLeds<...>(...)) is a handle: a pointer to it holds it
+      if (!a.lv && strip(a.t).k === "class") {
+        const ev = a.ev;
+        return { t: { k: "ptr", to: strip(a.t) }, ev: (f) => ({ m: [ev(f)], i: 0 }), cost: a.cost, pos: e };
+      }
       if (!a.lv) this.fail("& needs a variable", e);
       return { t: { k: "ptr", to: strip(a.t) }, ev: a.lv.ptr, cost: a.cost, pos: e };
     }
@@ -1100,6 +1206,8 @@ class Compiler {
       const a = this.rvalue(this.expr(e.a));
       const t = strip(a.t);
       if (t.k !== "ptr") this.fail(`* needs a pointer, not ${typeName(t)}`, e);
+      // (*fn)(): a function pointer's value is the function
+      if (strip(t.to).k === "fn") return { t: strip(t.to), ev: a.ev, cost: a.cost, pos: e };
       const P = a.ev;
       const hal = this.hal;
       const nul = () => hal.fault("Read through a NULL pointer", e.file, e.line);
@@ -1123,13 +1231,19 @@ class Compiler {
       return { t: t.to, ev: lv.get, lv, cost: a.cost + 4, pos: e };
     }
     if (e.op === "++" || e.op === "--") return this.incdec(this.expr(e.a), e.op === "++" ? 1 : -1, false, e);
-    const a = this.rvalue(this.expr(e.a));
+    const a = e.op === "!" ? this.truthOf(this.rvalue(this.expr(e.a))) : this.rvalue(this.expr(e.a));
     const t = strip(a.t);
     if (e.op === "!") {
       if (!isArith(t) && t.k !== "ptr") this.fail(`! needs a number or pointer, not ${typeName(t)}`, e);
       const A = a.ev;
       if (a.cv !== undefined) return this.numConst(a.cv ? 0 : 1, BOOL, e);
       return { t: BOOL, ev: (f) => (A(f) ? 0 : 1), cost: a.cost + 1, pos: e };
+    }
+    const ls = this.libStruct(t);
+    if (ls) {
+      const r = ls.unary?.(e.op, a, this.ctx, e);
+      if (!r) this.fail(`Cannot use ${e.op} on ${typeName(t)}`, e);
+      return r;
     }
     if (!isArith(t)) this.fail(`${e.op} needs a number, not ${typeName(t)}`, e);
     const pt = t.k === "float" ? t : promote(t, T);
@@ -1180,7 +1294,11 @@ class Compiler {
     } else if (isIntegral(t)) {
       const w = wrapInt(t);
       step = (v) => w((v as number) + d);
-    } else return this.fail(`Cannot use ++ or -- on ${typeName(t)}`, pos);
+    } else {
+      const st = this.libStruct(t)?.step;
+      if (!st) return this.fail(`Cannot use ++ or -- on ${typeName(t)}`, pos);
+      step = (v) => st(v, d);
+    }
     const cost = a.cost + (t.k === "float" ? CYC.fAdd : 3);
     return {
       t,
@@ -1240,7 +1358,11 @@ class Compiler {
     const ptr = a.lv.ptr;
     let cell: Ptr = { m: [0], i: 0 };
     const current: C = { t: a.t, ev: () => cell.m[cell.i], cost: a.cost, pos: e };
-    const combined = this.convertTo(this.binary(op, current, this.expr(e.b), e), ta, e);
+    // a library struct's own compound operators, which C++ can pick differently from the plain ones (CRGB |= 5 is per byte)
+    const ls = this.libStruct(ta);
+    const own = ls?.binary?.(e.op, current, this.rvalue(this.expr(e.b)), this.ctx, e);
+    if (ls && !own) this.fail(`Cannot use ${e.op} on ${typeName(ta)}`, e);
+    const combined = this.convertTo(own ?? this.binary(op, current, this.expr(e.b), e), ta, e);
     const Cv = combined.ev;
     return {
       t: ta,
@@ -1259,12 +1381,13 @@ class Compiler {
   }
 
   index(e: Extract<Expr, { k: "idx" }>): C {
-    const a0 = this.expr(e.a);
-    if (a0.t.k === "class" || (e.a.k === "id" && LIB_OBJECTS[e.a.name] && !this.lookup(e.a.name))) {
-      const obj = e.a.k === "id" ? LIB_OBJECTS[e.a.name] : undefined;
-      if (obj?.["[]"]) return obj["[]"]([this.expr(e.i)], this.ctx, e);
-      this.fail("This object cannot be indexed", e);
-    }
+    // a library object's operator[]: FastLED[0]
+    if (e.a.k === "id" && LIB_OBJECTS[e.a.name] && !this.lookup(e.a.name) && LIB_OBJECTS[e.a.name]["[]"]) return LIB_OBJECTS[e.a.name]["[]"]([this.expr(e.i)], this.ctx, e);
+    let a0 = this.expr(e.a);
+    if (a0.t.k === "class") this.fail("This object cannot be indexed", e);
+    // a library struct's operator[]: leds[i][0] is its red, palette[k] its k-th colour
+    const ls = this.libStruct(a0.t);
+    if (ls?.index !== undefined) a0 = this.structElems(a0, ls.index, e);
     const ta = strip(a0.t);
     const ic = this.rvalue(this.expr(e.i));
     if (!isIntegral(strip(ic.t))) this.fail("An index must be a whole number", e.i);
@@ -1337,6 +1460,16 @@ class Compiler {
     return { t: tp.to, ev: lv.get, lv, cost: a.cost + i.cost + CYC.index, pos: e };
   }
 
+  /** a library struct seen as the array its operator[] indexes: its own fields ("self"), or one array field */
+  structElems(a: C, which: "self" | number, pos: Pos): C {
+    const st = strip(a.t) as Extract<CType, { k: "struct" }>;
+    if (which === "self") return { ...a, t: { k: "arr", of: st.fields[0].type, n: st.fields.length }, cv: undefined };
+    const fi = which;
+    const B = a.lv ? a.lv.get : a.ev;
+    const lv: LV | undefined = a.lv ? { get: (f) => (B(f) as unknown[])[fi], set: (f, v) => void ((B(f) as unknown[])[fi] = v), ptr: (f) => ({ m: B(f) as unknown[], i: fi }) } : undefined;
+    return { t: st.fields[fi].type, ev: (f) => (B(f) as unknown[])[fi], lv, cost: a.cost + CYC.field, pos };
+  }
+
   zeroScalar(t: CType): unknown {
     return t.k === "ptr" ? null : isArith(t) ? 0 : this.zero(t);
   }
@@ -1371,7 +1504,15 @@ class Compiler {
     }
     if (st.k === "class") this.fail(`${typeName(st)}.${e.name} must be called: ${e.name}()`, e);
     if (st.k !== "struct") this.fail(`${typeName(st)} has no field ${e.name}`, e);
-    const fi = st.fields.findIndex((x) => x.name === e.name);
+    // a library struct's other names for its fields (the union FastLED's CRGB declares: red for r, raw[] for all three)
+    const ls = this.libStruct(st);
+    const fname = ls?.alias?.[e.name] ?? e.name;
+    if (ls?.index === "self" && fname === "raw" && !st.fields.some((x) => x.name === "raw")) {
+      const raw = this.structElems({ t: st, ev: base, lv: baseLv, cost: a.cost, pos: e }, "self", e);
+      return raw;
+    }
+    if (ls?.methods?.[fname]) this.fail(`${e.name} is a function of ${st.name}: call it with ()`, e);
+    const fi = st.fields.findIndex((x) => x.name === fname);
     if (fi < 0) this.fail(`struct ${st.name} has no field "${e.name}"`, e);
     const ft = st.fields[fi].type;
     const B = base;
@@ -1393,17 +1534,48 @@ class Compiler {
     if (fn.k === "mem" && fn.a.k === "id" && LIB_OBJECTS[fn.a.name] && !this.lookup(fn.a.name)) {
       const m = LIB_OBJECTS[fn.a.name][fn.name];
       if (!m) this.fail(`The simulator's ${fn.a.name} has no ${fn.name}()`, e);
-      return m(e.args.map((x) => this.expr(x)), this.ctx, e);
+      // template arguments ride on the position the library reads: FastLED.addLeds<WS2812B, 6, GRB>
+      const at: Pos & { targs?: number[] } = fn.targs ? { file: e.file, line: e.line, targs: fn.targs } : e;
+      return m(e.args.map((x) => this.expr(x)), this.ctx, at);
     }
-    // library class instances: servo.write(90)
+    // library class instances: servo.write(90), and through a pointer: steppers[i]->run()
     if (fn.k === "mem") {
-      const obj = this.expr(fn.a);
+      let obj = this.expr(fn.a);
+      if (fn.arrow) {
+        const p = this.rvalue(obj);
+        const pt = strip(p.t);
+        if (pt.k === "ptr" && strip(pt.to).k === "class") {
+          const P = p.ev;
+          const hal = this.hal;
+          obj = {
+            t: strip(pt.to),
+            ev: (f) => {
+              const q = P(f) as Ptr | null;
+              if (!q) {
+                hal.fault("-> on a NULL pointer", e.file, e.line);
+                return {};
+              }
+              return q.m[q.i];
+            },
+            cost: p.cost + 4,
+            pos: fn,
+          };
+        }
+      }
       const ot = strip(obj.t);
       if (ot.k === "class") {
         const cls = LIB_CLASSES[ot.name];
         const m = cls?.methods[fn.name];
         if (!m) this.fail(`${ot.name} has no ${fn.name}() in the simulator`, e);
         return m(obj, e.args.map((x) => this.expr(x)), this.ctx, e);
+      }
+      // a library struct's member functions, on the value itself: leds[i].fadeToBlackBy(64), p->setHue(h)
+      const sm = this.libStruct(ot)?.methods?.[fn.name];
+      if (sm) return sm(obj, e.args.map((x) => this.expr(x)), this.ctx, e);
+      if (fn.arrow) {
+        const pt = strip(this.rvalue(obj).t);
+        const pm = pt.k === "ptr" ? this.libStruct(pt.to)?.methods?.[fn.name] : undefined;
+        if (pm) return pm(this.unary({ k: "un", op: "*", a: fn.a, file: fn.file, line: fn.line }), e.args.map((x) => this.expr(x)), this.ctx, e);
       }
     }
     if (fn.k === "id" && fn.name === "__flash_str") {
@@ -1416,7 +1588,9 @@ class Compiler {
       return b(e.args.map((x) => this.expr(x)), this.ctx, e);
     }
     const callee = this.expr(fn);
-    const ct = strip(callee.t);
+    // through a function pointer: patterns[current]();
+    const ct0 = strip(callee.t);
+    const ct = ct0.k === "ptr" && strip(ct0.to).k === "fn" ? strip(ct0.to) : ct0;
     if (ct.k !== "fn") this.fail(`${fn.k === "id" ? fn.name : "This"} is not a function`, e);
     const sym = fn.k === "id" ? this.lookup(fn.name) : undefined;
     const fo = sym?.k === "fn" ? sym.fo : undefined;

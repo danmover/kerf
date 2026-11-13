@@ -15,6 +15,10 @@ export interface Abi {
 export const AVR: Abi = { intBits: 16, ptrBytes: 2, doubleBits: 32, charSigned: true };
 /** ESP32 (Xtensa LX6): 32-bit int and pointers, a real 64-bit double */
 export const XTENSA: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: true };
+/** ARM Cortex-M (RP2040, STM32): as Xtensa, but a plain char is unsigned, as the ARM ABI says */
+export const ARM: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: false };
+/** RISC-V (ESP32-C3): a plain char is unsigned here too */
+export const RISCV: Abi = { intBits: 32, ptrBytes: 4, doubleBits: 64, charSigned: false };
 
 export interface StructField {
   name: string;
@@ -29,7 +33,8 @@ export type CType =
   | { k: "float"; bits: 32 | 64 }
   | { k: "ptr"; to: CType }
   | { k: "arr"; of: CType; n: number }
-  | { k: "struct"; name: string; fields: StructField[]; size: number; complete: boolean }
+  /** lib: declared by a library's header (FastLED's CRGB), so the library's C++ for it applies (LibStruct) */
+  | { k: "struct"; name: string; fields: StructField[]; size: number; complete: boolean; lib?: boolean }
   | { k: "enum"; name: string; base: CType }
   | { k: "fn"; ret: CType; params: CType[]; variadic?: boolean }
   | { k: "ref"; to: CType }
@@ -110,9 +115,12 @@ export function sizeOf(t: CType, abi: Abi): number {
     case "fn":
       return abi.ptrBytes;
     case "class":
-      return 4;
+      return t.name in CLASS_BYTES ? Math.round(CLASS_BYTES[t.name] * (abi.ptrBytes > 2 ? 1.5 : 1)) : 4;
   }
 }
+
+/** bytes a library object takes on the AVR (its fields as the library's header declares them) */
+const CLASS_BYTES: Record<string, number> = { File: 17, LiquidCrystal: 22, LiquidCrystal_I2C: 13, AccelStepper: 66, MultiStepper: 41 };
 
 export function typeName(t: CType): string {
   switch (t.k) {

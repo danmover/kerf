@@ -33,6 +33,7 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   // changes only what the user's view shows, never the design
   "set_view",
   "measure",
+  "mass_properties",
   "inspect_import",
   "view_reference",
   "suggest_next_steps",
@@ -41,6 +42,8 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   "view_drawing",
   // runs the app's twin headless; changes nothing
   "try_app",
+  // a firmware block's code and whether it compiles; changes nothing
+  "read_firmware",
   "process_guide",
   "compare_processes",
   "plan_manufacturing",

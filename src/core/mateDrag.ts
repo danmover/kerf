@@ -75,21 +75,23 @@ export interface MateDrag {
   point: V3;
   /** where every mated body is now (moves from where they are drawn) */
   moves: Map<string, BodyMove>;
+  /** turning joints' turns so far, counted round (so geared joints stay in step past a whole turn) */
+  coords: Map<string, number>;
 }
 
-/** Start dragging a body by the point under the pointer (as it is shown, after `moves`). */
-export function startMateDrag(model: Model, body: string, world: V3, moves?: Map<string, BodyMove>): MateDrag {
+/** Start dragging a body by the point under the pointer (as it is shown, after `moves` and `coords`). */
+export function startMateDrag(model: Model, body: string, world: V3, moves?: Map<string, BodyMove>, coords?: Map<string, number>): MateDrag {
   const now = moves ?? new Map(model.mates?.moves ?? []);
   const m = now.get(body) ?? moveIdentity(model.mates?.bodies.find((b) => b.name === body)?.c ?? [0, 0, 0]);
-  return { body, point: unmovePoint(m, world), moves: now };
+  return { body, point: unmovePoint(m, world), moves: now, coords: coords ?? new Map(moves ? [] : (model.mates?.coords ?? [])) };
 }
 
 /** Pull the grabbed point toward target, as far as the mates let it go; the parts mated to it come along. */
 export function mateDragTo(model: Model, d: MateDrag, target: V3): MateDrag {
   const m = model.mates;
   if (!m) return d;
-  const sol = solveMates(m.bodies, m.specs, { start: d.moves, drag: { body: d.body, point: d.point, target } });
-  return { ...d, moves: sol.moves };
+  const sol = solveMates(m.bodies, m.specs, { start: d.moves, drag: { body: d.body, point: d.point, target }, coords: d.coords });
+  return { ...d, moves: sol.moves, coords: sol.coords };
 }
 
 /** Each part's motion from where the design shows it, for the moves given (column-major; parts that do not move are left out). */

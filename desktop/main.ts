@@ -33,8 +33,14 @@ app.commandLine.appendSwitch("force_high_performance_gpu");
 // 3D view get its context back instead
 app.disableDomainBlockingFor3DAPIs();
 if (settings.graphics !== "auto") app.commandLine.appendSwitch("use-angle", settings.graphics);
-// CI machines have no graphics card: draw in software there rather than fail
-if (SMOKE) app.commandLine.appendSwitch("enable-unsafe-swiftshader");
+// When Chromium can't use the graphics card (a backend that fails on this card,
+// a driver it distrusts, Remote Desktop, a PC or CI machine with no card) it
+// falls back to drawing WebGL in software, which recent Chromium only allows
+// with this switch. Kerf only ever shows its own pages, so allowing it is safe,
+// and a slow 3D view beats none. The page then says it is drawing in software.
+app.commandLine.appendSwitch("enable-unsafe-swiftshader");
+// the backend Kerf switched away from because it couldn't start 3D (see kerf:graphics-failed)
+const resetFrom = process.argv.find((a) => a.startsWith("--kerf-graphics-reset="))?.split("=")[1] ?? "";
 
 if (!SMOKE && !app.requestSingleInstanceLock()) app.quit();
 
@@ -199,7 +205,21 @@ function bridge() {
       // what this launch is actually using, which differs from `graphics` until a restart
       running: app.commandLine.getSwitchValue("use-angle") || "auto",
       backends: backendsFor(process.platform),
+      resetFrom,
     };
+  });
+  // The page couldn't get hardware WebGL 2 (none at all, or only software). If
+  // that's with a backend chosen in Settings, go back to Auto and restart; the
+  // next launch is on Auto, so this happens at most once.
+  ipcMain.handle("kerf:graphics-failed", (e) => {
+    fromKerf(e);
+    const running = app.commandLine.getSwitchValue("use-angle") || "auto";
+    if (SMOKE || running === "auto") return { relaunching: false };
+    settings.graphics = "auto";
+    saveSettings(userData, settings);
+    app.relaunch({ args: [...process.argv.slice(1).filter((a) => !a.startsWith("--kerf-graphics-reset=")), `--kerf-graphics-reset=${running}`] });
+    app.quit();
+    return { relaunching: true };
   });
   ipcMain.handle("kerf:set-graphics", (e, backend: GraphicsBackend) => {
     fromKerf(e);
@@ -227,6 +247,8 @@ function bridge() {
   ipcMain.handle("kerf:claude-code-new-token", async (e) => {
     fromKerf(e);
     settings.claudeCode.token = newToken();
+    // what connected before used the old token
+    lastConnect = lastRefused = null;
     await stopClaudeCode();
     if (settings.claudeCode.enabled) await startClaudeCode();
     else saveSettings(userData, settings);
@@ -252,6 +274,9 @@ const MCP_INSTRUCTIONS =
 
 let mcp: RunningMcp | null = null;
 let mcpError = "";
+/** the last time a program connected, and the last time one was turned away, for the status in Settings */
+let lastConnect: { at: number; client: string } | null = null;
+let lastRefused: { at: number; why: "no-token" | "wrong-token" } | null = null;
 let pageReady = false;
 let nextCall = 1;
 const calls = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
@@ -285,7 +310,15 @@ async function startClaudeCode() {
   if (!cc.token) cc.token = newToken();
   mcpError = "";
   try {
-    mcp = await startMcp({ port: cc.port, token: cc.token, backend: { request: askPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() } });
+    mcp = await startMcp({
+      port: cc.port,
+      token: cc.token,
+      backend: { request: askPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() },
+      onSeen: (s) => {
+        if (s.kind === "connected") lastConnect = { at: Date.now(), client: s.client };
+        else lastRefused = { at: Date.now(), why: s.why };
+      },
+    });
     // keep the port it found, so the command Claude Code saved keeps working
     cc.port = mcp.port;
   } catch (e) {
@@ -302,7 +335,7 @@ async function stopClaudeCode() {
 
 function claudeCodeInfo() {
   const cc = settings.claudeCode;
-  return { enabled: cc.enabled, running: !!mcp, url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`, token: cc.token, error: mcpError };
+  return { enabled: cc.enabled, running: !!mcp, url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`, token: cc.token, error: mcpError, lastConnect, lastRefused };
 }
 
 // ---------- start ----------

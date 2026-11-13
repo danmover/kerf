@@ -265,6 +265,8 @@ export interface MechModel {
   follow?: string;
   /** part ids left off the machine for this run (sim.without): on no body, not drawn */
   off?: string[];
+  /** points followed through the run for motion plots: on a body, at a design-pose point (m) */
+  traces?: { name: string; body: string; at: V3 }[];
   /** what the resolver assumed (masses from materials, bearings found on an axis) */
   notes: string[];
 }

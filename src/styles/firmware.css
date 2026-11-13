@@ -1,0 +1,433 @@
+/* Build → Firmware: the code editor, "Kerf's code / My code", own files */
+
+.kfw-editor {
+  flex: 1;
+  min-height: 0;
+  position: relative;
+  background: var(--bg-0);
+}
+.kfw-editor .cm-editor {
+  position: absolute;
+  inset: 0;
+  font-size: 11.5px;
+}
+.kfw-editor .cm-editor.cm-focused {
+  outline: none;
+}
+.kfw-mode {
+  margin: 0 0 6px;
+}
+.kfw-mode .segmented {
+  width: 100%;
+}
+.kfw-mode .segmented button {
+  flex: 1;
+  font-size: 11px;
+}
+.kfw-add {
+  color: var(--text-3);
+}
+.kfw-start {
+  width: 100%;
+  justify-content: center;
+  margin: 2px 0 6px;
+}
+.kfw-ref {
+  margin: 8px 8px 2px;
+  font-size: 10.5px;
+  color: var(--text-4);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.mp-file.kfw-dim {
+  color: var(--text-3);
+}
+.kfw-new {
+  padding: 2px 4px 4px;
+}
+.kfw-name {
+  height: 24px;
+  min-width: 0;
+  width: 100%;
+  padding: 0 7px;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg-1);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11.5px;
+}
+.kfw-bar {
+  flex-wrap: nowrap;
+  min-width: 0;
+}
+.kfw-bar > * {
+  flex: none;
+}
+.kfw-bar > .kfw-path,
+.kfw-bar > .kfw-note,
+.kfw-bar > .kfw-verdict {
+  flex: 0 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kfw-path {
+  font-size: 12px;
+  color: var(--text);
+}
+.kfw-lines {
+  font-size: 11px;
+}
+.kfw-bar > .kfw-name {
+  flex: 0 1 170px;
+  min-width: 80px;
+}
+.mp-toolbar .kfw-name {
+  width: 170px;
+  font-size: 12px;
+  border-color: transparent;
+  background: transparent;
+}
+.mp-toolbar .kfw-name:hover,
+.mp-toolbar .kfw-name:focus {
+  border-color: var(--line);
+  background: var(--bg-1);
+}
+.kfw-why {
+  margin: 3px 2px 0;
+  font-size: 10.5px;
+  color: var(--fail);
+}
+.kfw-note {
+  font-size: 11px;
+}
+.kfw-verdict {
+  height: 18px;
+  font-size: 10px;
+  display: inline-block;
+  line-height: 16px;
+}
+.kfw-elsewhere {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 12px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  background: rgb(var(--fail-rgb) / 0.1);
+  color: var(--text);
+  font-size: 11.5px;
+  text-align: left;
+  flex: none;
+}
+.kfw-elsewhere svg {
+  color: var(--fail);
+  flex: none;
+}
+.kfw-elsewhere .mono {
+  color: var(--fail);
+}
+
+/* Simulate → Debug */
+.sim-body.kdbg {
+  grid-template-columns: minmax(210px, 270px) minmax(0, 1fr) minmax(190px, 260px);
+}
+.kdbg .kdbg-side {
+  font-size: 11.5px;
+}
+.kdbg .kdbg-main {
+  display: flex;
+  flex-direction: column;
+  padding: 0;
+  overflow: hidden;
+}
+.kdbg-none {
+  display: block;
+  padding: 16px;
+}
+.kdbg-run {
+  margin-bottom: 12px;
+}
+.kdbg-run .row,
+.kdbg-bp .row,
+.kdbg-watches .row,
+.kdbg-varlist .row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.kdbg-from {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+}
+.kdbg-from input {
+  width: 54px;
+  height: 22px;
+  padding: 0 4px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg-1);
+  color: var(--text);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+.kdbg-meta,
+.kdbg-hint {
+  margin: 4px 0;
+  font-size: 11px;
+  line-height: 1.45;
+}
+.kdbg-err {
+  margin: 3px 0;
+  font-size: 11px;
+  color: var(--fail);
+}
+.kdbg-check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 8px 0 0;
+  color: var(--text-2);
+}
+.kdbg-bp {
+  padding: 6px 0 8px;
+  border-bottom: 1px solid var(--line);
+}
+.kdbg-bp.off {
+  opacity: 0.55;
+}
+.kdbg-bp .dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--fail);
+  flex: none;
+}
+.kdbg-bp .dot.cond {
+  background: transparent;
+  border: 2px solid var(--fail);
+  width: 5px;
+  height: 5px;
+}
+.kdbg-bp .dot.log {
+  background: var(--accent);
+  border-radius: 1px;
+  transform: rotate(45deg);
+  width: 7px;
+  height: 7px;
+}
+.kdbg-bp .where {
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font-size: 11.5px;
+  padding: 0;
+  text-align: left;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  cursor: pointer;
+}
+.kdbg-bp .where:hover {
+  color: var(--accent-2);
+}
+.kdbg-bp .hits {
+  font-size: 10.5px;
+}
+.btn.icon {
+  width: 22px;
+  padding: 0;
+  justify-content: center;
+}
+.kdbg-in {
+  width: 100%;
+  height: 22px;
+  margin-top: 4px;
+  padding: 0 6px;
+  border: 1px solid var(--line);
+  border-radius: 5px;
+  background: var(--bg-1);
+  color: var(--text);
+  font-size: 11px;
+}
+.kdbg-in::placeholder {
+  color: var(--text-4);
+}
+.kdbg-watches .row {
+  padding: 2px 0;
+}
+.kdbg-watches .grow,
+.kdbg-run .grow {
+  flex: 1;
+}
+.kdbg-stops,
+.kdbg-logs {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  max-height: 260px;
+  overflow: auto;
+}
+.kdbg-stop {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0 8px;
+  padding: 4px 6px;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.kdbg-stop:hover {
+  background: var(--bg-3);
+}
+.kdbg-stop.active {
+  background: var(--accent-soft);
+  border-color: rgb(var(--accent-rgb) / 0.45);
+  color: var(--text);
+}
+.kdbg-stop .t {
+  color: var(--text-3);
+}
+.kdbg-stop .why {
+  grid-column: 1 / -1;
+  color: var(--text-3);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.kdbg-stop.fault .why {
+  color: var(--fail);
+}
+.kdbg-logs button {
+  border: 0;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 10.5px;
+  text-align: left;
+  padding: 1px 2px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.kdbg-logs button:hover {
+  color: var(--text);
+}
+.kdbg-logs .t {
+  color: var(--text-4);
+}
+.kdbg-steps {
+  gap: 4px 6px;
+  border-bottom: 0;
+  padding-bottom: 2px;
+}
+.kdbg-pos {
+  padding: 0 12px 5px;
+  border-bottom: 1px solid var(--line);
+  font-size: 10.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  flex: none;
+}
+.kdbg-past {
+  color: var(--warn);
+}
+.kdbg-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.kdbg-stack button {
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--text-2);
+  font-size: 11px;
+  text-align: left;
+  cursor: pointer;
+}
+.kdbg-stack button.active {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+.kdbg-varlist .row {
+  justify-content: space-between;
+  align-items: baseline;
+  padding: 2px 0;
+  border-bottom: 1px dashed var(--line);
+  font-size: 11px;
+}
+.kdbg-varlist .name {
+  color: var(--text-2);
+  flex: none;
+}
+.kdbg-varlist .val {
+  color: var(--text);
+  text-align: right;
+  overflow-wrap: anywhere;
+}
+.kdbg-varlist .val.err {
+  color: var(--text-4);
+}
+.kdbg-varlist .row.changed .val {
+  color: var(--warn);
+}
+
+/* Simulate → Signals */
+.ksig {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+.ksig-body {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  position: relative;
+  display: flex;
+}
+.ksig-body canvas {
+  display: block;
+  cursor: crosshair;
+  flex: none;
+}
+.ksig-readout {
+  position: absolute;
+  top: 0;
+  right: 0;
+  pointer-events: none;
+  padding: 0 8px 0 6px;
+  border-left: 1px solid var(--line);
+  text-align: right;
+}
+.ksig-readout .t {
+  height: 22px;
+  line-height: 18px;
+  font-size: 10.5px;
+}
+.ksig-readout .v {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  font-size: 10px;
+  color: var(--text-2);
+  white-space: nowrap;
+  overflow: hidden;
+}

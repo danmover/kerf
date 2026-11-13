@@ -158,13 +158,13 @@ describe("the ADC from its registers", () => {
       0.01,
     );
     expect(fast.faults.some((f) => /ADC clock is 8000 kHz/.test(f))).toBe(true);
-    const timer = run(
-      `ISR(TIMER1_COMPA_vect) { }
+    const watchdog = run(
+      `ISR(WDT_vect) { }
       void setup() { }
       void loop() {}`,
       0.01,
     );
-    expect(timer.faults.some((f) => /ISR\(TIMER1_COMPA_vect\) never runs/.test(f))).toBe(true);
+    expect(watchdog.faults.some((f) => /ISR\(WDT_vect\) never runs/.test(f))).toBe(true);
   });
 });
 
@@ -203,8 +203,8 @@ void loop() { go = false; ADCSRA |= _BV(ADSC); delay(5); go = true; }`,
   });
 
   it("names a register it does not model instead of calling it undeclared", () => {
-    expect(() => run("void setup() { TCCR1A = 0; }\nvoid loop() {}", 0.01)).toThrow(CError);
-    expect(() => run("void setup() { TCCR1A = 0; }\nvoid loop() {}", 0.01)).toThrow(/TCCR1A is an ATmega328P register the simulator does not model yet/);
+    expect(() => run("void setup() { WDTCSR = 0; }\nvoid loop() {}", 0.01)).toThrow(CError);
+    expect(() => run("void setup() { WDTCSR = 0; }\nvoid loop() {}", 0.01)).toThrow(/WDTCSR is an ATmega328P register the simulator does not model yet/);
     // a variable of the sketch's own with a register's name is just a variable
     expect(run("int ADC = 3;\nvoid setup() { Serial.begin(9600); Serial.println(ADC + 1); }\nvoid loop() {}", 0.01).out).toEqual(["4"]);
   });

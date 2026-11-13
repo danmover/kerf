@@ -6,6 +6,7 @@ import { create } from "zustand";
 import * as db from "../persist/db";
 import type { BranchRecord, ProjectRecord, ScriptRecord, VersionRecord } from "../persist/db";
 import { MAX_SCRIPTS, MAX_SCRIPT_CHARS, cleanScriptName, scriptNameProblem } from "../scripts/records";
+import { MAX_OWN_BLOCKS, MAX_OWN_CHARS, MAX_OWN_FILES, MAX_OWN_FILE_CHARS, OWN_FILE, type FirmwareCodeRecord } from "../machine/firmware/ownCode";
 import { MAIN, branchList, branchNameProblem, branchOf, cleanBranchName, mainSource, merge3, mergeBase, mergedText, type MergeResult } from "../core/branches";
 import { loadSource, setSource, useDesign } from "../core/engine";
 import { describeChange } from "../core/sourceEdit";
@@ -103,7 +104,7 @@ function publishDesigns(reread: boolean) {
   if (!same) setSource(src, { force: true });
 }
 
-export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[], extra: Pick<ProjectRecord, "branch" | "branches" | "scripts"> = {}): Promise<ProjectRecord> {
+export async function createProject(templateId: string, name?: string, source?: string, imports?: ProjectImport[], extra: Pick<ProjectRecord, "branch" | "branches" | "scripts" | "firmware"> = {}): Promise<ProjectRecord> {
   const t = templateById(templateId);
   const src = source ?? t?.source ?? "";
   const now = Date.now();
@@ -525,6 +526,46 @@ export function deleteScript(id: string) {
   scheduleSave();
 }
 
+// ---------- firmware blocks' own code ----------
+
+/** The open project's firmware blocks' own code (see src/machine/firmware/ownCode.ts). */
+export function projectFirmware(p: ProjectRecord | null = get().current): FirmwareCodeRecord[] {
+  return p?.firmware ?? [];
+}
+
+/** Keep these files as a firmware block's own code (all of its files). Returns why it couldn't, or null. */
+export function saveFirmwareCode(block: string, files: FirmwareCodeRecord["files"]): string | null {
+  const cur = get().current;
+  if (!cur) return "No design is open.";
+  const list = cur.firmware ?? [];
+  const at = list.findIndex((x) => x.block === block);
+  if (at < 0 && list.length >= MAX_OWN_BLOCKS) return `A design keeps own code for ${MAX_OWN_BLOCKS} firmware blocks at most.`;
+  if (files.length > MAX_OWN_FILES) return `A sketch has ${MAX_OWN_FILES} files at most.`;
+  const seen = new Set<string>();
+  let total = 0;
+  for (const f of files) {
+    if (!OWN_FILE.test(f.path)) return `${f.path}: a file name is letters, digits, _ . and -, ending .ino, .h, .hpp, .c or .cpp (no folders).`;
+    if (seen.has(f.path.toLowerCase())) return `There are two files called ${f.path}.`;
+    seen.add(f.path.toLowerCase());
+    if (f.content.length > MAX_OWN_FILE_CHARS) return `${f.path} is longer than ${MAX_OWN_FILE_CHARS / 1000}k characters.`;
+    total += f.content.length;
+  }
+  if (total > MAX_OWN_CHARS) return `A sketch can be ${MAX_OWN_CHARS / 1000}k characters at most.`;
+  const rec: FirmwareCodeRecord = { block, files: files.map((f) => ({ path: f.path, content: f.content })), updatedAt: Date.now() };
+  set({ current: { ...cur, firmware: at >= 0 ? list.map((x) => (x.block === block ? rec : x)) : [...list, rec] } });
+  scheduleSave();
+  return null;
+}
+
+/** Forget a firmware block's own code. */
+export function deleteFirmwareCode(block: string) {
+  const cur = get().current;
+  if (!cur?.firmware?.some((x) => x.block === block)) return;
+  const rest = cur.firmware.filter((x) => x.block !== block);
+  set({ current: { ...cur, firmware: rest.length ? rest : undefined } });
+  scheduleSave();
+}
+
 // ---------- previews ----------
 
 /**
@@ -590,7 +631,7 @@ export async function duplicateProject(id: string) {
   await flushPending();
   const p = await db.getOne<ProjectRecord>("projects", id);
   if (!p) return;
-  const copy = await createProject(p.template, `${p.name} copy`, p.source, p.imports, p.scripts?.length ? { scripts: p.scripts } : {});
+  const copy = await createProject(p.template, `${p.name} copy`, p.source, p.imports, { ...(p.scripts?.length ? { scripts: p.scripts } : {}), ...(p.firmware?.length ? { firmware: p.firmware } : {}) });
   await copyAssets(p.id, copy.id);
   if (p.thumbnail) await db.put("projects", { ...copy, thumbnail: p.thumbnail });
   await refreshProjects();
@@ -664,7 +705,7 @@ export async function exportProject(id: string) {
 const fileVersion = (v: VersionRecord) => ({ ts: v.ts, author: v.author, message: v.message, source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
 
 /** A project's branches as a project file keeps them. */
-const fileExtras = (p: ProjectRecord) => ({ ...(p.branches?.length ? { branches: p.branches, ...(p.branch ? { branch: p.branch } : {}) } : {}), ...(p.scripts?.length ? { scripts: p.scripts } : {}) });
+const fileExtras = (p: ProjectRecord) => ({ ...(p.branches?.length ? { branches: p.branches, ...(p.branch ? { branch: p.branch } : {}) } : {}), ...(p.scripts?.length ? { scripts: p.scripts } : {}), ...(p.firmware?.length ? { firmware: p.firmware } : {}) });
 
 /** Imports a file; returns the project to open when the file held exactly one. */
 export async function importProject(file: File): Promise<ProjectRecord | null> {
@@ -674,7 +715,7 @@ export async function importProject(file: File): Promise<ProjectRecord | null> {
     if (warnings.length) toast({ kind: "warn", title: "Part of the file could not be used", detail: [...new Set(warnings)].slice(0, 3).join(" ") }, 9000);
     let last: ProjectRecord | null = null;
     for (const imp of imported) {
-      last = await createProject("imported", imp.name, imp.source, imp.imports, { ...(imp.branches ? { branches: imp.branches, ...(imp.branch ? { branch: imp.branch } : {}) } : {}), ...(imp.scripts ? { scripts: imp.scripts } : {}) });
+      last = await createProject("imported", imp.name, imp.source, imp.imports, { ...(imp.branches ? { branches: imp.branches, ...(imp.branch ? { branch: imp.branch } : {}) } : {}), ...(imp.scripts ? { scripts: imp.scripts } : {}), ...(imp.firmware ? { firmware: imp.firmware } : {}) });
       if (imp.template !== "imported") await db.put("projects", { ...last, template: imp.template });
       for (const v of imp.versions) await db.addVersion({ id: db.newId("ver"), projectId: last.id, ts: v.ts, author: v.author, message: v.message, source: v.source, ...(v.branch ? { branch: v.branch } : {}) });
       await importAssets(last.id, imp.assets);

@@ -9,11 +9,13 @@ import type { SimRequest, SimResponse } from "./protocol";
 const post = (msg: SimResponse, transfer: Transferable[] = []) => (self as unknown as Worker).postMessage(msg, transfer);
 
 self.onmessage = (ev: MessageEvent<SimRequest>) => {
-  const { id, spec, machine, designName, variant } = ev.data;
+  const { id, spec, machine, designName, variant, debug, signals } = ev.data;
   let last = 0;
   try {
     const result = runSpec(spec, machine, designName, {
       variants: [variant],
+      debug,
+      signals,
       onProgress: (_v, frac) => {
         const t = performance.now();
         // a few updates a second is enough for a progress bar, and keeps the UI thread free

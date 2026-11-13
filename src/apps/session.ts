@@ -19,6 +19,7 @@ import { fileStemOf } from "./names";
 import { SignalStore } from "./store";
 import { twinFirmware } from "./twinFirmware";
 import type { TwinOptions } from "./twin";
+import { withOwnCode } from "../app/firmwareCode";
 
 interface AppsState {
   /** the app shown in the centre of the workspace */
@@ -124,7 +125,7 @@ export function twinOptions(app: AppSpec, model: Model): TwinOptions | { error: 
     if ("error" in r) return { error: r.error };
     spec = { ...def.spec, mech: r.mech };
   }
-  const fw = twinFirmware({ machine: model.machine, designName: model.name, firmware: app.firmware ?? def.spec.firmware, spec });
+  const fw = twinFirmware({ machine: withOwnCode(model.machine), designName: model.name, firmware: app.firmware ?? def.spec.firmware, spec });
   if ("error" in fw) return fw;
   return { spec, machine: model.machine, designName: model.name, firmware: fw.name, files: fw.files, board: { mcu: fw.mcu, partId: fw.partId } };
 }

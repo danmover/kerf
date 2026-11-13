@@ -89,7 +89,8 @@ export type MechItem =
   | { k: "wheel"; name: string; what: string; d?: number; grip: number }
   | { k: "track"; name: string; sprocket: string; d: number; length: number; toward?: V3; grip: number }
   | { k: "box"; name: string; size: V3; mass: number; at: V3; grip: number }
-  | { k: "power"; comp: string; value: Schedule };
+  | { k: "power"; comp: string; value: Schedule }
+  | { k: "trace"; name: string; on: string; at: V3 };
 
 export interface MechSpec {
   items: MechItem[];
@@ -538,6 +539,11 @@ export const MECH_FNS: [string, Fn][] = [
     if (!v) return a.ctx.error("sim.power(): give volts: or angle:");
     return new MechValue({ k: "power", comp: c, value: v }, "power");
   }),
+  mechFn("trace", ["on", "at", "name"], "A point to follow through the run, for motion plots: on: the part it is on; at: the point (mm, where the part is drawn: a gripper's tip, a crank pin, a foot). Plots <name>.x, .y, .z (mm), .speed (mm/s) and .accel (m/s²); results <name>.max_speed, .max_accel, .path (mm it travelled), .reach (the farthest it got from where it started) and .x_min ... .z_max.", (a) => {
+    const on = nameOf(a.value("on"), a.ctx, "sim.trace(): on");
+    const at = optV3(a, "at") ?? a.ctx.error("sim.trace() needs at: the point to follow, like at: (0, 0, 120)");
+    return new MechValue({ k: "trace", name: a.has("name") ? a.str("name") : `${on} point`, on, at }, "trace");
+  }),
   mechFn("block", ["from", "to"], "A fixed block on the floor (a step, a wall, a kerb): from, to: two opposite corners, mm, in the design's coordinates.", (a) => {
     const p = v3(a.value("from") ?? a.ctx.error("sim.block() needs from"), a.ctx, "sim.block(): from");
     const q = v3(a.value("to") ?? a.ctx.error("sim.block() needs to"), a.ctx, "sim.block(): to");
@@ -573,7 +579,7 @@ export const MECHANISM_FN = new Fn(
     const spec: MechSpec = { items, base: base as MechSpec["base"], auto, follow };
     return new MechSpecValue(spec);
   },
-  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.without, sim.load, sim.jet, sim.tunnel, sim.field, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
+  'The design\'s moving parts as rigid bodies with real masses, for a scenario\'s mechanism: property. Items: sim.pivot, sim.slider, sim.ball, sim.weld, sim.free, sim.gears, sim.rack, sim.lead_screw, sim.worm, sim.chain, sim.couple, sim.cam, sim.clutch, sim.brake, sim.spring, sim.payload, sim.without, sim.load, sim.jet, sim.tunnel, sim.field, sim.turn, sim.motor, sim.push, sim.solenoid, sim.cylinder, sim.wheel, sim.track, sim.box, sim.power, sim.trace. base: "fixed" (bolted to the bench) or "free" (stands on sim.floor); auto: also add the design\'s own gear trains from spin:/mesh: and its timing belts (lib.belt) between pulleys on joints (true); follow: the part the camera follows. Everything not on a joint is the frame.',
 );
 
 export class MechSpecValue extends Obj {

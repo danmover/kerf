@@ -192,6 +192,17 @@ export function setBlockProps(src: string, blockName: string, props: Record<stri
   const { program } = parse(src);
   const stmt = editableBlock(program.stmts, blockName);
   if (!stmt) return src;
+  return setPropsOf(src, stmt, props);
+}
+
+/** Set properties on a firmware block (`code: "own"`), as setBlockProps does on parts. */
+export function setFirmwareProps(src: string, blockName: string, props: Record<string, string | null>): string {
+  const { program } = parse(src);
+  const stmt = program.stmts.find((s): s is Extract<Stmt, { k: "firmware" }> => s.k === "firmware" && s.name === blockName);
+  return stmt ? setPropsOf(src, stmt, props) : src;
+}
+
+function setPropsOf(src: string, stmt: Extract<Stmt, { k: "part" | "component" | "frame" | "firmware" }>, props: Record<string, string | null>): string {
   const edits: { start: number; end: number; text: string }[] = [];
   const missing: [string, string][] = [];
   for (const [name, value] of Object.entries(props)) {

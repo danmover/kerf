@@ -22,6 +22,7 @@ import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayou
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
+import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
 import { MeasureOverlay } from "./measure";
 
 const ACCENT = new THREE.Color("#6d8bff");
@@ -104,8 +105,14 @@ export interface PartDecoration {
  * the next redecorate().
  */
 export interface Decorator {
-  key(part: EvalPart): string | null;
-  make(part: EvalPart): PartDecoration | null;
+  key(part: EvalPart, surface?: PartSurface): string | null;
+  make(part: EvalPart, surface?: PartSurface): PartDecoration | null;
+}
+
+/** The part's mesh as drawn (in its own frame), for decorations laid on its surface; `key` changes with it. */
+export interface PartSurface {
+  key: string;
+  geometry: THREE.BufferGeometry;
 }
 
 interface Decor {
@@ -307,6 +314,9 @@ export class SceneController {
   private camAnim: { t0: number; dur: number; fromDir: THREE.Vector3; toDir: THREE.Vector3; fromDist: number; toDist: number; fromTarget: THREE.Vector3; toTarget: THREE.Vector3 } | null = null;
   /** a mouse wheel's notch still to zoom, in wheel pixels, and where the pointer was */
   private zoomGlide: { left: number; x: number; y: number } | null = null;
+  /** the mouse scheme (see app/mouse) and which way the wheel zooms (-1: reversed) */
+  private mouseScheme: MouseScheme = "kerf";
+  private wheelSign = 1;
   private display: DisplayState = { hidden: new Set(), selected: new Set(), hovered: null, focus: new Set(), isolate: false, xray: false, edges: true, grid: true, reduceMotion: false };
   private section = { on: false, axis: "x" as "x" | "y" | "z", t: 0.5, flip: false };
   /** animated section position: slides in from the edge when switched on */
@@ -702,10 +712,23 @@ export class SceneController {
     return () => void this.renderListeners.delete(fn);
   }
 
-  /** In sketch mode the left button belongs to the sketch tools: middle orbits, right pans. */
+  /** In sketch mode the left button belongs to the sketch tools; the others turn and pan the view as the mouse scheme has them. */
   setSketchMode(on: boolean) {
     this.sketching = on;
-    this.controls.mouseButtons = on ? { LEFT: -1 as THREE.MOUSE, MIDDLE: THREE.MOUSE.ROTATE, RIGHT: THREE.MOUSE.PAN } : { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.DOLLY, RIGHT: THREE.MOUSE.PAN };
+    this.applyMouse();
+  }
+
+  /** How the mouse moves the view (see app/mouse), and which way the wheel zooms. */
+  setMouse(scheme: MouseScheme, reverseWheel: boolean) {
+    this.mouseScheme = scheme;
+    this.wheelSign = reverseWheel ? -1 : 1;
+    this.applyMouse();
+  }
+
+  private applyMouse() {
+    const b = this.sketching ? sketchButtons(this.mouseScheme) : MOUSE_SCHEMES[this.mouseScheme];
+    const act = (a: MouseAction) => (a === "rotate" ? THREE.MOUSE.ROTATE : a === "pan" ? THREE.MOUSE.PAN : a === "zoom" ? THREE.MOUSE.DOLLY : (-1 as THREE.MOUSE));
+    this.controls.mouseButtons = { LEFT: act(b.left), MIDDLE: act(b.middle), RIGHT: act(b.right) };
   }
 
   /** World point to pixels in the viewport; `front` is false behind the camera. */
@@ -777,11 +800,21 @@ export class SceneController {
 
   /** Take a mouse wheel's notch to zoom smoothly over the next frames (see animate). */
   private glideWheel(e: WheelEvent) {
-    const c = this.controls as OrbitControls & { state?: number };
-    if (e.target !== this.renderer.domElement || this.display.reduceMotion || !c.enabled || !c.enableZoom || e.ctrlKey || (c.state !== undefined && c.state !== -1)) return;
-    // the same units the controls use: lines and pages as pixels
-    const px = e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 100 : e.deltaY;
-    if (Math.abs(px) < 40) return;
+    const c = this.controls as OrbitControls & { state?: number; _handleMouseWheel(e: { deltaY: number; clientX: number; clientY: number }): void };
+    // a pinch on a trackpad comes as the wheel with Ctrl held: it zooms the way the fingers move, whatever the wheel does
+    if (e.target !== this.renderer.domElement || !c.enabled || !c.enableZoom || e.ctrlKey || (c.state !== undefined && c.state !== -1)) return;
+    // the same units the controls use: lines and pages as pixels; the other way round if the wheel is reversed
+    const px = (e.deltaMode === 1 ? e.deltaY * 16 : e.deltaMode === 2 ? e.deltaY * 100 : e.deltaY) * this.wheelSign;
+    if (Math.abs(px) < 40 || this.display.reduceMotion) {
+      if (this.wheelSign > 0) return;
+      // reversed: hand the controls the step turned round, in place of the one the wheel gave
+      e.preventDefault();
+      e.stopPropagation();
+      c.dispatchEvent({ type: "start" });
+      c._handleMouseWheel({ deltaY: px, clientX: e.clientX, clientY: e.clientY });
+      c.dispatchEvent({ type: "end" });
+      return;
+    }
     e.preventDefault();
     e.stopPropagation();
     c.dispatchEvent({ type: "start" });
@@ -1277,11 +1310,12 @@ export class SceneController {
   }
 
   private decorate(obj: PartObj) {
-    const key = this.decorator?.key(obj.part) ?? null;
+    const surface: PartSurface = { key: obj.geoKey, geometry: obj.mesh.geometry };
+    const key = this.decorator?.key(obj.part, surface) ?? null;
     if ((obj.decor?.key ?? null) === key) return;
     if (key === null) return this.undecorate(obj);
     // not ready yet: keep showing the one it has until the new one is
-    const d = this.decorator!.make(obj.part);
+    const d = this.decorator!.make(obj.part, surface);
     if (!d) return;
     this.undecorate(obj);
     const meshes: THREE.Mesh[] = [];

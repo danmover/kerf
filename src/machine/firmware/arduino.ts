@@ -255,7 +255,8 @@ export function arduinoFirmware(c: FwContext): ArduinoResult {
   const cells = battery ? Number(catalogPart(battery.catalogId)?.specs.cells ?? 0) : 0;
   const servoUse = servos.length > 0;
   for (const s of servos) used.add(s.sig.pin);
-  if (servoUse && !isEsp32 && c.boardPart.id !== "arduino_mega") {
+  // the Servo library takes timer 1 on the ATmega328P; the Mega's takes timer 5, and the 32-bit cores' none that PWM needs
+  if (servoUse && c.boardPart.specs.mcu === "ATmega328P") {
     const clash = outs.flatMap((o) => [o.pins.pwm, o.pins.in1, o.pins.in2]).filter((p) => p && (p.pin === "9" || p.pin === "10"));
     if (clash.length) warnings.push(`The Servo library uses Timer1, which turns off PWM on pins 9 and 10 (${clash.map((p) => p!.at).join(", ")}). Move those motor PWM wires to 3, 5, 6 or 11.`);
   }
@@ -1176,6 +1177,9 @@ function arduinoReadme(a: {
     arduino_mega: "Arduino Mega or Mega 2560",
     esp32_devkitc: "ESP32 Dev Module (install the esp32 boards package by Espressif first)",
     rpi_pico: "Raspberry Pi Pico (install the Raspberry Pi Pico/RP2040 boards package by Earle Philhower first)",
+    esp32s3_xiao: "XIAO_ESP32S3 (install the esp32 boards package by Espressif first)",
+    esp32c3_xiao: "XIAO_ESP32C3 (install the esp32 boards package by Espressif first)",
+    blackpill_f411: "Generic STM32F4 series, then Board part number: BlackPill F411CE and USB support: CDC (generic Serial supersede U(S)ART) (install the STM32 MCU based boards package by STMicroelectronics first)",
   };
   const L: string[] = [];
   L.push(`# ${c.fw.name}: firmware for ${c.designName}`, "");

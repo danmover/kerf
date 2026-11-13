@@ -2,6 +2,8 @@
 // port, I2C, EEPROM and servos. The simulation engine implements it; the
 // compiler (compile.ts) only charges cycles and calls these.
 
+import type { Arch, Board } from "./board";
+
 /** A pointer: an element of a JS array that holds the pointee's memory. */
 export interface Ptr {
   m: unknown[];
@@ -25,6 +27,10 @@ export interface IoRegister {
 export interface Hal {
   /** CPU clock in Hz */
   fcpu: number;
+  /** the core family: the AVR (Uno, Nano, Mega, ATtiny85), the ESP32, the RP2040 or the STM32 */
+  arch?: Arch;
+  /** the board's profile: its pins, ports and what its core lacks */
+  board?: Board;
   /** cycles elapsed since reset */
   cyc: number;
   /** when cyc reaches this, call service() */
@@ -46,6 +52,10 @@ export interface Hal {
   /** ESP32 LEDC: write a duty in the pin's own resolution */
   pwmWrite?(pin: number, duty: number): boolean;
   pwmRead?(pin: number): number;
+  /** the RP2040 and STM32 cores' analogWriteResolution(bits), analogWriteRange(top), analogWriteFreq(hz): every pin at once */
+  pwmGlobal?(what: "bits" | "range" | "hz", v: number): void;
+  /** analogReadResolution(): the bits analogRead() returns on the 32-bit cores */
+  readResolution?(bits: number): void;
   /** the PWM rate on a pin, Hz */
   pwmHz?(pin: number): number;
   attachInterrupt(n: number, fn: FnRef, mode: number): void;
@@ -54,6 +64,8 @@ export interface Hal {
   setInterrupts(on: boolean): void;
   millis(): number;
   micros(): number;
+  /** delay(): the core's time, which runs off timer 0 on the AVR */
+  delayMs?(ms: number): void;
   tone(pin: number, freq: number, ms: number): void;
   noTone(pin: number): void;
 
@@ -86,10 +98,72 @@ export interface Hal {
   /** an I/O register by name (ADCSRA, SREG), when the board models it */
   register?(name: string): IoRegister | undefined;
 
+  /** a library's interrupt handler on one of the chip's vectors (TimerOne's callback), or null to take it away */
+  setVector?(name: string, fn: FnRef | null): void;
+  /** the ESP32 core's hardware timers (timerBegin), on a board that has them */
+  hwTimers?: HwTimers;
+  /** the SPI bus and what is wired to it */
+  spi?: SpiPort;
+
   /** a mistake in the firmware the chip would not report (index out of range, divide by zero) */
   fault(msg: string, file: string, line: number): void;
   /** stack bytes in use changed (for the RAM estimate) */
   stack(bytes: number): void;
+}
+
+/** A device on the SPI bus: it answers while its chip-select pin is low. */
+export interface SpiDevice {
+  name: string;
+  /** the fastest clock it takes, Hz */
+  maxHz: number;
+  /** the SPI modes (0 to 3) it answers in */
+  modes: number[];
+  /** one byte each way */
+  transfer(out: number, t: number): number;
+  /** its chip select went low (true) or back high */
+  select?(on: boolean, t: number): void;
+  /** powered and answering */
+  ready?(t: number): boolean;
+}
+
+/** The SPI library's view of the bus: the clock it set, transfers, and the devices on chip-select pins. */
+export interface SpiPort {
+  /** the board's SPI pins */
+  pins?: { ss: number; mosi: number; miso: number; sck: number };
+  /** the clock the bus runs at now, Hz, its mode and bit order */
+  hz: number;
+  mode: number;
+  msbFirst: boolean;
+  begin(): void;
+  end(): void;
+  /** SPI.beginTransaction(SPISettings(hz, order, mode)): the clock is the fastest the chip makes at or below hz */
+  settings(hz: number, msbFirst: boolean, mode: number): void;
+  /** SPI.setClockDivider() on the AVR */
+  divider(div: number): void;
+  /** bytes out, the bytes that came back, with the time they take on the wire */
+  transfer(out: number[]): number[];
+  /** the device on a chip-select pin */
+  device(cs: number): SpiDevice | undefined;
+  /** a card's block command on the bus (the SD library works in 512-byte blocks): `bytes` on the wire plus the device's own wait, µs */
+  traffic(cs: number, out: number[], inp: number[], bytes: number, waitUs: number): void;
+}
+
+/** The ESP32 core's timer calls, on timers handed out by begin(). */
+export interface HwTimers {
+  begin(hz: number): object | null;
+  /** a handler for the timer's alarm, and the argument timerAttachInterruptArg() passes it */
+  attach(t: object, fn: FnRef | null, arg?: unknown): void;
+  /** no handler, and the alarm off (timerDetachInterrupt) */
+  detach(t: object): void;
+  /** the alarm at `value` ticks; with autoreload the count goes back to `reload` at each one */
+  alarm(t: object, value: number, autoreload: boolean, reload: number): void;
+  start(t: object): void;
+  stop(t: object): void;
+  restart(t: object): void;
+  write(t: object, v: number): void;
+  read(t: object): number;
+  hz(t: object): number;
+  end(t: object): void;
 }
 
 /** Thrown to stop the firmware (the run is over, or the chip lost power). */

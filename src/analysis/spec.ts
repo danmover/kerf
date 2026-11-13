@@ -159,6 +159,8 @@ export interface Excitation {
 export interface ModalSpec {
   /** how many natural frequencies to find */
   modes: number;
+  /** find them under the loads (pre-stressed modal): the loads' stress stiffens (tension) or softens (compression) the parts */
+  prestressed?: boolean;
   excite: Excitation[];
   /** damping ratio (0.02: bolted frames and printed parts) */
   damping: number;
@@ -649,7 +651,54 @@ export interface StudySpec {
   span: Span;
 }
 
-export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec | StudySpec;
+/** An opening the air goes through: a face of a part (a duct's end), or a zone, with the way the air goes. */
+export interface FlowOpening {
+  label: string;
+  region: RegionSpec;
+  /** the way the air goes through it; unset for a face: out of the part through that face (into it for an inlet) */
+  toward?: V3;
+}
+
+/**
+ * Air moved through and round the design by its fans, by a set flow pushed in at an inlet, or by warm air rising,
+ * with the heat its electronics make conducted through the parts and carried off by the air (conjugate heat transfer):
+ * each fan's operating point on its curve, the flow and pressure through ducts and openings, and every part's
+ * temperature against its limit. A steady solve on a grid of cubes, the way electronics-cooling tools work.
+ */
+export interface FlowSpec {
+  kind: "flow";
+  label: string;
+  /** what moves the air: the design's fans, warm air alone, or a set flow pushed in at the inlet */
+  drive: "fans" | "natural" | "set";
+  /** what flows: air (the default), or water for coolant channels and manifolds */
+  fluid: "air" | "water";
+  /** the set flow, mm³/s */
+  flow?: number;
+  inlet?: FlowOpening;
+  /** openings to report the flow through */
+  outlets: FlowOpening[];
+  /** parts in the analysis; empty: every part shown */
+  parts: string[];
+  /** the fan components that run; unset: every fan among the parts */
+  fans?: string[];
+  /** heat made in parts or components; auto: every electronic part's own loss as well */
+  heat: HeatLoadSpec[];
+  auto: boolean;
+  /** the air's temperature round the design, °C; unset: the brief's hottest, else a warm room */
+  ambient?: number;
+  /** up, for warm air rising; gravity: false leaves buoyancy out */
+  up: V3;
+  gravity: boolean;
+  resolution: Resolution;
+  /** limits that make check items: the hottest any part may get (°C; components also have their own), the pressure a set flow may take (MPa) */
+  maxTemp?: number;
+  maxPressure?: number;
+  /** stop after this long, seconds */
+  time?: number;
+  span: Span;
+}
+
+export type AnalysisSpec = StructuralSpec | DrivetrainSpec | UciSpec | AirflowSpec | FlowSpec | StudySpec;
 
 /** the smallest element size accepted from resolution:, in mm */
 export const MIN_ELEMENT_SIZE = 0.1;

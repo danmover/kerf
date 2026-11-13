@@ -1,22 +1,24 @@
 // The Arduino core and libraries the virtual microcontroller provides: pins,
 // time, interrupts, maths, C strings and printf, Serial, Wire (I2C), EEPROM,
-// Servo and Adafruit_NeoPixel. Printing, rounding and overflow follow the AVR core and
+// Servo and Adafruit_NeoPixel here; timers, SPI and SD, LCDs, AccelStepper and FastLED beside it. Printing, rounding and overflow follow the AVR core and
 // avr-libc, so the simulated board prints and computes what the real one does
 // (sprintf has no %f, Serial.print(x) shows 2 decimals, map() is long maths).
 
 import type { Pos } from "./ast";
-import { BOOL, VOID, converter, isArith, isIntegral, sizeOf, strip, typeName, type CType, type Types } from "./ctypes";
+import { BOOL, VOID, converter, sizeOf, strip, typeName, type CType, type Types } from "./ctypes";
 import { bytesOf, cstr, text, type C, type Ctx, type Ev, type Frame } from "./ir";
 import { fromBytes, readBytes, toBytes, writeBytes } from "./mem";
 import type { FnRef, Hal, Ptr } from "./vm";
+import { argCount, burn, decay, def, dict, numEv, pointee, ptrEv, sumCost, typeOf, type LibClass, type LibFn, type LibMethod, type PK } from "./libBase";
+import { espTimerFuncs, timerOne, type TimerOneState } from "./libTimers";
+import { printBytes } from "./libPrint";
+import { liquidCrystalClass, liquidCrystalI2cClass } from "./libLcd";
+import { accelStepperClass, multiStepperClass, stepperScoped } from "./libStepper";
+import { fileClass, fsClass, newSdState, sdObject, spiObject, spiSettingsClass, spiSettingsFn, type SdState } from "./libSpi";
+import { FASTLED_CLASSES, FASTLED_FUNCS, FASTLED_OBJECTS, FASTLED_SCOPED, FASTLED_STRUCTS, FASTLED_TEMPLATED, newFastLedState, type FastLedState } from "./libFastLed";
 
-export type LibFn = (args: C[], ctx: Ctx, pos: Pos) => C;
-export type LibMethod = (obj: C, args: C[], ctx: Ctx, pos: Pos) => C;
-export interface LibClass {
-  methods: Record<string, LibMethod>;
-  /** `Type name(args);`: builds an instance from constructor arguments */
-  construct?: (args: C[], ctx: Ctx, pos: Pos) => C;
-}
+export { argCount, burn, decay, def, dict, fnEv, numEv, ptrEv, sumCost, typeOf, type LibClass, type LibFn, type LibMethod } from "./libBase";
+export { printFloat } from "./libPrint";
 
 /** Library state that belongs to one running chip (reset at power-up). */
 export interface LibState {
@@ -26,209 +28,22 @@ export interface LibState {
   wireRxPos: number;
   serialTimeout: number;
   seed: number;
+  /** TimerOne: the clock-select bits and period its setPeriod() chose */
+  timerOne: TimerOneState;
+  /** the SD library: the card it mounted and its open files */
+  sd: SdState;
+  /** FastLED: brightness, controllers, random seed, EVERY_N timers */
+  fastled: FastLedState;
 }
 
 export function newLibState(): LibState {
-  return { wireAddr: 0, wireTx: null, wireRx: [], wireRxPos: 0, serialTimeout: 1000, seed: 1 };
+  return { wireAddr: 0, wireTx: null, wireRx: [], wireRxPos: 0, serialTimeout: 1000, seed: 1, timerOne: { cs: 0, period: 0 }, sd: newSdState(), fastled: newFastLedState() };
 }
 
 export function resetLibState(s: LibState) {
   Object.assign(s, newLibState());
 }
 
-const dict = <T>(o: Record<string, T>): Record<string, T> => Object.assign(Object.create(null) as Record<string, T>, o);
-
-// ---------- argument helpers ----------
-
-/** Arrays decay to pointers and references read through, as when passing an argument. */
-export function decay(c: C): C {
-  const t = c.t;
-  if (t.k === "ref") return decay({ ...c, t: t.to });
-  if (t.k === "arr") {
-    const ev = c.ev;
-    return { ...c, t: { k: "ptr", to: t.of }, ev: (f) => ({ m: ev(f), i: 0 }), lv: undefined, cv: undefined };
-  }
-  return c;
-}
-
-function numEv(c: C, to: CType, ctx: Ctx, what: string): Ev {
-  const r = decay(c);
-  const from = strip(r.t);
-  if (!isArith(from)) return ctx.error(`${what} needs a number here, not ${typeName(from)}`, c.pos);
-  const conv = converter(to, from);
-  if (!conv) return r.ev;
-  if (r.cv !== undefined) {
-    const v = conv(r.cv);
-    return () => v;
-  }
-  const ev = r.ev;
-  return (f) => conv(ev(f));
-}
-
-function ptrEv(c: C, ctx: Ctx, what: string): Ev {
-  const r = decay(c);
-  const t = strip(r.t);
-  if (t.k === "ptr") return r.ev;
-  if (isIntegral(t) && r.cv === 0) return () => null;
-  return ctx.error(`${what} needs a pointer or array here, not ${typeName(t)}`, c.pos);
-}
-
-function fnEv(c: C, ctx: Ctx, what: string): Ev {
-  const t = strip(c.t);
-  if (t.k === "fn") return c.ev;
-  if (t.k === "ptr" && t.to.k === "fn") return c.ev;
-  if (isIntegral(t) && c.cv === 0) return () => null;
-  return ctx.error(`${what} needs the name of a function here`, c.pos);
-}
-
-/** The element type a pointer or array argument points at. */
-function pointee(c: C): CType {
-  const t = strip(c.t);
-  return t.k === "arr" ? t.of : t.k === "ptr" ? t.to : VOID;
-}
-
-function argCount(name: string, min: number, max: number, n: number, ctx: Ctx, pos: Pos): never {
-  const want = min === max ? `${min}` : max === Infinity ? `at least ${min}` : `${min} to ${max}`;
-  return ctx.error(`${name}() takes ${want} argument${want === "1" ? "" : "s"}, given ${n}`, pos);
-}
-
-const sumCost = (args: C[]) => args.reduce((s, a) => s + a.cost, 0);
-
-/** CPU work a library call does that depends on its data (formatting digits, copying bytes). */
-function burn(hal: Hal, cycles: number) {
-  hal.cyc += Math.round(cycles);
-  if (hal.cyc >= hal.nextEvt) hal.service();
-}
-
-type PK = "int" | "uint" | "long" | "ulong" | "u8" | "double" | "size" | "bool" | "ptr" | "fn";
-type RK = PK | "void" | "charp";
-
-function typeOf(k: RK, T: Types): CType {
-  switch (k) {
-    case "int":
-      return T.int;
-    case "uint":
-      return T.uint;
-    case "long":
-      return T.long;
-    case "ulong":
-      return T.ulong;
-    case "u8":
-      return T.uchar;
-    case "double":
-      return T.double;
-    case "size":
-      return T.sizeT;
-    case "bool":
-      return BOOL;
-    case "ptr":
-      return { k: "ptr", to: VOID };
-    case "charp":
-      return { k: "ptr", to: T.char };
-    case "fn":
-      return { k: "fn", ret: VOID, params: [] };
-    case "void":
-      return VOID;
-  }
-}
-
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-type Run = (v: any[], ctx: Ctx, pos: Pos) => unknown;
-
-/** A library function with fixed parameter types (converted as C++ would) and an estimated cost. */
-function def(name: string, params: PK[], ret: RK, cyc: number, run: Run, defaults: unknown[] = []): LibFn {
-  return (args, ctx, pos) => {
-    const min = params.length - defaults.length;
-    if (args.length < min || args.length > params.length) argCount(name, min, params.length, args.length, ctx, pos);
-    const what = `${name}()`;
-    const evs: Ev[] = args.map((a, i) => (params[i] === "ptr" ? ptrEv(a, ctx, what) : params[i] === "fn" ? fnEv(a, ctx, what) : numEv(a, typeOf(params[i], ctx.T), ctx, what)));
-    for (let i = args.length; i < params.length; i++) {
-      const d = defaults[i - min];
-      evs.push(() => d);
-    }
-    const rt = typeOf(ret, ctx.T);
-    const rc = isArith(rt) ? converter(rt, null) : null;
-    const n = evs.length;
-    const cost = sumCost(args) + cyc;
-    let ev: Ev;
-    if (n === 0) ev = rc ? () => rc(run([], ctx, pos) as number) : () => run([], ctx, pos);
-    else if (n === 1) {
-      const a = evs[0];
-      ev = rc ? (f) => rc(run([a(f)], ctx, pos) as number) : (f) => run([a(f)], ctx, pos);
-    } else
-      ev = (f) => {
-        const v = new Array(n);
-        for (let i = 0; i < n; i++) v[i] = evs[i](f);
-        const r = run(v, ctx, pos);
-        return rc ? rc(r as number) : r;
-      };
-    return { t: rt, ev, cost, pos };
-  };
-}
-
-// ---------- number formatting (Print.cpp) ----------
-
-function printNumber(n: number, base: number): number[] {
-  if (base < 2) base = 10;
-  if (n === 0) return [48];
-  const out: number[] = [];
-  while (n > 0) {
-    const d = n % base;
-    out.push(d < 10 ? 48 + d : 55 + d);
-    n = Math.floor(n / base);
-  }
-  return out.reverse();
-}
-
-/** Print::printFloat with AVR's 32-bit double: rounds by adding 0.5e-digits, then prints digit by digit. */
-export function printFloat(x: number, digits: number): number[] {
-  const fr = Math.fround;
-  if (Number.isNaN(x)) return bytesOf("nan");
-  if (!Number.isFinite(x)) return bytesOf("inf");
-  if (x > 4294967040.0 || x < -4294967040.0) return bytesOf("ovf");
-  digits &= 255;
-  const out: number[] = [];
-  let number = fr(x);
-  if (number < 0) {
-    out.push(45);
-    number = fr(-number);
-  }
-  let rounding = fr(0.5);
-  for (let i = 0; i < digits; i++) rounding = fr(rounding / 10);
-  number = fr(number + rounding);
-  const intPart = Math.trunc(number) >>> 0;
-  let remainder = fr(number - fr(intPart));
-  out.push(...printNumber(intPart, 10));
-  if (digits > 0) out.push(46);
-  while (digits-- > 0) {
-    remainder = fr(remainder * 10);
-    const d = Math.trunc(remainder) & 0xffff;
-    out.push(...printNumber(d, 10));
-    remainder = fr(remainder - d);
-  }
-  return out;
-}
-
-/** What Serial.print(value[, base or digits]) writes, chosen by the value's C type like the C++ overloads. */
-function printBytes(t: CType, v: unknown, second: number | undefined, ctx: Ctx, pos: Pos): number[] {
-  if (t.k === "ptr") return cstr(v as Ptr | null);
-  if (t.k === "float") return printFloat(v as number, second ?? 2);
-  if (t.k === "int" && t.char) return second === undefined ? [(v as number) & 255] : printInt(v as number, true, 32, second);
-  if (t.k === "int") return printInt(v as number, t.signed, t.bits, second ?? 10);
-  if (t.k === "bool" || t.k === "enum") return printInt(v as number, true, 32, second ?? 10);
-  return ctx.error(`Serial.print cannot print ${typeName(t)}`, pos);
-}
-
-function printInt(n: number, signed: boolean, bits: number, base: number): number[] {
-  if (base === 0) return [n & 255];
-  if (bits === 64) {
-    const neg = signed && n < 0;
-    const s = Math.abs(n).toString(base < 2 ? 10 : base).toUpperCase();
-    return bytesOf(base === 10 && neg ? "-" + s : s);
-  }
-  if (signed && base === 10 && n < 0) return [45, ...printNumber(-n, 10)];
-  return printNumber(n >>> 0, base);
-}
 
 // ---------- printf (avr-libc vfprintf, the default build without floats) ----------
 
@@ -505,6 +320,39 @@ function mathFn(name: string, cyc: number, fn: (...x: number[]) => number, n = 1
   return def(name, (n === 1 ? ["double"] : ["double", "double"]) as PK[], "double", cyc, (v) => fn(...(v as number[])));
 }
 
+const readResolution = def("analogReadResolution", ["int"], "void", 20, ([bits], c) => c.hal.readResolution?.(bits));
+
+/** analogWriteFrequency() and analogWriteResolution(): per pin on the ESP32 core 3.x, for every pin on the RP2040 and STM32 cores. */
+function pwmSetter(name: string, what: "hz" | "bits"): LibFn {
+  const perPin = def(name, ["u8", "ulong"], "void", 400, ([p, v], c) => {
+    c.hal.pwmAttach?.(p, what === "hz" ? v : -1, what === "bits" ? v : -1, name);
+  });
+  const all = corePwm(name, what, ["rp2040", "stm32"]);
+  return (args, ctx, pos) => {
+    const arch = ctx.hal.arch ?? "avr";
+    if (arch === "esp32") {
+      if (args.length === 1) ctx.error(`${name}(value) is the RP2040 and STM32 cores' call: the ESP32 core 3.x takes ${name}(pin, value), one pin at a time`, pos);
+      return perPin(args, ctx, pos);
+    }
+    if (args.length === 2 && arch !== "avr") ctx.error(`${name}(pin, value) is the ESP32 core's call: the ${ctx.hal.board?.name ?? "board"}'s core takes ${name}(value), for every pin at once`, pos);
+    return all(args, ctx, pos);
+  };
+}
+
+/** A PWM setting the RP2040 and STM32 cores make for every pin at once; the other cores do not declare it. */
+function corePwm(name: string, what: "hz" | "bits" | "range", arches: string[]): LibFn {
+  const d = def(name, ["ulong"], "void", 200, ([v], c) => c.hal.pwmGlobal?.(what, v));
+  return (args, ctx, pos) => {
+    const arch = ctx.hal.arch ?? "avr";
+    if (!arches.includes(arch))
+      ctx.error(
+        `'${name}' was not declared in this scope: ${arch === "avr" ? "the AVR core's analogWrite() is 8 bits at its timers' own rates (set a timer's registers, or use TimerOne, for others)" : `${name}() is part of the ${arches.includes("stm32") ? "RP2040 and STM32 cores" : "RP2040 core"}`}`,
+        pos,
+      );
+    return d(args, ctx, pos);
+  };
+}
+
 function randomNext(s: LibState): number {
   // avr-libc random(): Park-Miller minimal standard
   let x = s.seed;
@@ -544,15 +392,22 @@ const libFuncs: Record<string, LibFn> = {
     c.hal.pinMode(p, 0);
     return 1;
   }),
-  analogWriteFrequency: def("analogWriteFrequency", ["u8", "ulong"], "void", 400, ([p, hz], c) => {
-    c.hal.pwmAttach?.(p, hz, -1, "analogWriteFrequency");
-  }),
-  analogWriteResolution: def("analogWriteResolution", ["u8", "u8"], "void", 400, ([p, bits], c) => {
-    c.hal.pwmAttach?.(p, -1, bits, "analogWriteResolution");
+  analogWriteFrequency: pwmSetter("analogWriteFrequency", "hz"),
+  analogWriteResolution: pwmSetter("analogWriteResolution", "bits"),
+  // arduino-pico's own names for the PWM rate and full scale
+  analogWriteFreq: corePwm("analogWriteFreq", "hz", ["rp2040"]),
+  analogWriteRange: corePwm("analogWriteRange", "range", ["rp2040"]),
+  analogReadResolution: (args, ctx, pos) => {
+    if ((ctx.hal.arch ?? "avr") === "avr") ctx.error("'analogReadResolution' was not declared in this scope: the AVR core's analogRead() is always 10 bits", pos);
+    return readResolution(args, ctx, pos);
+  },
+  // avr/power.h: Adafruit's Trinket sketches set the clock divider to 1 when they are built for 16 MHz
+  clock_prescale_set: def("clock_prescale_set", ["u8"], "void", 4, ([d], c, pos) => {
+    if (d) c.fault(`clock_prescale_set(clock_div_${2 ** d}): the simulator runs the chip at the board's ${c.hal.fcpu / 1e6} MHz and does not divide its clock`, pos);
   }),
   millis: def("millis", [], "ulong", 30, (_v, c) => c.hal.millis()),
   micros: def("micros", [], "ulong", 40, (_v, c) => c.hal.micros()),
-  delay: def("delay", ["ulong"], "void", 20, ([ms], c) => c.hal.spend((ms * c.hal.fcpu) / 1000)),
+  delay: def("delay", ["ulong"], "void", 20, ([ms], c) => (c.hal.delayMs ? c.hal.delayMs(ms) : c.hal.spend((ms * c.hal.fcpu) / 1000))),
   delayMicroseconds: def("delayMicroseconds", ["uint"], "void", 10, ([us], c) => c.hal.spend((us * c.hal.fcpu) / 1e6)),
   // GCC's AVR builtin; nops in inline assembly come here too
   __builtin_avr_delay_cycles: def("__builtin_avr_delay_cycles", ["ulong"], "void", 0, ([n], c) => c.hal.spend(n)),
@@ -590,7 +445,9 @@ const libFuncs: Record<string, LibFn> = {
     return v;
   }),
   random: (args, ctx, pos) => {
-    if (args.length < 1 || args.length > 2) argCount("random", 1, 2, args.length, ctx, pos);
+    if (args.length > 2) argCount("random", 0, 2, args.length, ctx, pos);
+    // random() on its own is the C library's: the raw 31-bit number Arduino's random(max) takes a remainder of
+    if (args.length === 0) return { t: ctx.T.long, ev: () => randomNext(ctx.lib), cost: 600, pos };
     const a = numEv(args[0], ctx.T.long, ctx, "random()");
     const b = args[1] ? numEv(args[1], ctx.T.long, ctx, "random()") : null;
     const s = ctx.lib;
@@ -1632,13 +1489,34 @@ const btSerial: LibClass = {
   }),
 };
 
-export const LIB_FUNCS: Record<string, LibFn> = dict(libFuncs);
-export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Serial1: serialObject(1), Serial2: serialObject(2), Wire: wire, EEPROM: eeprom });
-export const LIB_CLASSES: Record<string, LibClass> = dict({ Servo: servo, Adafruit_NeoPixel: neoPixel, BluetoothSerial: btSerial });
+export const LIB_FUNCS: Record<string, LibFn> = dict({ ...libFuncs, ...espTimerFuncs, SPISettings: spiSettingsFn, ...FASTLED_FUNCS });
+export const LIB_OBJECTS: Record<string, Record<string, LibFn>> = dict({ Serial: serialObject(0), Serial1: serialObject(1), Serial2: serialObject(2), Serial3: serialObject(3), Wire: wire, EEPROM: eeprom, Timer1: timerOne, SPI: spiObject, SD: sdObject, ...FASTLED_OBJECTS });
+export const LIB_CLASSES: Record<string, LibClass> = dict({
+  Servo: servo,
+  Adafruit_NeoPixel: neoPixel,
+  BluetoothSerial: btSerial,
+  File: fileClass,
+  "fs::FS": fsClass,
+  SPISettings: spiSettingsClass,
+  LiquidCrystal: liquidCrystalClass,
+  LiquidCrystal_I2C: liquidCrystalI2cClass,
+  AccelStepper: accelStepperClass,
+  MultiStepper: multiStepperClass,
+  ...FASTLED_CLASSES,
+});
+
+/** names in a library class's scope (AccelStepper::DRIVER, CRGB::Red) */
+export const LIB_SCOPED: Record<string, LibFn> = dict({ ...stepperScoped, ...FASTLED_SCOPED });
+/** the C++ libraries add to structs their headers declare (FastLED's CRGB, CHSV and CRGBPalette16) */
+export const LIB_STRUCTS = FASTLED_STRUCTS;
+/** library methods that take template arguments (FastLED.addLeds<WS2812B, 6, GRB>) */
+export const TEMPLATED = FASTLED_TEMPLATED;
 /** Library class names the parser accepts as types. */
 export const CLASS_NAMES = new Set(Object.keys(LIB_CLASSES));
 
-export function newClassInstance(name: string): unknown {
+export function newClassInstance(name: string, ctx: Ctx): unknown {
+  const make = LIB_CLASSES[name]?.make;
+  if (make) return make(ctx);
   if (name === "Servo") return { kind: "Servo", pin: -1, min: 544, max: 2400, us: 1500 } satisfies ServoObj;
   if (name === "Adafruit_NeoPixel") return newPixels();
   return {};

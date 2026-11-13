@@ -4,9 +4,12 @@
 // firmware, so encoder edges and other pin changes arrive at their own
 // moment and interrupt handlers see the pin levels of that instant).
 
-import type { Board } from "../mcu/board";
+import { pinLabel, type Arch, type Board } from "../mcu/board";
 import { Halt, type FnRef, type Hal, type IoRegister } from "../mcu/vm";
 import { MODELLED_VECTORS } from "../mcu/registers";
+import type { ProbeHooks } from "./probes";
+import { AvrChip, Esp32Timers, type ChipTimers, type ChipVector } from "./timers";
+import { SpiBus } from "./spi";
 
 /** What the board needs from the electrical plant around it. */
 export interface PlantPort {
@@ -134,6 +137,8 @@ export class SimHal implements Hal {
   powerFail: string | null = null;
 
   plant: PlantPort | null = null;
+  /** the logic analyser, when the run records signals: told of every pin change and bus transfer */
+  probe: ProbeHooks | null = null;
 
   // pins
   mode: Uint8Array;
@@ -196,6 +201,17 @@ export class SimHal implements Hal {
   private events = new PinEvents();
   private rng: () => number;
   private analogRef = 1;
+  /** pins whose catch (a strapping or USB pin) the sketch has been told about */
+  private warned = new Set<number>();
+  /** analogRead()'s resolution, bits: analogReadResolution() changes it on the 32-bit cores */
+  private readBits: number;
+  /** analogWrite()'s full scale and rate where the core sets them for every pin (the RP2040 and STM32 cores) */
+  private writeMax = 255;
+  private writeHz = 0;
+  /** pins whose last write was analogWrite(): a pin on the same PWM channel takes their duty */
+  private pwmOn = new Set<number>();
+  /** the board's highest pin number */
+  private topPin: number;
 
   /** interrupt handlers the firmware defines with ISR(), by vector name */
   vectors = new Map<string, FnRef>();
@@ -204,6 +220,15 @@ export class SimHal implements Hal {
   private regs = new Map<string, IoRegister>();
   /** conversions the ADC finished through its registers */
   adcConversions = 0;
+  /** the ATmega328P's ports, timers and pin interrupts as their registers drive them */
+  avr: AvrChip | null = null;
+  /** the ESP32's hardware timers (timerBegin) */
+  espTimers: Esp32Timers | null = null;
+  /** the SPI bus and the devices on its chip-select pins */
+  spi: SpiBus;
+  private chips: ChipTimers[] = [];
+  /** millis() and micros() count timer 0's overflows on the AVR: core cycles, which run at coreRate × the clock */
+  private core = { rate: 1, cyc0: 0, at0: 0 };
 
   constructor(
     public board: Board,
@@ -217,7 +242,12 @@ export class SimHal implements Hal {
     this.duty = new Float64Array(n).fill(-1);
     this.ext = new Int8Array(n).fill(-1);
     this.eeprom = opts.eeprom ?? new Uint8Array(board.eepromBytes).fill(0xff);
+    this.readBits = board.adcBits;
+    this.topPin = Math.max(board.digitalPins, ...board.analogOnly);
     for (const [pin, irq] of Object.entries(board.interrupts)) this.irqOfPin.set(+pin, irq);
+    if (board.arch === "esp32") this.chips.push((this.espTimers = new Esp32Timers(this)));
+    else if (board.mcu === "ATmega328P") this.chips.push((this.avr = new AvrChip(this)));
+    this.spi = new SpiBus(this);
     let s = (opts.seed ?? 1) >>> 0 || 1;
     this.rng = () => {
       s ^= s << 13;
@@ -225,6 +255,10 @@ export class SimHal implements Hal {
       s ^= s << 5;
       return (s >>> 0) / 4294967296;
     };
+  }
+
+  get arch(): Arch {
+    return this.board.arch ?? "avr";
   }
 
   /** seconds since power-up */
@@ -253,13 +287,18 @@ export class SimHal implements Hal {
         // whatever is due first: a pin change, or the plant's next step
         const te = this.events.peekT();
         if (te <= this.cyc && te <= this.nextStep) {
-          const [, pin, level] = this.events.pop();
-          this.applyPin(pin, level);
+          const [at, pin, level] = this.events.pop();
+          this.applyPin(pin, level, at);
           continue;
         }
         const ta = this.adc.done;
         if (ta <= this.cyc && ta <= this.nextStep && ta <= te) {
           this.adcComplete();
+          continue;
+        }
+        const tc = this.chipNext();
+        if (tc <= this.cyc && tc <= this.nextStep && tc <= te) {
+          for (const c of this.chips) if (c.next <= this.cyc) c.due(this.cyc);
           continue;
         }
         if (this.cyc >= this.nextStep) {
@@ -286,13 +325,53 @@ export class SimHal implements Hal {
             this.runAdcVector();
             continue;
           }
+          const v = this.takeVector();
+          if (v) {
+            this.runVector(v);
+            continue;
+          }
         }
         break;
       }
     } finally {
       this.servicing = false;
     }
-    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity, this.inIsr ? this.isrStart + this.isrHang : Infinity);
+    this.nextEvt = Math.min(this.nextStep, this.events.peekT(), this.adc.done, this.chipNext(), this.endCyc, this.rxQueue.length ? this.rxQueue[0].t : Infinity, this.inIsr ? this.isrStart + this.isrHang : Infinity);
+  }
+
+  private chipNext(): number {
+    let n = Infinity;
+    for (const c of this.chips) if (c.next < n) n = c.next;
+    return n;
+  }
+
+  /** the highest-priority timer or pin-change handler waiting to run */
+  private takeVector(): ChipVector | null {
+    for (const c of this.chips) {
+      const v = c.take();
+      if (v) return v;
+    }
+    return null;
+  }
+
+  /** run a timer or pin-change handler, as the chip does: interrupts off inside it, its flag already cleared */
+  private runVector(v: ChipVector) {
+    const c0 = this.cyc;
+    this.inIsr = true;
+    this.isrStart = c0;
+    this.nextEvt = Math.min(this.nextEvt, c0 + this.isrHang);
+    const was = this.intEnabled;
+    this.intEnabled = false;
+    this.cyc += v.entry;
+    try {
+      v.fn.call(v.args ?? []);
+    } finally {
+      this.cyc += v.exit;
+      this.inIsr = false;
+      this.intEnabled = was;
+      this.isrCount++;
+      this.isrCycles += this.cyc - c0;
+    }
   }
 
   spend(cycles: number): void {
@@ -318,11 +397,13 @@ export class SimHal implements Hal {
     this.applyPin(pin, level);
   }
 
-  private applyPin(pin: number, level: number) {
+  private applyPin(pin: number, level: number, at = this.cyc) {
     const before = this.level(pin);
     this.ext[pin] = level;
+    this.probe?.pin(pin, at);
     const after = this.level(pin);
     if (before === after) return;
+    this.avr?.pinChanged(pin);
     const irq = this.irqOfPin.get(pin);
     if (irq === undefined || !this.irqFn[irq]) return;
     const m = this.irqMode[irq];
@@ -372,9 +453,9 @@ export class SimHal implements Hal {
     return phase < d ? 1 : 0;
   }
 
-  /** the PWM rate on a pin, Hz: what the firmware set (LEDC), else the board's own */
+  /** the PWM rate on a pin, Hz: what the firmware set (LEDC, analogWriteFreq), else the board's own */
   pwmHz(pin: number): number {
-    return this.pwmSet.get(pin)?.hz ?? this.board.pwm[pin] ?? 490;
+    return this.pwmSet.get(pin)?.hz ?? (this.writeHz || this.board.pwm[pin]) ?? 490;
   }
 
   /** What an MCU pin drives into a module input: 0..1 (PWM duty), or -1 when it drives nothing. */
@@ -386,32 +467,71 @@ export class SimHal implements Hal {
     return -1;
   }
 
-  private validPin(pin: number, what: string): boolean {
-    if (pin >= 0 && pin <= this.board.digitalPins + 2 && pin < this.mode.length) return true;
-    this.fault(`${what}(${pin}): the ${this.board.name} has no pin ${pin}`, "firmware", 0);
+  /** A pin the board has (and can drive, for an output): a fault when it lacks it, and its catch the first time it is used. */
+  private validPin(pin: number, what: string, out = false): boolean {
+    const b = this.board;
+    const lacks = b.noPins?.[pin];
+    if (pin >= 0 && pin <= this.topPin && pin < this.mode.length && !lacks) {
+      const w = b.pinWarn?.[pin];
+      if (w && !this.warned.has(pin)) {
+        this.warned.add(pin);
+        this.fault(`${what}(${pin}): ${w}`, "firmware", 0);
+      }
+      if (!out || !b.inputOnly?.includes(pin)) return true;
+      this.fault(`${what}(${pin}): ${pinLabel(b, pin)} is input-only on the ${b.name}, so it cannot drive anything`, "firmware", 0);
+      return false;
+    }
+    const alias = b.alias?.[pin];
+    const msg = lacks
+      ? lacks
+      : alias !== undefined
+        ? `${pin} is A${pin - (b.analogBase ?? 0)} on the ${b.name}, a number only analogRead() takes; ${what}() takes the pin's own number, ${alias} (${pinLabel(b, alias)})`
+        : `the ${b.name} has no pin ${pin}`;
+    this.fault(`${what}(${pin}): ${msg}`, "firmware", 0);
     return false;
   }
 
   pinMode(pin: number, mode: number): void {
-    if (!this.validPin(pin, "pinMode")) return;
-    this.mode[pin] = mode === 1 ? Mode.OUTPUT : mode === 2 ? Mode.PULLUP : Mode.INPUT;
-    if (mode !== 1) this.duty[pin] = -1;
+    if (!this.validPin(pin, "pinMode", mode === 1)) return;
+    let m: number = mode === 1 ? Mode.OUTPUT : mode === 2 ? Mode.PULLUP : Mode.INPUT;
+    if (mode >= 2 && this.board.inputOnly?.includes(pin)) {
+      this.fault(`pinMode(${pin}, ${mode === 2 ? "INPUT_PULLUP" : "INPUT_PULLDOWN"}): ${pinLabel(this.board, pin)} has no internal pull resistors on the ${this.board.name}, so the pin floats; fit a 10 kΩ resistor`, "firmware", 0);
+      m = Mode.INPUT;
+    }
+    // the AVR's PORT bit is an input's pull-up and an output's level (pinMode(INPUT) clears it), so an output starts
+    // high after INPUT_PULLUP. The RP2040 core's pinMode() starts every output low; the ESP32 and STM32 keep the last write.
+    if (m === Mode.OUTPUT) {
+      if (this.arch === "avr" && this.mode[pin] !== Mode.OUTPUT) this.latch[pin] = this.mode[pin] === Mode.PULLUP ? 1 : 0;
+      else if (this.arch === "rp2040") this.latch[pin] = 0;
+    }
+    this.mode[pin] = m;
+    if (mode !== 1) {
+      this.duty[pin] = -1;
+      this.pwmOn.delete(pin);
+    }
+    this.avr?.pinModeChanged(pin);
+    this.probe?.pin(pin, this.cyc);
   }
 
   digitalWrite(pin: number, v: number): void {
-    if (pin < 0 || pin >= this.mode.length) return;
+    if (!this.validPin(pin, "digitalWrite", true)) return;
     if (this.board.analogOnly.includes(pin)) return;
+    if (this.duty[pin] >= 0 || this.pwmSet.has(pin)) this.avr?.pwmOff(pin);
     this.duty[pin] = -1;
+    this.pwmOn.delete(pin);
     if (this.mode[pin] === Mode.OUTPUT) {
       this.latch[pin] = v ? 1 : 0;
       this.onWrite.get(pin)?.(v ? 1 : 0, this.cyc);
     }
-    // writing HIGH to an input turns its pull-up on, as on the AVR
-    else this.mode[pin] = v ? Mode.PULLUP : Mode.INPUT;
+    // writing HIGH to an input turns its pull-up on, as on the AVR; the 32-bit cores keep the level for when it is an output
+    else if (this.arch === "avr") this.mode[pin] = v ? Mode.PULLUP : Mode.INPUT;
+    else this.latch[pin] = v ? 1 : 0;
+    this.avr?.pinChanged(pin);
+    this.probe?.pin(pin, this.cyc);
   }
 
   digitalRead(pin: number): number {
-    if (pin < 0 || pin >= this.mode.length) return 0;
+    if (!this.validPin(pin, "digitalRead")) return 0;
     if (this.board.analogOnly.includes(pin)) {
       this.fault(`digitalRead(A${pin - this.board.analog[0]}): A6 and A7 are analog-only on the ${this.board.name}, so this always reads LOW`, "firmware", 0);
       return 0;
@@ -422,51 +542,98 @@ export class SimHal implements Hal {
   analogRead(pin: number): number {
     if (this.adc.done < Infinity && this.adc.adcsra & ADATE)
       this.fault("analogRead() while the ADC runs free from its registers: on the chip it rewrites ADMUX under the interrupt, and both get the wrong channel's readings", "firmware", 0);
-    // the ESP32 core takes GPIO numbers (A0 is GPIO26 on the Feather, BATT_MONITOR 35); the AVR core takes A0.. or 0..
-    const esp = this.board.arch === "esp32";
-    const p = esp ? ((this.board.adcPins ?? this.board.analog).includes(pin) ? pin : undefined) : this.board.analog[pin >= this.board.analog[0] ? pin - this.board.analog[0] : pin];
-    if (p === undefined) {
+    // the ESP32 and RP2040 cores take GPIO numbers (A0 is GPIO26 on the Feather, BATT_MONITOR 35); STM32duino takes
+    // a pin (PA0) or an analog number (8 is A8, PB0); the AVR core takes A0.. or a channel number 0..
+    const b = this.board;
+    let p: number | undefined;
+    if (b.adcPins) p = b.adcPins.includes(pin) ? pin : undefined;
+    else if (b.arch === "stm32") p = b.analog.includes(pin) ? pin : b.analog[pin];
+    else {
+      const base = b.analogBase ?? b.analog[0];
+      p = b.analog[pin >= base ? pin - base : pin];
+    }
+    if (p === undefined || p < 0 || b.noPins?.[p]) {
       this.fault(
-        esp
-          ? `analogRead(${pin}): GPIO${pin} is not an ADC pin on the ${this.board.name} (it reads ${(this.board.adcPins ?? this.board.analog).join(", ")})`
-          : `analogRead(${pin}): the ${this.board.name} has no analog input ${pin}`,
+        p !== undefined && p >= 0
+          ? `analogRead(${pin}): ${b.noPins![p]}`
+          : b.adcPins
+            ? `analogRead(${pin}): ${pinLabel(b, pin)} is not an ADC pin on the ${b.name} (it reads ${b.adcPins.map((q) => pinLabel(b, q)).join(", ")})`
+            : `analogRead(${pin}): the ${b.name} has no analog input ${pin}`,
         "firmware",
         0,
       );
       return 0;
     }
-    // the ESP32's ADC measures against its own reference, not its supply
-    const vref = this.analogRef === 3 ? 1.1 : esp ? this.board.adcRefV : (this.plant?.vref() ?? this.board.adcRefV);
+    // the 32-bit chips' ADCs measure against their own 3.3 V reference, not the supply
+    const vref = this.arch === "avr" ? this.avrRef() : b.adcRefV;
     const v = this.plant?.analogVolts(p, this.cyc);
-    const max = (1 << this.board.adcBits) - 1;
+    // the ADC's own bits, then what analogReadResolution() asked for (the cores shift the reading up or down)
+    const hw = b.adcHwBits ?? b.adcBits;
+    const max = (1 << hw) - 1;
+    const scale = (r: number) => (this.readBits >= hw ? r * 2 ** (this.readBits - hw) : Math.floor(r / 2 ** (hw - this.readBits)));
     if (v === undefined) {
       // a floating input reads whatever charge is left on the sample capacitor
-      return Math.floor(200 + this.rng() * 300);
+      const r = scale(Math.floor((200 + this.rng() * 300) * 2 ** (hw - 10)));
+      this.probe?.adc(p, this.cyc, NaN, r);
+      return r;
     }
     const noise = (this.rng() + this.rng() - 1) * 0.7;
-    return Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    const r = scale(Math.max(0, Math.min(max, Math.round((v / vref) * max + noise))));
+    this.probe?.adc(p, this.cyc, v, r);
+    return r;
+  }
+
+  /** the AVR's ADC reference: the supply, or the chip's internal band-gap reference that analogReference() picked */
+  private avrRef(): number {
+    const m = this.analogRef;
+    const vcc = this.plant?.vref() ?? this.board.adcRefV;
+    // Arduino.h: the ATmega328P's INTERNAL is 3; the ATmega2560 has INTERNAL1V1 (2) and INTERNAL2V56 (3); the ATtiny85 INTERNAL1V1 (2) and INTERNAL2V56 (6, 7), with DEFAULT 0
+    switch (this.board.mcu) {
+      case "ATmega2560":
+        return m === 2 ? 1.1 : m === 3 ? 2.56 : vcc;
+      case "ATtiny85":
+        return m === 2 ? 1.1 : m === 6 || m === 7 ? 2.56 : vcc;
+      default:
+        return m === 3 ? 1.1 : vcc;
+    }
+  }
+
+  /** analogReadResolution(): the bits analogRead() returns, as the 32-bit cores scale the ADC's own (1 to 16) */
+  readResolution(bits: number): void {
+    if (!(bits >= 1 && bits <= 16)) {
+      this.fault(`analogReadResolution(${bits}): the ${this.board.name}'s core takes 1 to 16 bits, so the resolution stays ${this.readBits}`, "firmware", 0);
+      return;
+    }
+    this.readBits = Math.round(bits);
   }
 
   /** the ESP32 core's analogReadMilliVolts(): the reading in millivolts, through the chip's calibration */
   analogMilliVolts(pin: number): number {
-    const max = (1 << this.board.adcBits) - 1;
+    const max = 2 ** this.readBits - 1;
     return Math.round((this.analogRead(pin) / max) * this.board.adcRefV * 1000);
   }
 
   analogWrite(pin: number, v: number): void {
-    if (!this.validPin(pin, "analogWrite")) return;
+    if (!this.validPin(pin, "analogWrite", true)) return;
+    const b = this.board;
     this.mode[pin] = Mode.OUTPUT;
-    const timer = this.board.pwmTimer[pin];
-    const blocked = (timer === 1 && this.servoUs.size > 0) || (timer === 2 && this.toneHz.size > 0);
-    if (blocked) this.fault(`analogWrite(${pin}) while ${timer === 1 ? "Servo" : "tone()"} uses timer ${timer}: that stops PWM on pin ${pin}`, "firmware", 0);
-    if (!(pin in this.board.pwm) || blocked) {
+    // Servo takes timer 1 on the ATmega328P (timer 5 on the Mega), tone() timer 2: PWM on their pins stops
+    const timer = b.pwmTimer[pin];
+    const servoT = b.servoTimer ?? 1;
+    const blocked = timer !== undefined && ((timer === servoT && this.servoUs.size > 0) || (timer === (b.toneTimer ?? 2) && this.toneHz.size > 0));
+    if (blocked) this.fault(`analogWrite(${pin}) while ${timer === servoT ? "Servo" : "tone()"} uses timer ${timer}: that stops PWM on pin ${pin}`, "firmware", 0);
+    // 8 bits unless analogWriteResolution() (or the RP2040's analogWriteRange()) set another
+    const set = this.pwmSet.get(pin);
+    const max = set ? (1 << set.bits) - 1 : this.writeMax;
+    this.pwmOn.delete(pin);
+    if (!(pin in b.pwm) || blocked) {
       this.duty[pin] = -1;
-      this.latch[pin] = v >= 128 ? 1 : 0;
-      if (!(pin in this.board.pwm)) this.fault(`analogWrite(${pin}): pin ${pin} has no PWM on the ${this.board.name}, so it just switches fully on or off`, "firmware", 0);
+      this.latch[pin] = v >= (max + 1) / 2 ? 1 : 0;
+      this.avr?.pinChanged(pin);
+      this.probe?.pin(pin, this.cyc);
+      if (!(pin in b.pwm)) this.fault(`analogWrite(${pin}): ${pinLabel(b, pin)} has no PWM on the ${b.name}, so it just switches fully on or off`, "firmware", 0);
       return;
     }
-    // 8 bits unless analogWriteResolution() set another
-    const max = (1 << (this.pwmSet.get(pin)?.bits ?? 8)) - 1;
     if (v <= 0) {
       this.duty[pin] = -1;
       this.latch[pin] = 0;
@@ -474,6 +641,49 @@ export class SimHal implements Hal {
       this.duty[pin] = -1;
       this.latch[pin] = 1;
     } else this.duty[pin] = v / max;
+    this.pwmOn.add(pin);
+    this.shareDuty(pin);
+    // the core sets the pin's timer compare register; a timer the sketch set up itself makes the PWM from it
+    this.avr?.analogWritten(pin, v);
+    this.probe?.pin(pin, this.cyc);
+  }
+
+  /** Pins on one PWM channel (an RP2040 slice's A or B, an STM32 timer channel) carry one duty: the one written last. */
+  private shareDuty(pin: number) {
+    const b = this.board;
+    const ch = b.pwmShare?.[pin];
+    if (!ch) return;
+    for (const q of this.pwmOn) {
+      if (q === pin || b.pwmShare![q] !== ch || this.mode[q] !== Mode.OUTPUT) continue;
+      if (this.duty[q] !== this.duty[pin] || this.latch[q] !== this.latch[pin])
+        this.fault(`analogWrite(${pin}): ${pinLabel(b, pin)} and ${pinLabel(b, q)} share ${ch} on the ${b.name}, so both carry the duty written last; move one to a pin on another channel`, "firmware", 0);
+      this.duty[q] = this.duty[pin];
+      this.latch[q] = this.latch[pin];
+      this.probe?.pin(q, this.cyc);
+    }
+  }
+
+  /**
+   * analogWriteResolution(bits), analogWriteRange(top) and analogWriteFreq(hz) on the RP2040 and STM32 cores, which
+   * set every pin's PWM at once (the ESP32 core's take a pin: pwmAttach).
+   */
+  pwmGlobal(what: "bits" | "range" | "hz", v: number): void {
+    const b = this.board;
+    if (what === "hz") {
+      // arduino-pico clamps to 100 Hz .. 1 MHz; STM32duino's timers make anything their clock divides to
+      const lo = b.arch === "rp2040" ? 100 : 1;
+      const hz = Math.max(lo, Math.min(1_000_000, v));
+      if (hz !== v) this.fault(`analogWriteFreq(${v}): the ${b.name}'s core takes ${lo} Hz to 1 MHz, so the PWM runs at ${hz} Hz`, "firmware", 0);
+      this.writeHz = hz;
+      return;
+    }
+    const top = what === "bits" ? 2 ** Math.round(v) - 1 : Math.round(v);
+    const ok = what === "bits" ? v >= (b.arch === "rp2040" ? 4 : 1) && v <= 16 : v >= 15 && v <= 65535;
+    if (!ok) {
+      this.fault(`${what === "bits" ? `analogWriteResolution(${v})` : `analogWriteRange(${v})`}: the ${b.name}'s core takes ${what === "bits" ? (b.arch === "rp2040" ? "4 to 16 bits" : "1 to 16 bits") : "15 to 65535"}, so analogWrite() keeps 0 to ${this.writeMax}`, "firmware", 0);
+      return;
+    }
+    this.writeMax = top;
   }
 
   /**
@@ -501,6 +711,7 @@ export class SimHal implements Hal {
     this.pwmSet.set(pin, { hz, bits: Math.round(bits) });
     this.mode[pin] = Mode.OUTPUT;
     if (this.duty[pin] < 0) this.latch[pin] = 0;
+    this.probe?.pin(pin, this.cyc);
     return true;
   }
 
@@ -520,6 +731,7 @@ export class SimHal implements Hal {
       this.duty[pin] = -1;
       this.latch[pin] = 1;
     } else this.duty[pin] = duty / full;
+    this.probe?.pin(pin, this.cyc);
     return true;
   }
 
@@ -540,6 +752,14 @@ export class SimHal implements Hal {
       this.fault(`attachInterrupt(${n === 255 ? "NOT_AN_INTERRUPT" : n}): that pin has no external interrupt on the ${this.board.name} (only ${Object.keys(this.board.interrupts).join(" and ")}), so the handler never runs`, "firmware", 0);
       return;
     }
+    // the STM32's EXTI lines go by the pin's bit number, so PA0 and PB0 share line 0: the later one takes it
+    const line = this.board.irqLine;
+    if (line)
+      for (let m = 0; m < this.irqFn.length; m++)
+        if (m !== n && this.irqFn[m] && line[m] === line[n]) {
+          this.fault(`attachInterrupt(${n}): ${pinLabel(this.board, n)} and ${pinLabel(this.board, m)} share interrupt line EXTI${line[n]} on the ${this.board.name}, so ${pinLabel(this.board, m)}'s handler stops; put one on a pin with another number`, "firmware", 0);
+          this.irqFn[m] = null;
+        }
     this.irqFn[n] = fn;
     this.irqMode[n] = mode;
     this.irqPending[n] = false;
@@ -555,7 +775,7 @@ export class SimHal implements Hal {
 
   setInterrupts(on: boolean): void {
     this.intEnabled = on;
-    if (on && !this.inIsr && (this.irqPending.some(Boolean) || this.adc.pending)) this.nextEvt = this.cyc;
+    if (on && !this.inIsr && (this.irqPending.some(Boolean) || this.adc.pending || this.chips.length)) this.nextEvt = this.cyc;
   }
 
   // ---------- I/O registers: the ADC and SREG ----------
@@ -563,12 +783,17 @@ export class SimHal implements Hal {
   /** Take the firmware's ISR() handlers: the ones this board runs, and a fault for each it never would. */
   bindVectors(fw: { fnNames: string[]; call(name: string): unknown }) {
     for (const n of fw.fnNames.filter((x) => /_vect$/.test(x))) {
-      if (MODELLED_VECTORS.includes(n)) this.vectors.set(n, { fnName: n, call: () => fw.call(n) });
-      else this.fault(`ISR(${n}) never runs: the simulator runs ISR(ADC_vect) and attachInterrupt() handlers, not ${n.slice(0, -5).replace(/_/g, " ")} interrupts yet`, "firmware", 0);
+      const ref = { fnName: n, call: () => fw.call(n) };
+      if (MODELLED_VECTORS.includes(n)) this.vectors.set(n, ref);
+      else if (!this.avr?.bind(n, ref))
+        this.fault(`ISR(${n}) never runs: the simulator runs the ADC, timer 0/1/2 compare and overflow, pin-change and INT0/INT1 vectors and attachInterrupt() handlers, not ${n.slice(0, -5).replace(/_/g, " ")} interrupts yet`, "firmware", 0);
     }
+    this.avr?.reschedule();
   }
 
   register(name: string): IoRegister | undefined {
+    // the ATmega328P's registers are modelled; other AVRs share only SREG with it here, and the 32-bit chips have none
+    if (this.arch !== "avr" || (this.board.mcu !== "ATmega328P" && name !== "SREG")) return undefined;
     const known = this.regs.get(name);
     if (known) return known;
     const a = this.adc;
@@ -644,6 +869,7 @@ export class SimHal implements Hal {
         );
         break;
     }
+    r ??= this.avr?.register(name);
     if (r) this.regs.set(name, r);
     return r;
   }
@@ -724,7 +950,9 @@ export class SimHal implements Hal {
     }
     if (v === undefined) return Math.floor(200 + this.rng() * 300);
     const noise = (this.rng() + this.rng() - 1) * 0.7;
-    return Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    const r = Math.max(0, Math.min(max, Math.round((v / vref) * max + noise)));
+    if (mux < this.board.analog.length) this.probe?.adc(this.board.analog[mux], at, v, r);
+    return r;
   }
 
   /** ISR(ADC_vect): the hardware clears ADIF as the handler starts */
@@ -751,22 +979,56 @@ export class SimHal implements Hal {
     }
   }
 
+  get hwTimers() {
+    return this.espTimers ?? undefined;
+  }
+
+  setVector(name: string, fn: FnRef | null) {
+    if (!this.avr) return this.fault(`${name.replace(/_vect$/, "")}: the ${this.board.name} has no such interrupt`, "firmware", 0);
+    this.avr.setHandler(name as Parameters<AvrChip["setHandler"]>[0], fn);
+    this.avr.reschedule();
+  }
+
+  /** the cycles millis() and micros() have counted: the clock's own, unless the sketch changed timer 0 */
+  private coreCyc(): number {
+    const c = this.core;
+    return c.rate === 1 && c.at0 === 0 ? this.cyc : c.cyc0 + (this.cyc - c.at0) * c.rate;
+  }
+
+  /** timer 0 now overflows at another rate (its prescaler or mode changed): the core's time runs that much faster */
+  setCoreRate(rate: number) {
+    this.core = { rate, cyc0: this.coreCyc(), at0: this.cyc };
+  }
+
   millis(): number {
-    return Math.floor((this.cyc * 1000) / this.fcpu) >>> 0;
+    return Math.floor((this.coreCyc() * 1000) / this.fcpu) >>> 0;
   }
 
   micros(): number {
-    // the AVR core counts in 4 µs steps (timer 0 at 64 cycles a tick on 16 MHz); the ESP32's timer in 1 µs ones
-    if (this.board.arch === "esp32") return Math.floor(this.cyc / (this.fcpu / 1e6)) >>> 0;
-    return (Math.floor(this.cyc / (this.fcpu / 250000)) * 4) >>> 0;
+    // the AVR core counts timer 0's ticks of 64 cycles (4 µs steps at 16 MHz, 8 at 8 MHz); the 32-bit chips' timers count 1 µs ones
+    if (this.arch !== "avr") return Math.floor(this.cyc / (this.fcpu / 1e6)) >>> 0;
+    return (Math.floor(this.coreCyc() / 64) * (64e6 / this.fcpu)) >>> 0;
+  }
+
+  /** delay(): it waits on micros(), so it runs at the core's rate */
+  delayMs(ms: number) {
+    const r = this.core.rate;
+    if (r <= 0) {
+      this.fault("delay() never returns: timer 0 no longer overflows with its interrupt on, so the time it waits on stands still", "firmware", 0);
+      this.spend(this.endCyc - this.cyc);
+      return;
+    }
+    this.spend((ms * this.fcpu) / 1000 / r);
   }
 
   tone(pin: number, freq: number): void {
     this.toneHz.set(pin, freq);
+    this.probe?.pin(pin, this.cyc);
   }
 
   noTone(pin: number): void {
     this.toneHz.delete(pin);
+    this.probe?.pin(pin, this.cyc);
   }
 
   // ---------- serial ----------
@@ -777,6 +1039,8 @@ export class SimHal implements Hal {
   }
 
   private byteCycles() {
+    // a USB serial port (the Pico's, the XIAO's, the Black Pill's) ignores the baud rate and moves about 800 kB/s
+    if (this.board.usbSerial) return Math.round(this.fcpu / 800_000);
     return Math.round((10 * this.fcpu) / (this.baud || 115200));
   }
 
@@ -798,6 +1062,7 @@ export class SimHal implements Hal {
       }
       const last = this.txEnds.length > this.txHead ? this.txEnds[this.txEnds.length - 1] : this.cyc;
       this.txEnds.push(Math.max(last, this.cyc) + bc);
+      this.probe?.tx(0, b & 255, this.txEnds[this.txEnds.length - 1], bc);
       if (this.txHead > 4096) {
         this.txEnds = this.txEnds.slice(this.txHead);
         this.txHead = 0;
@@ -846,7 +1111,8 @@ export class SimHal implements Hal {
 
   private deliverSerial() {
     while (this.rxQueue.length && this.rxQueue[0].t <= this.cyc) {
-      const { b } = this.rxQueue.shift()!;
+      const { t, b } = this.rxQueue.shift()!;
+      this.probe?.rx(0, b, t, this.byteCycles());
       if (this.rxBuf.length < this.board.serialRx) this.rxBuf.push(b);
       else this.fault("Serial receive buffer overflowed (64 bytes): read Serial more often", "firmware", 0);
     }
@@ -887,12 +1153,34 @@ export class SimHal implements Hal {
   }
 
   private uartBegin(port: number, baud: number, rx: number, tx: number) {
-    if (this.board.arch !== "esp32") {
-      this.fault(`Serial${port} does not exist on the ${this.board.name}: it has one UART, Serial`, "firmware", 0);
+    const ports = this.board.uarts ?? [];
+    if (port > ports.length) {
+      this.fault(`Serial${port} does not exist on the ${this.board.name}: it has ${ports.length ? ["Serial", ...ports.map((_, i) => `Serial${i + 1}`)].join(", ") : "one UART, Serial"}`, "firmware", 0);
       return;
     }
-    const d = this.board.uarts?.[port - 1];
-    this.uarts.set(port, { baud: baud || 115200, rx: rx >= 0 ? rx : (d?.rx ?? -1), tx: tx >= 0 ? tx : (d?.tx ?? -1), txEnds: [], txHead: 0, rxQueue: [], rxBuf: [], overflowed: false });
+    // only the ESP32's UARTs go on whatever pins begin() names
+    const b = this.board;
+    if ((rx >= 0 || tx >= 0) && this.arch !== "esp32") {
+      this.fault(`Serial${port}.begin(baud, config, rx, tx) is the ESP32 core's: on the ${b.name} Serial${port} is fixed to its own pins`, "firmware", 0);
+      rx = tx = -1;
+    }
+    const d = ports[port - 1];
+    const u = { baud: baud || 115200, rx: rx >= 0 ? rx : (d?.rx ?? -1), tx: tx >= 0 ? tx : (d?.tx ?? -1), txEnds: [], txHead: 0, rxQueue: [], rxBuf: [], overflowed: false };
+    // the port's pins must be ones the board has, and their catch is told once (the XIAO ESP32C3's Serial1 defaults to its USB lines)
+    for (const [p, role, given] of [
+      [u.rx, "RX", rx >= 0],
+      [u.tx, "TX", tx >= 0],
+    ] as [number, string, boolean][]) {
+      if (p < 0 || this.warned.has(p)) continue;
+      const why =
+        b.noPins?.[p] ??
+        (p > this.topPin ? `the ${b.name} has no pin ${p}` : role === "TX" && b.inputOnly?.includes(p) ? `${pinLabel(b, p)} is input-only, so it cannot send` : b.pinWarn?.[p]);
+      if (!why) continue;
+      this.warned.add(p);
+      const move = this.arch === "esp32" ? `; name other pins with Serial${port}.begin(baud, SERIAL_8N1, rx, tx)` : "";
+      this.fault(`Serial${port}.begin(): its ${role} pin is ${pinLabel(b, p)}${given ? "" : ", the core's default"}. ${why}${move}`, "firmware", 0);
+    }
+    this.uarts.set(port, u);
   }
 
   private uartWrite(port: number, bytes: number[]): number {
@@ -913,6 +1201,7 @@ export class SimHal implements Hal {
       const last = u.txEnds.length > u.txHead ? u.txEnds[u.txEnds.length - 1] : this.cyc;
       const end = Math.max(last, this.cyc) + bc;
       u.txEnds.push(end);
+      this.probe?.tx(port, b & 255, end, bc);
       if (u.txHead > 4096) {
         u.txEnds = u.txEnds.slice(u.txHead);
         u.txHead = 0;
@@ -933,7 +1222,8 @@ export class SimHal implements Hal {
     const u = this.uarts.get(port);
     if (!u) return [];
     while (u.rxQueue.length && u.rxQueue[0].t <= this.cyc) {
-      const { b } = u.rxQueue.shift()!;
+      const { t, b } = u.rxQueue.shift()!;
+      this.probe?.rx(port, b, t, Math.round((10 * this.fcpu) / u.baud));
       if (u.rxBuf.length < this.board.serialRx) u.rxBuf.push(b);
       else if (!u.overflowed) {
         u.overflowed = true;
@@ -982,7 +1272,9 @@ export class SimHal implements Hal {
       return 4;
     }
     const dev = this.plant?.i2c(addr);
+    const t0 = this.cyc;
     this.wireTime(dev ? bytes.length : 0);
+    this.probe?.i2c(addr, "w", bytes, !!dev, t0, this.cyc);
     if (!dev) return 2;
     dev.write(bytes, this.cyc);
     return 0;
@@ -994,8 +1286,11 @@ export class SimHal implements Hal {
       return [];
     }
     const dev = this.plant?.i2c(addr);
+    const t0 = this.cyc;
     this.wireTime(dev ? n : 0);
-    return dev ? dev.read(n, this.cyc) : [];
+    const got = dev ? dev.read(n, this.cyc) : [];
+    this.probe?.i2c(addr, "r", got, !!dev, t0, this.cyc);
+    return got;
   }
 
   // ---------- EEPROM, servos, faults ----------
@@ -1017,6 +1312,7 @@ export class SimHal implements Hal {
   servoPulse(pin: number, us: number | null): void {
     if (us === null) this.servoUs.delete(pin);
     else this.servoUs.set(pin, us);
+    this.probe?.pin(pin, this.cyc);
   }
 
   fault(msg: string, file: string, line: number): void {

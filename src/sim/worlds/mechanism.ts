@@ -11,13 +11,33 @@ import { JetForces } from "../mech/forces";
 import { FieldForces, TunnelAir } from "../mech/magnetics";
 import { ActuatorDrive, MotorDrive, ServoDrive } from "../mech/drives";
 import { FRAME, type MechModel } from "../mech/model";
-import { qconj, qrot, sub, type Body, type V3 } from "../mech/solver";
+import { add, cross, qconj, qrot, sub, type Body, type V3 } from "../mech/solver";
 import { MECH_FACTORS, MechSystem } from "../mech/system";
 import { D2R, R2D, type VariantName } from "./common";
 import { FREE_LOAD, type DriveIO, type DriveMotion, type MotorLoad, type Orientation, type PlantView, type SceneBody, type SceneSpec, type World, type WorldEvent } from "./types";
 
 const RPM = 60 / (2 * Math.PI);
 const mm = (v: V3): [number, number, number] => [v[0] * 1000, v[1] * 1000, v[2] * 1000];
+
+/** A point followed through the run (sim.trace): where it is, how fast it goes, and what it did over the run. */
+interface Trace {
+  name: string;
+  body: string;
+  /** design pose, m */
+  at: V3;
+  p: V3;
+  v: V3;
+  /** m/s² */
+  a: V3;
+  seen: boolean;
+  start: V3;
+  path: number;
+  maxSpeed: number;
+  maxAccel: number;
+  reach: number;
+  lo: V3;
+  hi: V3;
+}
 
 interface Attached {
   kind: "motor" | "servo" | "actuator";
@@ -51,6 +71,7 @@ export class MechWorld implements World {
   /** the highest each moving body's centre got, m */
   private topZ = new Map<string, number>();
   private peakPower = new Map<string, number>();
+  private traces: Trace[];
   jets: JetForces[] = [];
   /** the design's coils, magnets and field sensors, and its wind tunnel test sections */
   magnetics?: FieldForces;
@@ -67,6 +88,7 @@ export class MechWorld implements World {
   ) {
     this.sys = new MechSystem(model, MECH_FACTORS[variant]);
     for (const [id, b] of this.sys.bodies) this.start.set(id, [...b.x]);
+    this.traces = (model.traces ?? []).map((t) => ({ ...t, p: [...t.at], v: [0, 0, 0], a: [0, 0, 0], seen: false, start: [...t.at], path: 0, maxSpeed: 0, maxAccel: 0, reach: 0, lo: [Infinity, Infinity, Infinity], hi: [-Infinity, -Infinity, -Infinity] }));
     this.assumptions.push(...model.notes);
     if (model.field && (model.field.coils.length || model.field.magnets.length)) {
       this.magnetics = new FieldForces(this.sys, model.field);
@@ -319,6 +341,33 @@ export class MechWorld implements World {
       const p = Math.abs(inp.power);
       if (p > (this.peakPower.get(inp.name) ?? 0)) this.peakPower.set(inp.name, p);
     }
+    // the design's motors, servos and actuators: the most power each put into its joint
+    for (const [comp, a] of this.devs) {
+      const p = Math.abs(a.drive.power);
+      if (p > (this.peakPower.get(comp) ?? 0)) this.peakPower.set(comp, p);
+    }
+    // followed points: a point of a rigid body moves at v + ω × r
+    for (const tr of this.traces) {
+      const b = s.bodies.get(tr.body) ?? s.frame;
+      const p = b.carry(tr.at);
+      const v = add(b.v, cross(b.w, sub(p, b.x)));
+      if (tr.seen) {
+        tr.a = [(v[0] - tr.v[0]) / dt, (v[1] - tr.v[1]) / dt, (v[2] - tr.v[2]) / dt];
+        tr.path += Math.hypot(...sub(p, tr.p));
+        tr.maxAccel = Math.max(tr.maxAccel, Math.hypot(...tr.a));
+      } else {
+        tr.seen = true;
+        tr.start = p;
+      }
+      tr.p = p;
+      tr.v = v;
+      tr.maxSpeed = Math.max(tr.maxSpeed, Math.hypot(...v));
+      tr.reach = Math.max(tr.reach, Math.hypot(...sub(p, tr.start)));
+      for (let k = 0; k < 3; k++) {
+        tr.lo[k] = Math.min(tr.lo[k], p[k]);
+        tr.hi[k] = Math.max(tr.hi[k], p[k]);
+      }
+    }
   }
 
   private once(key: string, t: number, kind: WorldEvent["kind"], text: string) {
@@ -365,6 +414,20 @@ export class MechWorld implements World {
         out[`${name}.speed`] = j.speed * 1000;
         out[`${name}.force`] = j.axisLoad;
       }
+      // what its bearing carries across the joint
+      if (j.kind === "pivot" || j.kind === "slider" || j.kind === "ball") out[`${name}.reaction`] = s.stats.get(name)?.reaction ?? 0;
+    }
+    // what each of the design's drives puts into its joint: power (W) and, for servos, torque (the plant gives a motor's)
+    for (const [comp, a] of this.devs) {
+      out[`${comp}.power`] = a.drive.power;
+      if (a.kind === "servo") out[`${comp}.torque`] = a.sign * a.drive.load;
+    }
+    for (const tr of this.traces) {
+      out[`${tr.name}.x`] = tr.p[0] * 1000;
+      out[`${tr.name}.y`] = tr.p[1] * 1000;
+      out[`${tr.name}.z`] = tr.p[2] * 1000;
+      out[`${tr.name}.speed`] = Math.hypot(...tr.v) * 1000;
+      out[`${tr.name}.accel`] = Math.hypot(...tr.a);
     }
     for (const m of s.meshes) out[`${m.name}.force`] = m.force;
     for (const th of s.threads) out[`${th.name}.thrust`] = th.thrust;
@@ -455,6 +518,27 @@ export class MechWorld implements World {
       if (lin) r[`${inp.name}.peak_force`] = inp.peak;
       else r[`${inp.name}.peak_torque`] = inp.peak * 1000;
       r[`${inp.name}.peak_power`] = this.peakPower.get(inp.name) ?? 0;
+    }
+    // the design's drives: the most torque (N·mm) or force (N) and power (W) each gave, and the work it did (J)
+    for (const [comp, a] of this.devs) {
+      const d = a.drive;
+      const key = `${comp}.${a.kind === "actuator" ? "peak_force" : "peak_torque"}`;
+      if (!(key in r)) r[key] = a.kind === "actuator" ? d.peak : d.peak * 1000;
+      r[`${comp}.peak_power`] = this.peakPower.get(comp) ?? 0;
+      r[`${comp}.work`] = d.work;
+    }
+    for (const tr of this.traces) {
+      r[`${tr.name}.max_speed`] = tr.maxSpeed * 1000;
+      r[`${tr.name}.max_accel`] = tr.maxAccel;
+      r[`${tr.name}.path`] = tr.path * 1000;
+      r[`${tr.name}.reach`] = tr.reach * 1000;
+      ["x", "y", "z"].forEach((ax, k) => {
+        r[`${tr.name}.${ax}`] = tr.p[k] * 1000;
+        if (tr.seen) {
+          r[`${tr.name}.${ax}_min`] = tr.lo[k] * 1000;
+          r[`${tr.name}.${ax}_max`] = tr.hi[k] * 1000;
+        }
+      });
     }
     for (const [id, b] of s.bodies) {
       if (b.fixed) continue;

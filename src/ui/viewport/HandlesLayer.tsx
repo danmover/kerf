@@ -18,6 +18,7 @@ import type { V3 } from "../../kernel/recipe";
 import { commitSource, endPreview, previewSource, realSource } from "../../app/project";
 import { revealSpan, useView } from "../../app/view";
 import { toast, useUi } from "../../app/ui";
+import { isCommand } from "../../app/shortcuts";
 import { usePicks } from "../../app/picks";
 import { fmtNum } from "../../lang/values";
 import { niceStep } from "../sketch/geom";
@@ -143,7 +144,7 @@ export function HandlesLayer({ host }: { host: () => PickHost | null }) {
   // H turns the handles off and on
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target) || (e.key !== "h" && e.key !== "H")) return;
+      if (isTyping(e.target) || !isCommand(e, "handles")) return;
       const ui = useUi.getState();
       const sk = useSketch.getState();
       if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || sk.active || sk.picking || useMarkup.getState().on || document.querySelector(".drawing-shell")) return;

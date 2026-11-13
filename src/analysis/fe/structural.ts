@@ -23,7 +23,7 @@ import { describeRegion, MIN_ELEMENT_SIZE, UNRELIABLE_RESIDUAL } from "../spec";
 import { allowableStress, type MechMaterial } from "../materials";
 import { COMPONENT_THERMAL, strengthAt, type ThermalMaterial } from "../thermalMaterials";
 import { activeNodes, heatBalance, solveSteady, solveTransient, type HeatGrid, type HeatSolve, type ThermalInput } from "./thermal";
-import { bucklingModes } from "./buckling";
+import { bucklingModes, geometricStiffness } from "./buckling";
 import { corotate, elementFrame, internalForce, largeEffect, maxTurn, solveLarge, turnVoigt } from "./large";
 import { runBeams, type BeamMember, type BeamResult } from "./beams";
 import type { PlyFailure } from "./laminate";
@@ -98,6 +98,8 @@ export interface StructuralInput {
   masses?: MassSpec[];
   /** find this many natural frequencies and mode shapes */
   modes?: number;
+  /** find the modes under the loads (pre-stressed modal): their stress adds its geometric stiffness to K */
+  prestress?: boolean;
   /**
    * A drop: accel is 1 g along dir and the support is the side that lands; the result is scaled to the
    * peak deceleration the fall's energy gives against the body's and the floor's stiffness.
@@ -352,6 +354,10 @@ export interface ModeResult {
 
 export interface ModalResult {
   modes: ModeResult[];
+  /** pre-stressed: the modes are under the loads, and these are the same modes' frequencies without them, Hz */
+  unloaded?: number[];
+  /** pre-stressed: the loads leave a mode with no stiffness (they would buckle the parts) */
+  buckles?: boolean;
   /** moving mass, kg */
   mass: number;
   iterations: number;
@@ -724,6 +730,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   if (!heatOnly && !inp.loads.length && !inp.accel && !inp.modes && !temps && !moved) throw new FeaError("The analysis has no loads. Add load: force(...), pressure(...) or torque(...), or gravity.");
   if (inp.buckling && !inp.loads.length && !inp.accel && !temps && !moved) throw new FeaError("Buckling needs loads to scale: add load: (or gravity) to say what presses on the parts.");
   if (inp.buckling && inp.modes) throw new FeaError("Check natural frequencies and buckling in separate analyses.");
+  if (inp.prestress) {
+    if (!inp.modes) throw new FeaError("prestressed: finds the natural frequencies under the loads, so it goes with modes:.");
+    if (!inp.loads.length && !inp.accel && !temps && !moved) throw new FeaError("Natural frequencies under load need loads for the stress that stiffens or softens the parts: add load:, gravity or accel:.");
+    if (inp.shake || inp.random) throw new FeaError("Shaking is answered from the natural frequencies with the parts unloaded; check the frequencies under load (prestressed:) in an analysis of its own.");
+    if (inp.drop) throw new FeaError("A drop works out its own forces from the fall; check the frequencies under load (prestressed:) in an analysis of its own.");
+  }
   if (inp.drop && (temps || inp.buckling)) throw new FeaError(`A drop works out its own forces from the fall; check ${temps ? "heat and temperatures" : "buckling"} in a separate analysis.`);
   if (inp.fatigue && (inp.drop || temps || inp.modes)) throw new FeaError(`Check fatigue in a separate analysis from the ${inp.drop ? "drop" : temps ? "heat and temperatures" : "natural frequencies"}.`);
   if (inp.fatigue && !inp.fatigue.cycles.length) throw new FeaError("The fatigue history has no load cycles in it.");
@@ -1931,8 +1943,13 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   let shapes: Float64Array[] = [];
   /** the free mass along X, Y and Z, t (what shaking the supports pushes on) */
   let freeMass: V3 = [0, 0, 0];
-  if (inp.modes) {
-    progress("Finding natural frequencies", 0.25);
+  /**
+   * The natural frequencies and shapes: of the parts as they are, or (with the loads' geometric stiffness, after the
+   * static solve) of the parts as loaded, starting from the unloaded shapes.
+   */
+  const findModes = (at: number, span: number, under?: { extra: (x: Float64Array, y: Float64Array) => void; start: Float64Array[] }) => {
+    const what = under ? "Finding natural frequencies under the loads" : "Finding natural frequencies";
+    progress(what, at);
     const tm = now();
     const nodeMass = lumpedMass();
     const mvec = new Float64Array(3 * nn);
@@ -1945,8 +1962,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
           mtot[d] += m;
         }
     }
-    const k = Math.max(1, Math.min(12, Math.round(inp.modes)));
-    const sol = lowestModes(H, mvec, k, { onIter: (it, res) => progress("Finding natural frequencies", 0.25 + 0.6 * Math.min(1, it / 60), { iter: it, residual: res }) });
+    const k = Math.max(1, Math.min(12, Math.round(inp.modes!)));
+    const sol = lowestModes(H, mvec, k, { onIter: (it, res) => progress(what, at + span * Math.min(1, it / 60), { iter: it, residual: res }), ...(under ?? {}) });
     shapes = sol.shapes;
     const modes: ModeResult[] = sol.lambda.map((lam, j) => {
       const phi = sol.shapes[j];
@@ -1969,9 +1986,30 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
       };
     });
     if (!sol.converged) warnings.push(`The frequency solver stopped at a residual of ${sol.residual.toExponential(1)}; frequencies may be off by a few percent.`);
+    const was = modal;
     modal = { modes, mass: ((mtot[0] + mtot[1] + mtot[2]) * 1e6) / 3, iterations: sol.iterations, residual: sol.residual, converged: sol.converged, ms: now() - tm };
+    if (under && was) {
+      // the loaded modes in the order of the unloaded ones they grew from (each shape's nearest, by mass-weighted overlap)
+      modal.unloaded = sol.shapes.map((phi) => {
+        let best = 0,
+          bestDot = -1;
+        under.start.forEach((psi, j) => {
+          let d = 0;
+          for (let i = 0; i < phi.length; i++) d += phi[i] * mvec[i] * psi[i];
+          if (Math.abs(d) > bestDot) {
+            bestDot = Math.abs(d);
+            best = j;
+          }
+        });
+        return was.modes[best]?.freq ?? 0;
+      });
+      modal.ms += was.ms;
+      modal.buckles = sol.lambda.some((lam) => lam < 0);
+      if (modal.buckles) warnings.push("Under these loads a mode has no stiffness left: the loads would buckle the parts. Check buckling (buckling: in an analysis of its own) and lighten the loads or stiffen the parts.");
+    }
     freeMass = mtot;
-  }
+  };
+  if (inp.modes) findModes(0.25, 0.6 * (inp.prestress ? 0.5 : 1));
   progress("Solving", 0.3);
   const tol = inp.tol ?? 1e-6;
   /** the loads, less what a region moved a set distance pulls on the rest (the moved dofs then join the answer) */
@@ -2492,8 +2530,8 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
   const frame = large ? elementFrame(hv, nx + 1, ny + 1) : null;
   const Rot = new Float64Array(9);
   /** buckling: each active element and its stress (at its centre, times its fill) */
-  const cellList = inp.buckling ? new Int32Array(nActive) : null;
-  const cellStress = inp.buckling ? new Float64Array(6 * nActive) : null;
+  const cellList = inp.buckling || inp.prestress ? new Int32Array(nActive) : null;
+  const cellStress = inp.buckling || inp.prestress ? new Float64Array(6 * nActive) : null;
   let cellN = 0;
   for (let e = 0; e < ne; e++) {
     if (!active[e]) continue;
@@ -2620,6 +2658,12 @@ export function runStructural(inp: StructuralInput, progress: Progress = () => u
     buckling = { factors: sol.factors, peaks, reversed: sol.reversed, iterations: sol.iterations, converged: sol.converged, ms: now() - tb };
     if (!sol.converged) warnings.push(`The buckling solver stopped after ${sol.iterations} rounds before the factors settled; treat them as rough.`);
     if (!sol.factors.length) warnings.push(sol.reversed !== null ? `Nothing buckles under these loads; with the loads reversed it would buckle at ${fmt(sol.reversed, 2)}× them.` : "Nothing buckles under these loads: they stretch the parts rather than press them.");
+  }
+
+  // ---------- natural frequencies under the loads ----------
+  if (inp.prestress && modal && cellList && cellStress) {
+    const extra = geometricStiffness({ cells: cellList.subarray(0, cellN), stress: cellStress.subarray(0, 6 * cellN), n: [nx, ny, nz], h: hv }, H.levels[0].free);
+    findModes(0.93, 0.06, { extra, start: shapes });
   }
 
   // ---------- nodal results ----------

@@ -6,7 +6,7 @@
 
 import { fmtNum } from "../lang/values";
 
-export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "Nmm" | "rpm" | "count" | "turns" | "yes/no" | "text" | "W" | "Wh" | "mm3/s" | "g";
+export type ResultUnit = "mm" | "mm/s" | "s" | "deg" | "share" | "V" | "A" | "mAh" | "C" | "bytes" | "N" | "Nmm" | "rpm" | "count" | "turns" | "yes/no" | "text" | "W" | "Wh" | "mm3/s" | "g" | "J" | "m/s2";
 
 export interface ResultInfo {
   unit: ResultUnit;
@@ -147,7 +147,7 @@ export const MECH_RESULTS: Record<string, ResultInfo> = {
   "<joint>.pos_min": { unit: "mm", doc: "a slider's lowest position" },
   "<joint>.pos_max": { unit: "mm", doc: "a slider's highest position" },
   "<joint>.travel": { unit: "mm", doc: "how far a slider moved in all" },
-  "<joint>.max_speed": { unit: "mm/s", doc: "a slider's highest speed" },
+  "<joint>.max_speed": { unit: "mm/s", doc: "a slider's highest speed; for a sim.trace point, the fastest it moved" },
   "<joint>.peak_force": { unit: "N", doc: "the most force along a slider's axis; for gears the tooth force, for a cam the follower force, for a spring its force" },
   "<joint>.bearing_load": { unit: "N", doc: "the most force across a joint (what its bearings carry)" },
   "<joint>.hit_stop": { unit: "yes/no", doc: "a joint with limits reached one of its end stops" },
@@ -160,7 +160,16 @@ export const MECH_RESULTS: Record<string, ResultInfo> = {
   "<cam>.jump": { unit: "mm", doc: "how far the follower left the cam (0 when it stayed on)" },
   "<cam>.lifted_time": { unit: "s", doc: "time the follower spent off the cam" },
   "<clutch>.slip_time": { unit: "s", doc: "time a clutch or brake spent slipping; for a wheel, time spinning on the floor" },
-  "<input>.peak_power": { unit: "W", doc: "the most power a sim.turn input gave" },
+  "<input>.peak_power": { unit: "W", doc: "the most power a sim.turn input, or one of the design's motors, servos or actuators, put into its joint" },
+  "<motor>.work": { unit: "J", doc: "the work a motor, servo or actuator of the design did on its joint over the run (less what the joint drove back into it)" },
+  "<trace>.max_accel": { unit: "m/s2", doc: "the hardest a sim.trace point accelerated (a jolt at a stop shows here)" },
+  "<trace>.path": { unit: "mm", doc: "how far a sim.trace point travelled along its path" },
+  "<trace>.reach": { unit: "mm", doc: "the farthest a sim.trace point got from where it started" },
+  "<trace>.x_min": { unit: "mm", doc: "the lowest x a sim.trace point reached (also .x_max, .y_min, .y_max, .z_min, .z_max)" },
+  "<trace>.x_max": { unit: "mm", doc: "the highest x a sim.trace point reached" },
+  "<trace>.y_min": { unit: "mm", doc: "the lowest y a sim.trace point reached" },
+  "<trace>.y_max": { unit: "mm", doc: "the highest y a sim.trace point reached" },
+  "<trace>.z_min": { unit: "mm", doc: "the lowest a sim.trace point got" },
   "<body>.x": { unit: "mm", doc: "where a moving body's centre of mass is at the end (also .y, .z)" },
   "<body>.moved": { unit: "mm", doc: "how far a moving body's (or a loose box's) centre ended up from where it started" },
   "<body>.z_max": { unit: "mm", doc: "the highest a moving body's (or a loose box's) centre got: a block that was picked up, not pushed along" },
@@ -229,6 +238,10 @@ export function fmtResult(v: number | boolean | string | undefined, unit?: Resul
       return `${fmtNum(v, 1)} mm³/s`;
     case "g":
       return `${fmtNum(v, 1)} g`;
+    case "J":
+      return `${fmtNum(v, Math.abs(v) < 10 ? 2 : 0)} J`;
+    case "m/s2":
+      return `${fmtNum(v, Math.abs(v) < 10 ? 2 : 0)} m/s²`;
     case "yes/no":
       return v ? "yes" : "no";
     default:

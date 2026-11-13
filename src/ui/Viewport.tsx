@@ -16,6 +16,7 @@ import { lightingPreset } from "./viewport/render/studio";
 import { registerViewport } from "../app/viewportApi";
 import { openFind } from "../app/ui";
 import { Icon } from "./icons";
+import { desktop } from "../app/desktop";
 import { Menu, MenuItem } from "./common";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
@@ -37,6 +38,7 @@ import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/sessi
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { AirflowLayer } from "./AirflowLayer";
+import { FlowLayer } from "./FlowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { PickFilterMenu, PickLayer } from "./viewport/PickLayer";
 import { HandlesLayer } from "./viewport/HandlesLayer";
@@ -50,10 +52,15 @@ import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
 import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
+import { DecalDecorator } from "./viewport/parts/decals";
+import { useProject } from "../app/project";
 import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 import { ViewCube } from "./viewport/ViewCube";
 import { openViewportMenu } from "./viewport/contextMenus";
+
+/** Waits (ms) before each retry of a 3D view that failed to start. */
+const GL_RETRIES = [400, 1200, 3000];
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -74,6 +81,8 @@ export function Viewport() {
   const settings = useSettings();
   const theme = useTheme();
   const [webglError, setWebglError] = useState("");
+  // the 3D view's start-up attempt; a failed start is retried a few times before the error card
+  const [glTry, setGlTry] = useState(0);
   const [scene, setScene] = useState<SceneController | null>(null);
   // a ring that fills while a finger is held on the model, to open the spot chat
   const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
@@ -92,12 +101,26 @@ export function Viewport() {
   useEffect(() => {
     if (!mount.current) return;
     let c: SceneController;
+    const host = mount.current;
+    const had = new Set(Array.from(host.children));
     try {
-      c = new SceneController(mount.current);
+      c = new SceneController(host);
     } catch (e) {
-      setWebglError(e instanceof Error ? e.message : String(e));
+      // a start that failed part-way may have added its canvas already
+      for (const el of Array.from(host.children)) if (!had.has(el)) el.remove();
+      const msg = e instanceof Error ? e.message : String(e);
+      // WebGL can fail for a moment, e.g. while Chromium restarts its GPU
+      // process after the card reset: try again before giving up
+      if (glTry < GL_RETRIES.length) {
+        console.warn(`The 3D view couldn't start (${msg}); trying again`);
+        const t = setTimeout(() => setGlTry(glTry + 1), GL_RETRIES[glTry]);
+        return () => clearTimeout(t);
+      }
+      console.error("The 3D view couldn't start:", e);
+      setWebglError(msg || "Unknown error");
       return;
     }
+    setWebglError("");
     ctl.current = c;
     // circuit boards drawn in full: mask, copper, silkscreen and the parts on them
     const boards = new BoardDecorator(() => c.redecorate());
@@ -105,7 +128,9 @@ export function Viewport() {
     boards.setModel(useDesign.getState().model);
     // and bought electronics drawn as they look: printed labels, leads, moulded lettering
     const detail = new PartDetailDecorator();
-    decor.current = new Decorators([boards, detail]);
+    // and the decals written on parts: lettering and the project's pictures
+    const decals = new DecalDecorator(() => useProject.getState().current?.id, () => c.redecorate());
+    decor.current = new Decorators([boards, detail, decals]);
     c.setDecorator(decor.current);
     mfgOverlay.current = new ProcessOverlay(c);
     // with the selection filter on faces, edges or corners, a click picks those (the pick layer does), not the part
@@ -168,15 +193,20 @@ export function Viewport() {
       c.dispose();
       boards.dispose();
       detail.dispose();
+      decals.dispose();
       boardDecor.current = null;
       decor.current = null;
       ctl.current = null;
     };
-  }, []);
+  }, [glTry]);
 
   useEffect(() => {
     ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme });
   }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme]);
+
+  useEffect(() => {
+    ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
+  }, [settings.mouseScheme, settings.wheelReverse, glTry]);
 
   useEffect(() => {
     boardDecor.current?.setModel(model);
@@ -418,6 +448,7 @@ export function Viewport() {
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
       {scene && !inSketch && <AirflowLayer scene={scene} />}
+      {scene && !inSketch && <FlowLayer scene={scene} />}
       {scene && !inSketch && <SimLayer scene={scene} />}
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
       {scene && !inSketch && canFit && <FitLayer scene={scene} />}
@@ -473,9 +504,25 @@ export function Viewport() {
                   <Icon.Alert size={26} />
                 </div>
                 <div style={{ fontWeight: 600 }}>3D graphics are unavailable</div>
-                <div className="muted" style={{ marginTop: 6 }}>
-                  Kerf needs WebGL 2. Turn on hardware acceleration in your browser settings, or try a current version of Chrome, Edge, Firefox or Safari.
-                </div>
+                {desktop() ? (
+                  <>
+                    <div className="muted" style={{ marginTop: 6 }}>
+                      Kerf couldn't start 3D on this PC's graphics card. Restart Kerf, and if it happens again, update the graphics driver or pick another option in Settings → Display → Graphics.
+                    </div>
+                    <button className="btn primary sm" style={{ marginTop: 14 }} onClick={() => void desktop()?.relaunch()}>
+                      <Icon.Refresh size={13} /> Restart Kerf
+                    </button>
+                  </>
+                ) : (
+                  <div className="muted" style={{ marginTop: 6 }}>
+                    Kerf needs WebGL 2. Turn on hardware acceleration in your browser settings, or try a current version of Chrome, Edge, Firefox or Safari.
+                  </div>
+                )}
+                {webglError && (
+                  <div className="muted mono" style={{ marginTop: 10, fontSize: 11, opacity: 0.7, userSelect: "text" }}>
+                    {webglError}
+                  </div>
+                )}
               </div>
             ) : kernelStatus === "error" ? (
               <div className="card" style={{ padding: 24, maxWidth: 440, textAlign: "center" }}>

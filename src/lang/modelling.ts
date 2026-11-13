@@ -10,6 +10,7 @@ import { MOULD_FNS } from "./mould";
 import { SPLIT_FNS } from "./split";
 import { AERO_FNS } from "./aero";
 import { BLOCK_FNS } from "./blocks";
+import { DECAL_FNS } from "./decals";
 import { FeatRef, FeatureV, Fn, Obj, PathV, ProfileV, Ref, SelV, ShapeV, Vec, typeName, type CallCtx, type FeatStep, type Value } from "./values";
 import { MAX_TAPER, SEL_PRESETS, UNTIL_LIMIT, frameAt, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Frame, type Profile, type ProfileSeg, type Sel, type SelPreset, type ShapeRecipe, type ThreadForm, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
 import { threadDepth, threadTurnsError } from "../kernel/threadMath";
@@ -1072,4 +1073,4 @@ export function selMember(s: SelV, name: string): Value | undefined {
   return undefined;
 }
 
-export const MODELLING_FNS: Record<string, Fn> = { ...PROFILE_FNS, ...PATH_FNS, ...SOLID_FNS, ...FEATURE_FNS, ...SELECT_FNS, ...SHEET_FNS, ...MOULD_FNS, ...SPLIT_FNS, ...AERO_FNS };
+export const MODELLING_FNS: Record<string, Fn> = { ...PROFILE_FNS, ...PATH_FNS, ...SOLID_FNS, ...FEATURE_FNS, ...SELECT_FNS, ...SHEET_FNS, ...MOULD_FNS, ...SPLIT_FNS, ...AERO_FNS, ...DECAL_FNS };

@@ -24,7 +24,7 @@ export function qtSocket(id: string, name: string, v: string): { spots: SpotDef[
 // ---------------- controllers ----------------
 
 const unoPins: PinDef[] = [
-  ...avrPins({ digital: 14, pwm: [3, 5, 6, 9, 10, 11], analog: 6, bus: { A4: "i2c_sda", A5: "i2c_scl", D0: "uart_rx", D1: "uart_tx" }, serial: { 0: "USB serial RX: avoid while using the serial monitor", 1: "USB serial TX: avoid while using the serial monitor" } }),
+  ...avrPins({ digital: 14, pwm: [3, 5, 6, 9, 10, 11], analog: 6, bus: { A4: "i2c_sda", A5: "i2c_scl", D0: "uart_rx", D1: "uart_tx", D11: "spi_mosi", D12: "spi_miso", D13: "spi_sck" }, serial: { 0: "USB serial RX: avoid while using the serial monitor", 1: "USB serial TX: avoid while using the serial monitor" } }),
   pwrIn("VIN", 7, 12, { vabs: 20, draw: 0.05, required: false, note: "Barrel jack / VIN through the onboard 5 V regulator" }),
   rail("V5", 5, 0.3, 0.05, { label: "5V", note: "From the onboard regulator when powered from VIN (keep loads small: it heats up), or feed a regulated 5 V in here" }),
   pwrOut("V3V3", 3.3, 0.05, { label: "3.3V" }),
@@ -37,7 +37,7 @@ const megaPins: PinDef[] = [
     pwm: [2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 44, 45, 46],
     irq: [2, 3, 18, 19, 20, 21],
     analog: 16,
-    bus: { D20: "i2c_sda", D21: "i2c_scl", D0: "uart_rx", D1: "uart_tx", D19: "uart_rx", D18: "uart_tx", D17: "uart_rx", D16: "uart_tx", D15: "uart_rx", D14: "uart_tx" },
+    bus: { D20: "i2c_sda", D21: "i2c_scl", D0: "uart_rx", D1: "uart_tx", D19: "uart_rx", D18: "uart_tx", D17: "uart_rx", D16: "uart_tx", D15: "uart_rx", D14: "uart_tx", D51: "spi_mosi", D50: "spi_miso", D52: "spi_sck" },
     serial: { 0: "USB serial RX: avoid while using the serial monitor", 1: "USB serial TX: avoid while using the serial monitor" },
   }),
   pwrIn("VIN", 7, 12, { vabs: 20, draw: 0.08, required: false, note: "Barrel jack / VIN through the onboard 5 V regulator" }),
@@ -47,7 +47,7 @@ const megaPins: PinDef[] = [
 ];
 
 const nanoPins: PinDef[] = [
-  ...avrPins({ digital: 14, pwm: [3, 5, 6, 9, 10, 11], analog: 8, analogOnly: [6, 7], bus: { A4: "i2c_sda", A5: "i2c_scl", D0: "uart_rx", D1: "uart_tx" }, serial: { 0: "USB serial RX", 1: "USB serial TX" } }),
+  ...avrPins({ digital: 14, pwm: [3, 5, 6, 9, 10, 11], analog: 8, analogOnly: [6, 7], bus: { A4: "i2c_sda", A5: "i2c_scl", D0: "uart_rx", D1: "uart_tx", D11: "spi_mosi", D12: "spi_miso", D13: "spi_sck" }, serial: { 0: "USB serial RX", 1: "USB serial TX" } }),
   pwrIn("VIN", 7, 12, { vabs: 20, draw: 0.03, required: false }),
   rail("V5", 5, 0.25, 0.03, { label: "5V" }),
   pwrOut("V3V3", 3.3, 0.05, { label: "3.3V" }),
@@ -80,7 +80,7 @@ function esp32Pins(): PinDef[] {
   const adc2 = [0, 2, 4, 12, 13, 14, 15, 25, 26, 27];
   const strap: Record<number, string> = { 0: "Boot strapping pin: must be high at reset", 2: "Strapping pin: keep low or floating at reset", 5: "Strapping pin", 12: "Strapping pin: must be low at reset (flash voltage)", 15: "Strapping pin" };
   for (const n of io) {
-    out.push({ id: `IO${n}`, type: "io", v: 3.3, imax: 0.02, pwm: true, irq: true, adc: adc1.includes(n) || adc2.includes(n), mcu: String(n), bus: n === 21 ? "i2c_sda" : n === 22 ? "i2c_scl" : n === 17 ? "uart_tx" : n === 16 ? "uart_rx" : undefined, note: [strap[n], adc2.includes(n) ? "ADC2: analog reads do not work while Wi-Fi is on" : ""].filter(Boolean).join(". ") || undefined });
+    out.push({ id: `IO${n}`, type: "io", v: 3.3, imax: 0.02, pwm: true, irq: true, adc: adc1.includes(n) || adc2.includes(n), mcu: String(n), bus: n === 21 ? "i2c_sda" : n === 22 ? "i2c_scl" : n === 17 ? "uart_tx" : n === 16 ? "uart_rx" : n === 23 ? "spi_mosi" : n === 19 ? "spi_miso" : n === 18 ? "spi_sck" : undefined, note: [strap[n], adc2.includes(n) ? "ADC2: analog reads do not work while Wi-Fi is on" : ""].filter(Boolean).join(". ") || undefined });
   }
   for (const n of [34, 35, 36, 39]) out.push({ id: `IO${n}`, type: "io", v: 3.3, adc: true, irq: true, input_only: true, mcu: String(n), note: "Input only, no pull-ups" });
   out.push(pwrIn("V5", 4.75, 5.25, { label: "5V", vabs: 6, draw: 0.25, required: false, note: "5 V input (or USB). Draws up to 0.25 A with Wi-Fi on" }));

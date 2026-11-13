@@ -8,6 +8,7 @@ import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useDesign } from "../../core/engine";
 import { useSettings } from "../../app/settings";
 import { go, openSettings, useUi } from "../../app/ui";
+import { isCommand } from "../../app/shortcuts";
 import { joinText, serviceName, providerName, clock, desktopDictationHint } from "../../voice/text";
 import { desktop } from "../../app/desktop";
 import { allowOnlineSpeech, cancelVoice, dismissVoice, downloadSpeechModel, holdSend, sendNow, stopVoice, toggleVoice, useVoice, type VoiceClient, type VoicePhase } from "../../voice/voice";
@@ -109,7 +110,7 @@ export function useVoiceInput(o: Options): VoiceHandle {
         return;
       }
       const ui = useUi.getState();
-      if (e.key.toLowerCase() !== "v" || e.metaKey || e.ctrlKey || e.altKey || e.repeat || isTyping(e.target)) return;
+      if (e.repeat || isTyping(e.target) || !isCommand(e, "voice")) return;
       if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || ui.screen.name !== "workspace") return;
       // in the sketch editor V is the select tool
       const sketch = useSketch.getState();

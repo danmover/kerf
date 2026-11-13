@@ -38,6 +38,11 @@ const FIELD: Record<string, { label: string; unit: string }> = {
   qz: { label: "turn (z)", unit: "" },
   pitch: { label: "pitch", unit: "°" },
   roll: { label: "roll", unit: "°" },
+  x: { label: "x", unit: "mm" },
+  y: { label: "y", unit: "mm" },
+  z: { label: "z", unit: "mm" },
+  accel: { label: "acceleration", unit: "m/s²" },
+  reaction: { label: "bearing load", unit: "N" },
 };
 
 const PIT: Record<string, { label: string; unit: string }> = {

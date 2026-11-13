@@ -14,10 +14,32 @@ export interface ParseOptions {
   T: Types;
   /** library classes objects can be declared with (Servo) */
   classes: Set<string>;
+  /** library methods that take template arguments, worked out here as constants (FastLED.addLeds<WS2812B, 6, GRB>) */
+  templated?: Set<string>;
 }
 
 export function parseProgram(toks: Tok[], opts: ParseOptions): Program {
   return new Parser(toks, opts).program();
+}
+
+/**
+ * Parse a program, and give back a way to parse expressions with its types, structs and enums afterwards (the
+ * debugger's conditions and watches, which name the program's own types in casts and sizeof).
+ */
+export function parseProgramForDebug(toks: Tok[], opts: ParseOptions): { prog: Program; parseExpr: (toks: Tok[]) => Expr } {
+  const p = new Parser(toks, opts);
+  const prog = p.program();
+  const parseExpr = (t: Tok[]) => {
+    const q = new Parser(t, opts);
+    q.typedefs = p.typedefs;
+    q.structs = p.structs;
+    q.enums = p.enums;
+    q.consts = p.consts;
+    const e = q.expr();
+    if (q.peek().k !== "eof") q.fail(`Unexpected "${q.peek().v}" after the expression`);
+    return e;
+  };
+  return { prog, parseExpr };
 }
 
 class Parser {
@@ -93,7 +115,7 @@ class Parser {
 
   program(): Program {
     while (this.peek().k !== "eof") this.external();
-    return { globals: this.globals, funcs: this.funcs, consts: this.consts, ramStrings: this.ramStrings };
+    return { globals: this.globals, funcs: this.funcs, consts: this.consts, ramStrings: this.ramStrings, structs: this.structs };
   }
 
   external() {
@@ -170,7 +192,16 @@ class Parser {
   isTypeStart(o = 0): boolean {
     const t = this.peek(o);
     if (t.k !== "id") return false;
-    return STORAGE.has(t.v) || BASE.has(t.v) || this.typedefs.has(t.v) || this.structs.has(t.v) || this.enums.has(t.v) || this.opts.classes.has(t.v);
+    return STORAGE.has(t.v) || BASE.has(t.v) || this.typedefs.has(t.v) || this.structs.has(t.v) || this.enums.has(t.v) || this.opts.classes.has(t.v) || this.scopedClass(o) !== null;
+  }
+
+  /** a library class named in its namespace (fs::FS), starting at token o */
+  scopedClass(o = 0): string | null {
+    const t = this.peek(o);
+    const n = this.peek(o + 2);
+    if (t.k !== "id" || !this.is("::", o + 1) || n.k !== "id") return null;
+    const name = `${t.v}::${n.v}`;
+    return this.opts.classes.has(name) ? name : null;
   }
 
   specifiers(): { type: CType; storage?: string; isConst: boolean } {
@@ -206,6 +237,10 @@ class Parser {
         this.next();
         type = this.enumSpec();
         continue;
+      } else if (!type && !base && signed === undefined && !short && !long && this.scopedClass() !== null) {
+        type = { k: "class", name: this.scopedClass()! };
+        this.next();
+        this.next();
       } else if (!type && !base && signed === undefined && !short && !long && (this.typedefs.has(v) || this.structs.has(v) || this.enums.has(v) || this.opts.classes.has(v))) {
         type = this.typedefs.get(v) ?? this.structs.get(v) ?? this.enums.get(v) ?? { k: "class", name: v };
       } else break;
@@ -228,6 +263,8 @@ class Parser {
   }
 
   structSpec(union: boolean): CType {
+    // a library's header declares it (FastLED's CRGB): the library's C++ for it applies
+    const lib = this.peek().file.startsWith("<");
     let name = this.peek().k === "id" && !this.is("{") ? this.next().v : `<anonymous ${union ? "union" : "struct"}>`;
     if (!this.is("{")) {
       const known = this.structs.get(name);
@@ -262,6 +299,7 @@ class Parser {
     }
     st.size = size;
     st.complete = true;
+    if (lib) st.lib = true;
     return st;
   }
 
@@ -393,9 +431,47 @@ class Parser {
     let ref = false;
     if (this.eat("&")) ref = true;
     if (this.is("&&")) this.fail("Rvalue references are not supported");
-    if (this.is("(") && this.is("*", 1)) this.fail("Function pointers are not supported; pass the function by name");
+    // a function pointer, or an array of them: void (*patterns[])(), uint8_t (*pick)(uint8_t)
+    if (this.is("(") && this.is("*", 1)) {
+      this.next();
+      let stars = 0;
+      while (this.eat("*")) {
+        stars++;
+        while (this.is("const") || this.is("volatile")) this.next();
+      }
+      const fname = this.peek().k === "id" && !this.isTypeStart() ? this.next().v : undefined;
+      const fdims: number[] = [];
+      while (this.eat("[")) {
+        if (this.eat("]")) fdims.push(-1);
+        else {
+          fdims.push(this.constExpr(this.expr()));
+          this.expect("]");
+        }
+      }
+      this.expect(")");
+      this.expect("(", "the function's parameters");
+      const fparams = this.params();
+      while (this.is("const") || this.is("noexcept")) this.next();
+      let ft: CType = { k: "fn", ret: ref ? { k: "ref", to: type } : type, params: fparams.map((q) => q.type) };
+      for (let i = 0; i < stars; i++) ft = { k: "ptr", to: ft };
+      for (let i = fdims.length - 1; i >= 0; i--) ft = { k: "arr", of: ft, n: fdims[i] };
+      return { name: fname, type: ft };
+    }
     let name: string | undefined;
     if (this.peek().k === "id" && !this.isTypeStart()) name = this.next().v;
+    // a library struct built with its constructor: CRGB c(255, 0, 0); CHSV hue(HUE_AQUA, 255, 255);
+    // (not a function's declaration, CRGB pick(uint8_t i);, whose parentheses hold types)
+    if (name && type.k === "struct" && type.lib && !ref && this.is("(") && !this.is(")", 1) && (!this.isTypeStart(1) || this.is("::", 2) || this.is("(", 2))) {
+      const pos = this.pos();
+      this.next();
+      const args: Expr[] = [];
+      for (;;) {
+        args.push(this.assign());
+        if (this.eat(")")) break;
+        this.expect(",");
+      }
+      return { name, type, ctor: { k: "call", fn: { k: "id", name: type.name, ...pos }, args, ...pos } };
+    }
     // a library object built with constructor arguments: Adafruit_NeoPixel strip(60, 6, NEO_GRB);
     if (name && type.k === "class" && !ref && this.is("(")) {
       const pos = this.pos();
@@ -783,6 +859,19 @@ class Parser {
         const n = this.next();
         if (n.k !== "id") this.fail("Expected a member name", n);
         e = { k: "mem", a: e, name: n.v, arrow: t.v === "->", ...pos };
+        // a library method's template arguments, constants known here: FastLED.addLeds<WS2812B, DATA_PIN, GRB>(...)
+        if (this.opts.templated?.has(n.v) && this.is("<")) {
+          this.next();
+          const targs: number[] = [];
+          if (!this.eat(">"))
+            for (;;) {
+              // above the comparisons, so the closing > ends it
+              targs.push(this.constExpr(this.binary(7)));
+              if (this.eat(">")) break;
+              this.expect(",", `"," or ">" in ${n.v}<...>`);
+            }
+          e.targs = targs;
+        }
       } else if (t.v === "++" || t.v === "--") {
         this.next();
         e = { k: "post", op: t.v, a: e, ...pos };
@@ -807,6 +896,15 @@ class Parser {
       case "id": {
         if (t.v === "true" || t.v === "false") return { k: "num", v: t.v === "true" ? 1 : 0, type: BOOL, ...pos };
         if (t.v === "nullptr") return { k: "id", name: "NULL", ...pos };
+        // a name in a class's scope: AccelStepper::DRIVER, CRGB::Red
+        if (this.is("::") && this.peek(1).k === "id") {
+          let name = t.v;
+          while (this.is("::") && this.peek(1).k === "id") {
+            this.next();
+            name += "::" + this.next().v;
+          }
+          return { k: "id", name, ...pos };
+        }
         // functional cast: float(x), uint8_t(x)
         if ((this.typedefs.has(t.v) || BASE.has(t.v)) && this.is("(")) {
           this.p--;

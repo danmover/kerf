@@ -23,3 +23,5 @@ createRoot(document.getElementById("root")!).render(
 
 // the desktop app can offer Kerf's design tools to the person's own Claude Code
 if ("kerfDesktop" in window) void import("./ai/claudeCode").then((m) => m.serveClaudeCode());
+// and checks the 3D view can use the graphics card, going back to Auto graphics if a chosen backend fails
+if ("kerfDesktop" in window) void Promise.all([import("./app/desktop"), import("./app/ui")]).then(([d, ui]) => d.checkDesktopGraphics((t) => ui.toast(t, 12000)));

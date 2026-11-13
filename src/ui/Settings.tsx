@@ -10,7 +10,7 @@ import { storageEstimate } from "../persist/db";
 import { priceFor } from "../agents/pricing";
 import { resetChat } from "../ai/chat";
 import { KeyForm } from "../screens/Onboarding";
-import { Modal, Segmented, Toggle } from "./common";
+import { Modal, Segmented, Toggle, timeAgo, useTick } from "./common";
 import { Icon } from "./icons";
 import { AUDIENCES } from "../demos/templates";
 import { LogoMark } from "./Logo";
@@ -25,7 +25,8 @@ import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
-import { desktop, graphicsCard, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
+import { desktop, graphicsCard, isSoftwareRenderer, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
+import { MOUSE_SCHEMES, MOUSE_SCHEME_IDS, type MouseScheme } from "../app/mouse";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "AI", icon: <Icon.Sparkle size={14} /> },
@@ -240,6 +241,36 @@ function CopyLine({ text, label }: { text: string; label: string }) {
   );
 }
 
+const REMOVE_KERF = "claude mcp remove kerf -s user";
+
+/** Whether Claude Code has reached Kerf's tools since Kerf started, or was turned away. */
+function ClaudeCodeStatus({ info }: { info: ClaudeCodeInfo }) {
+  useTick(15000);
+  const ok = info.lastConnect;
+  const bad = info.lastRefused;
+  const [dot, t, d] =
+    bad && (!ok || bad.at > ok.at)
+      ? [
+          "fail",
+          `A program was turned away ${timeAgo(bad.at)}`,
+          bad.why === "no-token"
+            ? "It sent no token. Remove the old connection and run the connect command below exactly as copied."
+            : "Its token is old or mistyped. Remove the old connection and run the connect command below again.",
+        ]
+      : ok
+        ? ["pass", `Connected ${timeAgo(ok.at)}`, `${ok.client} reached Kerf's tools.`]
+        : ["", "Not connected yet", "Nothing has connected since Kerf started. Follow the steps below, then check with claude mcp list."];
+  return (
+    <div className="setting" aria-live="polite">
+      <span className={`dot ${dot}`} />
+      <div className="grow">
+        <div className="t">{t}</div>
+        <div className="d">{d}</div>
+      </div>
+    </div>
+  );
+}
+
 /** The person's own Claude Code, on their Claude plan, working through Kerf's tools (desktop app only). */
 function ClaudeCodeSection() {
   const cc = desktop()?.claudeCode;
@@ -248,6 +279,13 @@ function ClaudeCodeSection() {
   useEffect(() => {
     void cc?.info().then(setInfo);
   }, [cc]);
+  // follow connections as they happen, so the status shows the moment Claude Code reaches Kerf
+  const running = !!info?.running;
+  useEffect(() => {
+    if (!cc || !running) return;
+    const t = setInterval(() => void cc.info().then((n) => setInfo((o) => (JSON.stringify(o) === JSON.stringify(n) ? o : n))), 3000);
+    return () => clearInterval(t);
+  }, [cc, running]);
   const act = async (f: () => Promise<ClaudeCodeInfo>) => {
     setBusy(true);
     try {
@@ -257,7 +295,7 @@ function ClaudeCodeSection() {
     }
   };
   const newToken = async () => {
-    if (await confirmDialog({ title: "Make a new token?", body: "Claude Code's saved connection to Kerf stops working until you run the new connect command.", confirm: "New token" })) await act(() => cc!.newToken());
+    if (await confirmDialog({ title: "Make a new token?", body: "Claude Code's saved connection to Kerf stops working until you remove it and run the new connect command.", confirm: "New token" })) await act(() => cc!.newToken());
   };
   if (!cc)
     return (
@@ -286,13 +324,24 @@ function ClaudeCodeSection() {
           </button>
         </div>
       )}
+      {info?.running && <ClaudeCodeStatus info={info} />}
       {info?.running && (
         <div className="setting" style={{ display: "block" }}>
           <div className="t">Connect Claude Code (once)</div>
           <div className="d">
-            Install Claude Code and sign in by running <span className="mono">claude</span> once. Then run this in a terminal, which saves the connection for every folder:
+            1. Install Claude Code and sign in by running <span className="mono">claude</span> once in a terminal.
+          </div>
+          <div className="d" style={{ marginTop: 10 }}>
+            2. If Claude Code was connected to Kerf before, remove that connection. It's safe to run if it never was:
+          </div>
+          <CopyLine text={REMOVE_KERF} label="Copy the remove command" />
+          <div className="d" style={{ marginTop: 10 }}>
+            3. Connect. This saves the connection for every folder. Run it exactly as copied: Claude Code talks to Kerf directly, so it needs no mcp-remote or other bridge.
           </div>
           <CopyLine text={add} label="Copy the connect command" />
+          <div className="d" style={{ marginTop: 10 }}>
+            4. Check with <span className="mono">claude mcp list</span>. It should say <span className="mono">kerf: … Connected</span>, and the status above turns green. If it still lists an old kerf, run <span className="mono">claude mcp remove kerf -s local</span> in the folder you're in.
+          </div>
           <div className="d" style={{ marginTop: 10 }}>
             To design, open a project here, start Claude Code with Kerf's tools allowed and ask it, for example "Design a wall bracket for a 30 mm tube in Kerf":
           </div>
@@ -481,6 +530,19 @@ function AppSettings() {
           <Toggle on={s.edges} onChange={(v) => updateSettings({ edges: v })} label="Edge lines" />
         </Row>
       </Section>
+      <Section title="Mouse and keys">
+        <Row t="Mouse" d={MOUSE_SCHEMES[s.mouseScheme].d}>
+          <Segmented id="mouse" value={s.mouseScheme} options={MOUSE_SCHEME_IDS.map((id) => ({ value: id, label: MOUSE_SCHEMES[id].label }))} onChange={(v) => updateSettings({ mouseScheme: v as MouseScheme })} />
+        </Row>
+        <Row t="Reverse wheel zoom" d="Rolling the wheel towards you zooms in instead of out.">
+          <Toggle on={s.wheelReverse} onChange={(v) => updateSettings({ wheelReverse: v })} label="Reverse wheel zoom" />
+        </Row>
+        <Row t="Keyboard shortcuts" d={Object.keys(s.keys).length ? `You moved ${Object.keys(s.keys).length === 1 ? "one key" : `${Object.keys(s.keys).length} keys`}. The sheet puts any key, or all of them, back.` : "Move any single-key shortcut to the key you are used to, or take the standard view keys of SolidWorks or Onshape."}>
+          <button className="btn" onClick={() => (closeSettings(), useUi.setState({ shortcutsOpen: true }))}>
+            <Icon.Keyboard size={14} /> Change keys
+          </button>
+        </Row>
+      </Section>
       <GraphicsSettings />
       <Section title="Motion">
         <Row t="Reduce motion" d="Turns off interface animations and the build-in reveal of new parts. Mechanism playback still works when you press play.">
@@ -515,8 +577,17 @@ function GraphicsSettings() {
   };
   return (
     <Section title="Graphics">
-      <Row t="Graphics card" d={app ? "The card Kerf draws with." : "The card this browser draws with. If it isn't your fastest one, the Kerf desktop app always uses the fast card."}>
-        <span className="chip mono">{card}</span>
+      <Row
+        t="Graphics card"
+        d={
+          isSoftwareRenderer(card)
+            ? "Kerf is drawing 3D in software because it can't use the graphics card here (Remote Desktop, a missing or old driver, or a virtual machine). Updating the graphics driver usually fixes it."
+            : app
+              ? "The card Kerf draws with."
+              : "The card this browser draws with. If it isn't your fastest one, the Kerf desktop app always uses the fast card."
+        }
+      >
+        <span className={`chip mono${isSoftwareRenderer(card) || card === "No WebGL 2" ? " warn" : ""}`}>{card}</span>
       </Row>
       {info && info.backends.length > 1 && (
         <Row t="Graphics backend" d={BACKENDS[info.graphics].d}>

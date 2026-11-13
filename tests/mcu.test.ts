@@ -177,7 +177,7 @@ describe("C at the AVR's widths", () => {
 
   it("rejects what the chip cannot run with a clear message", () => {
     expect(() => run(`void test() { undefinedThing(); }`)).toThrow(/does not know the function undefinedThing/);
-    expect(() => run(`#include <SD.h>\nvoid test() {}`)).toThrow(/no library header "SD.h"/);
+    expect(() => run(`#include <Ethernet.h>\nvoid test() {}`)).toThrow(/no library header "Ethernet.h"/);
   });
 });
 

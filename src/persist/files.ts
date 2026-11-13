@@ -14,6 +14,7 @@ import { cleanName } from "../kernel/stepText";
 import { fromBase64, gunzip, sha256Hex } from "./blobs";
 import type { BranchRecord, ScriptRecord } from "./db";
 import { MAX_SCRIPTS, MAX_SCRIPT_CHARS, SCRIPT_ID, cleanScripts } from "../scripts/records";
+import { MAX_OWN_BLOCKS, MAX_OWN_FILES, MAX_OWN_FILE_CHARS, OWN_FILE, cleanFirmwareCode, type FirmwareCodeRecord } from "../machine/firmware/ownCode";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -61,6 +62,13 @@ const ScriptSchema = z.object({
   name: z.string().min(1).max(60),
   code: z.string().max(MAX_SCRIPT_CHARS),
   onChange: z.boolean().optional(),
+  updatedAt: z.number().finite(),
+});
+
+// a firmware block's own code (see src/machine/firmware/ownCode.ts)
+const FirmwareCodeSchema = z.object({
+  block: z.string().regex(/^[A-Za-z_][A-Za-z0-9_]{0,59}$/),
+  files: z.array(z.object({ path: z.string().regex(OWN_FILE), content: z.string().max(MAX_OWN_FILE_CHARS) })).max(MAX_OWN_FILES),
   updatedAt: z.number().finite(),
 });
 
@@ -135,6 +143,7 @@ const ProjectFileSchema = z.object({
   branches: z.array(BranchSchema).max(50).optional(),
   branch: BranchIdSchema.optional(),
   scripts: z.array(ScriptSchema).max(MAX_SCRIPTS).optional(),
+  firmware: z.array(FirmwareCodeSchema).max(MAX_OWN_BLOCKS).optional(),
 });
 
 export type ProjectFile = z.infer<typeof ProjectFileSchema>;
@@ -159,6 +168,8 @@ export interface ImportedProject {
   branch?: string;
   /** its scripts; none runs after each change until the user turns that on here */
   scripts?: ScriptRecord[];
+  /** its firmware blocks' own code */
+  firmware?: FirmwareCodeRecord[];
 }
 
 /** What reading a file produced: projects, the bytes of the STEP files they import, and anything that was dropped. */
@@ -196,6 +207,7 @@ const cleanProject = (p: ProjectFile, files: Map<string, Uint8Array>, warnings: 
   const branches = cleanBranches(p);
   const known = new Set(branches?.map((b) => b.id) ?? ["main"]);
   const scripts = cleanScripts(p.scripts, { keepOnChange: false });
+  const firmware = cleanFirmwareCode(p.firmware);
   return {
     name: cleanText(p.name, 120),
     source: cleanText(p.source, MAX_SOURCE_CHARS),
@@ -206,6 +218,7 @@ const cleanProject = (p: ProjectFile, files: Map<string, Uint8Array>, warnings: 
     imports,
     ...(branches ? { branches, ...(p.branch && p.branch !== "main" && known.has(p.branch) ? { branch: p.branch } : {}) } : {}),
     ...(scripts ? { scripts } : {}),
+    ...(firmware ? { firmware } : {}),
   };
 };
 
@@ -315,6 +328,7 @@ export interface ProjectFileExtras {
   branches?: BranchRecord[];
   branch?: string;
   scripts?: ScriptRecord[];
+  firmware?: FirmwareCodeRecord[];
 }
 
 export function projectFile(
@@ -323,10 +337,10 @@ export function projectFile(
   template: string,
   createdAt: number,
   versions: { ts: number; author: "you" | "claude" | "system"; message: string; source: string; branch?: string }[],
-  { assets = [], imports = [], importFiles = [], branches = [], branch, scripts = [] }: ProjectFileExtras = {},
+  { assets = [], imports = [], importFiles = [], branches = [], branch, scripts = [], firmware = [] }: ProjectFileExtras = {},
 ): string {
   // version 1 stays readable by older Kerf builds when nothing is imported (they skip the branches)
-  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}), ...(branches.length > 1 ? { branches, ...(branch ? { branch } : {}) } : {}), ...(scripts.length ? { scripts } : {}) };
+  const f: ProjectFile = { format: "kerf-project", version: imports.length ? 2 : 1, name, source, template, createdAt, versions, ...(assets.length ? { assets } : {}), ...(imports.length ? { imports, importFiles } : {}), ...(branches.length > 1 ? { branches, ...(branch ? { branch } : {}) } : {}), ...(scripts.length ? { scripts } : {}), ...(firmware.length ? { firmware } : {}) };
   return JSON.stringify(f, null, 1);
 }
 

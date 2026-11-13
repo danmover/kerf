@@ -32,6 +32,7 @@ import { calcParams } from "./reference";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
 import { SIM_TOOL_DEFS, SIM_TOOL_TITLES, runSimTool } from "./simTools";
 import { APP_TOOL_DEFS, APP_TOOL_TITLES, runAppTool } from "./appTools";
+import { FIRMWARE_TOOL_DEFS, FIRMWARE_TOOL_TITLES, runFirmwareTool } from "./firmwareTools";
 import { PROCESSES } from "../mfg/profiles";
 import { processFromText } from "../mfg/spec";
 import { pmiNote, sheetFor, useDrawings } from "../drawing/engine";
@@ -48,6 +49,7 @@ import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssump
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
 import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenTool";
+import { MASS_TOOL_DEFS, MASS_TOOL_TITLES, runMassTool } from "./massTool";
 import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
 import { FILM_TOOL_DEFS, FILM_TOOL_TITLES, runFilmTool } from "./filmTool";
 import { CAM_TOOL_DEFS, CAM_TOOL_TITLES, runCamTool } from "./camTool";
@@ -62,6 +64,8 @@ import type { AnalysisSpec, StructuralSpec, StudySpec } from "../analysis/spec";
 import { structuralSummary, drivetrainSummary, analysisLine, structuralVerdict, uciSummary, uciItems, uciVerdict } from "../analysis/summary";
 import { airflowItems, showAirflow, startAirflowNow, useAirflow, whenAirflowDone, type SurfaceShown } from "../analysis/aeroRuntime";
 import { airflowSummary } from "../analysis/aeroSummary";
+import { flowItems, showFlow, startFlowNow, useFlow, whenFlowDone } from "../analysis/flowRuntime";
+import { flowHottest, flowSummary } from "../analysis/flowSummary";
 import { evaluateSelector } from "../lang/evaluator";
 import { kernel } from "../kernel/client";
 import { inspectText } from "../kernel/inspectText";
@@ -72,6 +76,7 @@ import { ASKS_TOOL, AsksInput, asksState, asksText, remeasure, setAsks } from ".
 import { EXAMPLE_TOOL, ExampleInput, exampleText } from "./examples";
 import { LESSON_TOOL, LessonInput, saveLesson } from "./lessons";
 import { DEFERRED, ReferenceInput, referenceText } from "./leanReference";
+import { withOwnCode } from "../app/firmwareCode";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -180,7 +185,7 @@ export const TOOL_DEFS = [
   {
     name: "run_analysis",
     description:
-      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Heat analyses (heat: or hold:) report each part's hottest point against its limit, where the heat comes from and goes, and for a warm-up (time:) when a part passes its limit; with fix: they also report the thermal stress, with hot plastics weakened. Analyses with buckling report how many times the loads it takes to buckle the parts and where. Analyses with cycles: over 1000 or history: also report fatigue: the lowest fatigue safety factor, the shortest life and where, and which load cycles do the damage. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call, or check: true for an accuracy check (it solves again with 1.5× smaller elements and says how far each answer moved, and whether a peak stress is a singularity at a support). A design study (an analysis with vary:) runs only when named with label: it builds, checks and solves up to its runs: designs and returns the best one that passes, every design tried and how much each parameter matters; apply a design with edit_design alternative: \"<study> #<n>\".",
+      "Wait for the design to build, then run its analysis blocks and return the results. Structural analyses solve a finite-element model of the named parts and report the lowest factor of safety and what it is judged against (yield, fatigue or print-layer strength), peak von Mises stress and where, deflection, strain, mass, hot spots, support reactions and accuracy notes. Analyses with modes:, excite: or ringing: also report natural frequencies, how each mode moves and whether anything shakes it at resonance; drop: and tip: analyses report the fall, peak g on landing and the stresses it causes. Heat analyses (heat: or hold:) report each part's hottest point against its limit, where the heat comes from and goes, and for a warm-up (time:) when a part passes its limit; with fix: they also report the thermal stress, with hot plastics weakened. Analyses with buckling report how many times the loads it takes to buckle the parts and where. Analyses with cycles: over 1000 or history: also report fatigue: the lowest fatigue safety factor, the shortest life and where, and which load cycles do the damage. Drivetrain analyses report gear tooth bending, bearing life and shaft torsion. Airflow analyses (airflow: 45kmh) put the parts in a wind tunnel (lattice-Boltzmann LES on the GPU, rolling road, spinning wheels, an optional standard rider) and report drag, drag area CdA, side force, lift and watts at each yaw angle, the drag of each part, the surface patches that cause the most drag (pressure on fronts, suction behind backs, friction) and the change from the previous version; they take from under a minute to several minutes, and if one is still running when this returns, call run_analysis again later. Flow analyses (flow: \"fans\", \"natural\", or a set flow like flow: 20cfm with inlet:) blow air or water through and round the parts on a steady CFD grid (turbulence, fans on their curves, warm air rising) with the heat solved in the parts and the air together, and report each part's hottest temperature against what it can take, where the heat goes, each fan's working point on its curve and whether it stalls, the pressure a set flow takes and how it shares out between the outlets; they also take up to several minutes. The results are shown on the user's model. Add or change an analysis block with edit_design first. Pass fine: true to re-run a structural analysis at about 110,000 elements to confirm a close call, or check: true for an accuracy check (it solves again with 1.5× smaller elements and says how far each answer moved, and whether a peak stress is a singularity at a support). A design study (an analysis with vary:) runs only when named with label: it builds, checks and solves up to its runs: designs and returns the best one that passes, every design tried and how much each parameter matters; apply a design with edit_design alternative: \"<study> #<n>\".",
     input_schema: {
       type: "object" as const,
       properties: {
@@ -223,6 +228,7 @@ export const TOOL_DEFS = [
         analysis: { type: "string", description: "Which structural analysis to draw with results; default the one shown or the first." },
         airflow: { type: "string", enum: ["pressure", "friction", "streamlines", "wake", "eddies"], description: "Draw an airflow analysis's result: surface pressure (red: pushed on, blue: suction), skin friction, streamlines coloured by speed, the wake (where the air lost its total pressure) or the eddies. Run run_analysis first." },
         yaw: { type: "number", description: "With airflow: the yaw angle to draw (default the first)." },
+        cooling: { type: "string", enum: ["temperature", "inside", "streamlines", "cut"], description: "Draw a flow analysis's result (one with flow:): the parts coloured by temperature from the outside, inside (the case, lid or duct round them see-through), streamlines through the air coloured by speed, or a cut through the air and parts coloured by temperature (across the section: axis, default y). Run run_analysis first." },
         exploded: { description: "Show the design exploded: true for all the way, or 0 to 1 to step part way through taking it apart (screws out first). The result says which way each part came off, so you can check the assembly order and fix a part sent the wrong way with explode: on it.", anyOf: [{ type: "boolean" }, { type: "number", minimum: 0, maximum: 1 }] },
         groups: { type: "array", items: { type: "string" }, maxItems: 20, description: "Draw only these groups of parts (by their group: names), framed to fit, e.g. to look at the nozzle on its own." },
       },
@@ -410,6 +416,7 @@ export const TOOL_DEFS = [
   ...PROCESS_TOOL_DEFS,
   ...SIM_TOOL_DEFS,
   ...APP_TOOL_DEFS,
+  ...FIRMWARE_TOOL_DEFS,
   BUILD_TOOL,
   REVIEW_TOOL,
   {
@@ -441,6 +448,7 @@ export const TOOL_DEFS = [
   ...IMPORT_TOOL_DEFS,
   ...MATERIAL_TOOL_DEFS,
   ...FASTEN_TOOL_DEFS,
+  ...MASS_TOOL_DEFS,
   ...VIEW_TOOL_DEFS,
   ...FILM_TOOL_DEFS,
   ...CAM_TOOL_DEFS,
@@ -466,11 +474,13 @@ const ViewInput = z.object({
   analysis: z.string().max(200).optional(),
   airflow: z.enum(["pressure", "friction", "streamlines", "wake", "eddies"]).optional(),
   yaw: z.number().finite().optional(),
+  cooling: z.enum(["temperature", "inside", "streamlines", "cut"]).optional(),
   exploded: z.union([z.boolean(), z.number().min(0).max(1)]).optional(),
   groups: z.array(z.string().min(1).max(80)).max(20).optional(),
 });
 /** how long run_analysis waits for airflow runs before reporting them as still running */
 const AIRFLOW_WAIT_MS = 8 * 60_000;
+const FLOW_WAIT_MS = 10 * 60_000;
 /** and for a topology optimisation */
 const TOPOLOGY_WAIT_MS = 10 * 60_000;
 const AnalysisInput = z.object({ label: z.string().max(200).optional(), fine: z.boolean().optional(), check: z.boolean().optional() });
@@ -920,7 +930,7 @@ export function firmwareSummary(m: Model | null): { text: string; warnings: numb
   const mm = m?.machine;
   if (!m || !mm?.firmware.length) return { text: "", warnings: 0 };
   try {
-    const outs = generateFirmware(mm, m.name);
+    const outs = generateFirmware(withOwnCode(mm), m.name);
     const warnings = outs.reduce((s, o) => s + o.warnings.length, 0);
     const lines = outs.map((o) => {
       const head = `  - ${o.name} (board ${o.board || "?"}): ${o.target === "none" ? "no code generated" : o.target === "arduino" ? "Arduino sketch" : o.target === "marlin" ? "Marlin config" : o.target === "reprapfirmware" ? "RepRapFirmware config" : "Klipper config"}. ${o.summary}. ${o.files.length} file${o.files.length === 1 ? "" : "s"}, ${o.pinTable.length} wired signal${o.pinTable.length === 1 ? "" : "s"}.`;
@@ -1266,16 +1276,23 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         startAirflowNow();
         await whenAirflowDone(AIRFLOW_WAIT_MS);
       }
-      if (targets.some((a) => a.kind !== "airflow")) await whenAnalyzed(topoTarget ? TOPOLOGY_WAIT_MS : undefined, topoTarget ? [topoTarget.label] : []);
+      if (targets.some((a) => a.kind === "flow")) {
+        startFlowNow();
+        await whenFlowDone(FLOW_WAIT_MS);
+      }
+      if (targets.some((a) => a.kind !== "airflow" && a.kind !== "flow")) await whenAnalyzed(topoTarget ? TOPOLOGY_WAIT_MS : undefined, topoTarget ? [topoTarget.label] : []);
       const st = useAnalysis.getState();
       const report = useDesign.getState().report?.items ?? [];
       const air = useAirflow.getState();
+      const flows = useFlow.getState();
       const model = useDesign.getState().model;
       const text = targets
         .map((a) =>
           a.kind === "airflow"
             ? airflowSummary(a, air.runs.get(a.label), air.versions.get(a.label))
-            : a.kind === "structural"
+            : a.kind === "flow"
+              ? flowSummary(a, flows.runs.get(a.label), model ? flowItems(a, flows.runs.get(a.label), model) : [])
+              : a.kind === "structural"
               ? structuralSummary(a, st.runs.get(a.label))
               : a.kind === "uci"
                 ? uciSummary(a, report)
@@ -1291,6 +1308,10 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
           const items = model ? airflowItems(a, air.runs.get(a.label), model) : [];
           return items.some((i) => i.status === "fail") ? "fail" : items.some((i) => i.status === "warn" || i.status === "pending") ? "warn" : "pass";
         }
+        if (a.kind === "flow") {
+          const items = model ? flowItems(a, flows.runs.get(a.label), model) : [];
+          return items.some((i) => i.status === "fail") ? "fail" : items.some((i) => i.status === "warn" || i.status === "pending") ? "warn" : "pass";
+        }
         if (a.kind === "drivetrain") {
           const r = st.drivetrain.get(a.label);
           return !r || r.error || r.items.some((i) => i.status === "fail") ? "fail" : r.items.some((i) => i.status === "warn") ? "warn" : "pass";
@@ -1304,25 +1325,32 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
       if (firstShown) showResults(firstShown.label);
       const airShown = targets.find((a) => a.kind === "airflow" && air.runs.get(a.label)?.result);
       if (airShown) showAirflow(airShown.label);
+      const flowShown = targets.find((a) => a.kind === "flow" && flows.runs.get(a.label)?.result);
+      if (flowShown) showFlow(flowShown.label);
       const fails = verdicts.filter((v) => v === "fail").length;
       let title: string;
       if (targets.length === 1) {
         const a = targets[0];
         const r = a.kind === "structural" ? st.runs.get(a.label)?.result : undefined;
         const ar = a.kind === "airflow" ? air.runs.get(a.label)?.result : undefined;
+        const fr = a.kind === "flow" ? flows.runs.get(a.label)?.result : undefined;
+        const hot = fr ? flowHottest(fr)[0] : undefined;
         title = r?.topology
           ? `${a.label}: kept ${fmtNum(r.topology.kept * 100, 0)} %, ${fmtNum(r.topology.stiffness * 100, 0)} % as stiff`
           : r
           ? `${a.label}: safety ${fmtNum(r.minSafety.value, 2)} (target ${fmtNum(a.kind === "structural" ? a.safety : 0, 1)})`
           : ar
             ? `${a.label}: CdA ${fmtNum(ar.yaws.reduce((t, y) => t + y.cda, 0) / ar.yaws.length, 3)} m²`
-            : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
+            : hot
+              ? `${a.label}: hottest ${hot.name} ${fmtNum(hot.max, 1)} °C${hot.limit !== undefined ? ` (limit ${fmtNum(hot.limit, 0)} °C)` : ""}`
+              : `${a.label}: ${verdicts[0] === "fail" ? "fails" : verdicts[0] === "warn" ? "needs a look" : "passes"}`;
       } else title = fails ? `${fails} of ${targets.length} analyses failing` : `All ${targets.length} analyses pass`;
       return {
         content:
           text +
           (firstShown ? `\n\nThe results of "${firstShown.label}" are now shown on the user's model. Use capture_view with results to look at them.` : "") +
           (airShown ? `\n\nThe airflow of "${airShown.label}" is shown on the user's model. Use capture_view with airflow: "pressure", "streamlines" or "wake" to look at it.` : "") +
+          (flowShown ? `\n\nThe flow of "${flowShown.label}" is shown on the user's model: the parts coloured by temperature and streamlines through the air. Use capture_view with cooling: "inside", "streamlines" or "cut" to look at it.` : "") +
           (studies.length ? `\n\nDesign studies (${studies.map((a) => `"${a.label}"`).join(", ")}) were not run: each builds many designs, so it runs only when named, with run_analysis label: "<study>".` : "") +
           (topos.length ? `\n\nTopology optimisations (${topos.map((a) => `"${a.label}"`).join(", ")}) were not run: each takes many solves, so it runs only when named, with run_analysis label: "<label>".` : ""),
         card: { title, detail: verdicts.map((v, i) => `${targets[i].label}: ${v}`).join(" · "), status: fails ? "error" : "done" },
@@ -1395,6 +1423,25 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         }[kind];
         resultNote = `, showing ${what} from "${pick.label}" at ${fmtNum(r.yaws[yi].yaw, 1)}° yaw (the wind comes from the right at positive yaw)`;
       }
+      if (p.data.cooling) {
+        const fs = useFlow.getState();
+        const specs = (useDesign.getState().model?.analyses ?? []).filter((a) => a.kind === "flow" && fs.runs.get(a.label)?.result);
+        const pick = specs.find((a) => a.label === p.data.analysis) ?? specs.find((a) => a.label === fs.shown) ?? specs[0];
+        if (!pick) return { isError: true, content: 'No flow analysis has results to draw. Add one (flow: "fans", or a set flow like flow: 20cfm with inlet:) and call run_analysis first.', card: { title: "No flow to show", status: "error" } };
+        const kind = p.data.cooling;
+        const r = fs.runs.get(pick.label)!.result!;
+        const cut = p.data.section ?? "y";
+        useFlow.setState({ shown: pick.label, surface: true, xray: kind !== "temperature", lines: kind === "streamlines", colour: kind === "streamlines" ? "speed" : "temperature", slice: kind === "cut" ? cut : "off", sliceAt: 0.5 });
+        await new Promise((res) => setTimeout(res, 160));
+        const hot = flowHottest(r)[0];
+        const what = {
+          temperature: "the parts coloured by temperature from the outside",
+          inside: "the parts coloured by temperature, with the case, lid or duct round them see-through",
+          streamlines: `streamlines through the ${r.fluid} from the fans and openings, coloured by speed (blue still, red fastest), over the parts coloured by temperature`,
+          cut: `a cut across ${cut.toUpperCase()} through the middle, the ${r.fluid} and the parts coloured by temperature`,
+        }[kind];
+        resultNote = `, showing ${what} from "${pick.label}" (blue ${fmtNum(Math.floor(r.ambient), 0)} °C, red the hottest${hot ? `, ${hot.name} at ${fmtNum(hot.max, 1)} °C` : ""})`;
+      }
       const ids = expandNames(p.data.highlight ?? []);
       const explode = p.data.exploded === true ? 1 : typeof p.data.exploded === "number" && p.data.exploded > 0 ? p.data.exploded : undefined;
       if (explode) resultNote += explodeNote(explode);
@@ -1408,14 +1455,14 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
         only = gs.flatMap((g) => g.ids);
         resultNote += `, only ${gs.map((g) => g.name).join(", ")}`;
       }
-      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow, explode, only });
+      const url = await vp.capture({ view: p.data.view, width: 1024, height: 704, focus: ids, section: p.data.cooling === "cut" ? undefined : p.data.section, mime: "image/jpeg", quality: 0.85, samples: 24, overlays: !!p.data.results || !!p.data.airflow || !!p.data.cooling, explode, only });
       const data = url.split(",")[1] ?? "";
       return {
         content: [
           { type: "image", source: { type: "base64", media_type: "image/jpeg", data } },
           { type: "text", text: `Rendered ${p.data.view} view${p.data.section ? `, sectioned across ${p.data.section}` : ""}${ids.length ? `, highlighting ${p.data.highlight!.join(", ")}` : ""}${resultNote}. Z is up; X is red, Y is green in the axis triad.` },
         ],
-        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : p.data.airflow ? `Looked at the airflow (${p.data.airflow})` : explode ? `Looked at the exploded ${p.data.view} view` : `Looked at the ${p.data.view} view`, image: url },
+        card: { title: p.data.results ? `Looked at the ${p.data.results === "disp" ? "deflection" : p.data.results} results` : p.data.airflow ? `Looked at the airflow (${p.data.airflow})` : p.data.cooling ? `Looked at the cooling (${p.data.cooling})` : explode ? `Looked at the exploded ${p.data.view} view` : `Looked at the ${p.data.view} view`, image: url },
       };
     }
     case "view_drawing": {
@@ -1549,12 +1596,16 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (simOutcome) return simOutcome;
   const appOutcome = await runAppTool(name, input);
   if (appOutcome) return appOutcome;
+  const firmwareOutcome = await runFirmwareTool(name, input, ctx);
+  if (firmwareOutcome) return firmwareOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
   const material = await runMaterialTool(name, input, ctx);
   if (material) return material;
   const fasten = await runFastenTool(name, input, ctx);
   if (fasten) return fasten;
+  const weighed = await runMassTool(name, input);
+  if (weighed) return weighed;
   const viewed = await runViewTool(name, input);
   if (viewed) return viewed;
   const filmed = await runFilmTool(name, input);
@@ -1593,6 +1644,7 @@ export const TOOL_TITLES: Record<string, string> = {
   compare_designs: COMPARE_TITLE,
   ...MATERIAL_TOOL_TITLES,
   ...FASTEN_TOOL_TITLES,
+  ...MASS_TOOL_TITLES,
   ...VIEW_TOOL_TITLES,
   ...FILM_TOOL_TITLES,
   ...CAM_TOOL_TITLES,
@@ -1611,6 +1663,7 @@ export const TOOL_TITLES: Record<string, string> = {
   ...PROCESS_TOOL_TITLES,
   ...SIM_TOOL_TITLES,
   ...APP_TOOL_TITLES,
+  ...FIRMWARE_TOOL_TITLES,
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",
