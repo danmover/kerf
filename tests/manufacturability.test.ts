@@ -7,7 +7,7 @@ import { evaluate } from "../src/lang/evaluator";
 import { processItems, processProbes, rulesOnMachine } from "../src/mfg/report";
 import { resolveRules, specToSource } from "../src/mfg/profiles";
 import { processGuideText } from "../src/mfg/guide";
-import { bedTurn } from "../src/mfg/analyze";
+import { bedTurn, footprintTurn } from "../src/mfg/analyze";
 import { MACHINE_PRESETS, NO_MACHINES, findMachine, machinesText, sanitizeMachineFor, sanitizeMachines, type MachineContext } from "../src/mfg/machines";
 import type { ProcessFinding, ProcessResult } from "../src/mfg/types";
 import type { Model } from "../src/core/model";
@@ -113,6 +113,28 @@ part longer { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body box(3
     expect(find("long", "envelope")?.status).toBe("pass");
     expect(find("long", "envelope")?.detail).toMatch(/laid 45° across the bed/);
     expect(find("longer", "envelope")?.status).toBe("fail");
+  });
+
+  it("fits an arch across the bed's corners by its outline when its bounding box fits no way", () => {
+    // a 260 × 150 triangle: its box fits a 256 bed at no turn, its outline does at 45°
+    expect(bedTurn(260, 150, 256, 256)).toBeUndefined();
+    const tri = [-130, 0, 130, 0, 0, 150];
+    const t = footprintTurn(tri, 2, 0, 1, 256, 256)!;
+    expect(t.deg % 90).toBe(45);
+    expect(t.w).toBeLessThan(200);
+    expect(t.d).toBeLessThan(200);
+    // the turn is the one layAcross applies: x' = x cos − y sin, y' = x sin + y cos
+    const a = (t.deg * Math.PI) / 180;
+    const xs = [0, 2, 4].map((i) => tri[i] * Math.cos(a) - tri[i + 1] * Math.sin(a));
+    expect(Math.max(...xs) - Math.min(...xs)).toBeCloseTo(t.w, 6);
+    expect(footprintTurn([-200, 0, 200, 0, 0, 150], 2, 0, 1, 256, 256)).toBeUndefined();
+    const { find } = check(`
+part arch { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body extrude(polygon([(-130, 0), (130, 0), (0, 150)]), 10) }
+part wide { process: mfg.fdm(bed: (256, 256, 256)) material: "PETG" body extrude(polygon([(-200, 0), (200, 0), (0, 150)]), 10) }
+`);
+    expect(find("arch", "envelope")?.status).toBe("pass");
+    expect(find("arch", "envelope")?.detail).toMatch(/laid \d+° across the bed, where its outline takes/);
+    expect(find("wide", "envelope")?.status).toBe("fail");
   });
 });
 

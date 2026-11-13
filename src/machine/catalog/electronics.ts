@@ -1132,7 +1132,7 @@ export const ELECTRONICS: CatalogPart[] = [
     name: "XT60 plug on a 12 AWG pigtail, 100 mm",
     generic: true,
     summary: "The mate of a battery's XT60 with 100 mm of 12 AWG silicone wire already soldered on: the battery plugs into it, and its two bare ends go on to the fuse and the speed controller. 30 A continuous (60 A bursts).",
-    specs: { rating_a: 30, rating_burst_a: 60 },
+    specs: { rating_a: 30, rating_burst_a: 60, mass_g: 13 },
     pins: [{ id: "POS_A", type: "passive", through: "POS_B" }, { id: "POS_B", type: "passive", through: "POS_A" }, { id: "NEG_A", type: "passive", through: "NEG_B" }, { id: "NEG_B", type: "passive", through: "NEG_A" }],
     conns: [
       { id: "PLUG", name: "XT60 plug", pins: ["POS_A", "NEG_A"], keyed: true, how: "It only fits one way round. Push until the two halves meet." },

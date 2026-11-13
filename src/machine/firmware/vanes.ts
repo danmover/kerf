@@ -188,6 +188,8 @@ export function vaneFirmware(c: FwContext): VaneResult {
   // the third axis: the unit turning about its own jet. Off until the design gives its inertia
   const iYaw = setting(c.fw, "i_yaw", 0);
   const yawOn = iYaw > 0;
+  // a heading that starts on an end stop (yaw_home: the stop's angle): the fan's start-up twist parks the unit there
+  const homeStop = yawOn && Math.abs(Number(c.fw.settings.yaw_home ?? 0) || 0) > 0;
   const S = {
     // a servo board gives every output one frame rate, the ESC's too: 200 Hz suits digital servos and most ESCs
     servoHz: setting(c.fw, "servo_hz", viaHub ? 200 : 333),
@@ -326,7 +328,7 @@ ${yawOn ? `// ---- the third axis: the unit turns about its own jet (yaw), steer
 // the middle a heading may be asked for, degrees
 #define YAW_VANE_MAX_DEG ${cFloat(Math.min(S.yawVane, S.vaneMax * 0.6))}
 #define YAW_RANGE_DEG ${cFloat(S.yawRange)}
-// where the unit points when it is armed, degrees from the middle of its travel
+${homeStop ? "// the end stop the fan's start-up twists the unit onto, degrees from the middle of its travel: the heading counts\n// from it (park the unit there before arming; the loop takes the stop's angle again when it first closes)" : "// where the unit points when it is armed, degrees from the middle of its travel"}
 #define YAW_HOME_DEG ${cFloat(S.yawHome)}
 // the vane angle that holds off the jet's left-over swirl, to start from: the loop finds its own and "save" keeps it
 #define YAW_TRIM_DEG ${cFloat(S.yawTrim)}
@@ -366,6 +368,8 @@ ${yawOn ? `// ---- the third axis: the unit turns about its own jet (yaw), steer
 #define LOOP_US 2000
 
 // ---- load cell (force test)
+// from the pitch axis to where the link pushes the cell; negative when the cell is mounted the other way round, so a
+// push that reads as a positive force is a negative moment
 #define CELL_LEVER_M ${cFloat(Math.round(S.cellLever * 1e5) / 1e5)}
 // counts per newton from the cell's rating (${cNum(mvPerV)} mV/V at ${cNum(Math.round(ratedN * 100) / 100)} N, gain 128); "cal" measures yours
 #define CELL_COUNTS_PER_N ${cFloat(Math.round(countsPerN))}
@@ -947,7 +951,9 @@ float yawVane = 0;
 float yawTrim = YAW_TRIM_DEG;
 float spool = 0;
 float rootWas = 0;
-` : ""}bool saturated = false;
+${homeStop ? `// the heading has been taken from the home stop since arming
+bool yawHomed = false;
+` : ""}` : ""}bool saturated = false;
 uint32_t lastTick = 0;
 uint32_t lastLog = 0;
 bool logOn = false;
@@ -1266,7 +1272,8 @@ void coupleStep(uint32_t now, float dt) {
       cm += cellN;
       cmN++;
     } else if (tw > 1.0f) {
-      float m = cellN * CELL_LEVER_M;
+      // the nudges give the cell's sign, so only the lever's length counts here
+      float m = cellN * fabs(CELL_LEVER_M);
       sx += rate;
       sy += m;
       sxx += rate * rate;
@@ -1400,7 +1407,10 @@ ${viaHub && sensePin >= 0 ? `    else if (!hubTimed) OUTLN("servo board clock no
     else if (!calibrateGyro()) OUTLN("moved while the gyro was measured: hold it still and arm again");
     else {
       estStarted = false;
-${yawOn ? "      // the heading counts from here: the unit sits where YAW_HOME_DEG says\n      yaw = YAW_HOME_DEG * DEG;\n      gzf = 0;\n" : ""}      lastImuOk = millis();
+${yawOn ? `      // the heading counts from here: the unit sits where YAW_HOME_DEG says
+      yaw = YAW_HOME_DEG * DEG;
+      gzf = 0;
+${homeStop ? "      yawHomed = false;\n" : ""}` : ""}      lastImuOk = millis();
       lastTick = micros();
       thrustTarget = 0;
       mode = M_ARMED;
@@ -1685,7 +1695,15 @@ ${yawOn ? `  // throttle: ramps up, drops at once. While the loop holds the head
   float root = sqrt(thrust > 0 ? thrust : 0);
   spool += ((root - rootWas) / dt - spool) * dt / (0.1f + dt);
   rootWas = root;
-  if (!(mode == M_HOLD && thrust >= THRUST_LOOP_MIN)) {
+${homeStop ? `  if (mode == M_HOLD && thrust >= THRUST_LOOP_MIN && !yawHomed) {
+    // the loop closes for the first time since arming. The rotor starting up twisted the unit onto its home stop,
+    // wherever it sat before, so the heading is that stop's, not what the gyro summed on the way there
+    yawHomed = true;
+    yaw = YAW_HOME_DEG * DEG;
+    ref[2] = yaw;
+    refRate[2] = 0;
+  }
+` : ""}  if (!(mode == M_HOLD && thrust >= THRUST_LOOP_MIN)) {
     // the heading loop is open: no common angle, and its path starts from wherever the unit sits when it closes
     yawVane = 0;
     ref[2] = yaw;
@@ -1761,7 +1779,7 @@ ${wiring}
 
 A 500 Hz loop reads the LSM6DSOX (gyro and accelerometer in one burst), runs a complementary filter (0.5 s) on a gyro bias measured with the unit still (at power-up once it settles, and again at \`arm\`), and holds the fan unit level with a PD + I controller per axis in torque units: gains from the rig's inertia (I_ROLL, I_PITCH) for a ${cNum(S.wn)} rad/s, ζ ${cNum(S.zeta)} response, scaled by GAIN_SCALE (${cNum(S.gainScale)} for first runs). The integral term may hold up to ${cNum(Math.round(S.iShare * 100))} % of the vanes' full moment about an axis, which trims out an off-centre mass or a steady push, and it only unwinds while the vanes are at their limit. A set-point step (\`step\`) moves along a critically damped path at ${cNum(S.refWn)} rad/s whose acceleration is fed forward, so the unit follows it without overshooting. The fan rotor's gyroscopic push is cancelled (GYRO_K ${cNum(S.gyroK)}) and the two torques are mixed onto the four vanes in an X, all four scaled back together past ±${cNum(S.vaneMax)}°.
 ${yawOn ? `
-**The third axis.** The unit also turns about its own jet. Its heading is the gyro's Z rate summed from YAW_HOME_DEG at \`arm\` (it drifts by a degree or so a minute, which a run does not notice), and the loop holds it with all four vanes turned the same way: a common angle turns the unit about the jet and tilts nothing. It is a PD in torque units (${cNum(S.wnYaw)} rad/s, ζ ${cNum(S.zetaYaw)}) with two things fed forward: the heading path's own acceleration, and the twist the rotor gives the unit whenever it changes speed. What is left of the fan's swirl after its stators twists the unit steadily; that and the vanes' moment both go with thrust, so one vane angle holds it off at any thrust. The loop finds that angle (\`show\` prints it as the heading trim) and \`save\` keeps it. The heading may use up to ±${cNum(Math.min(S.yawVane, S.vaneMax * 0.6))}° of vane; roll and pitch always keep the rest. Roll and pitch are still measured and steered in the unit's own axes (the IMU and the vanes turn with it), and the controller turns the wanted accelerations into the gimbal's axes by the heading before it applies the inertias, because the roll ring and the pitch arch do not turn with the unit.
+**The third axis.** The unit also turns about its own jet. Its heading is the gyro's Z rate summed from YAW_HOME_DEG at \`arm\` (it drifts by a degree or so a minute, which a run does not notice)${homeStop ? ". YAW_HOME_DEG is the end stop the rotor's start-up twists the unit onto, so that stop is the heading's datum: the firmware takes the stop's angle once more when the loop first closes after \`arm\`, wherever the unit sat before" : ""}, and the loop holds it with all four vanes turned the same way: a common angle turns the unit about the jet and tilts nothing. It is a PD in torque units (${cNum(S.wnYaw)} rad/s, ζ ${cNum(S.zetaYaw)}) with two things fed forward: the heading path's own acceleration, and the twist the rotor gives the unit whenever it changes speed. What is left of the fan's swirl after its stators twists the unit steadily; that and the vanes' moment both go with thrust, so one vane angle holds it off at any thrust. The loop finds that angle (\`show\` prints it as the heading trim) and \`save\` keeps it. The heading may use up to ±${cNum(Math.min(S.yawVane, S.vaneMax * 0.6))}° of vane; roll and pitch always keep the rest. Roll and pitch are still measured and steered in the unit's own axes (the IMU and the vanes turn with it), and the controller turns the wanted accelerations into the gimbal's axes by the heading before it applies the inertias, because the roll ring and the pitch arch do not turn with the unit.
 ` : ""}${viaHub ? `
 **Pulses.** The ${hubLabel} makes all five pulses (four vanes and the ESC) and the controller sets them over I2C, so the servos and the ESC plug straight onto the board. One frame rate serves every output: SERVO_HZ ${cNum(S.servoHz)} asks for it and the chip's divider gives about ${cNum(frameHz)} Hz. The chip's oscillator is 25 MHz on paper and up to 8 % out on a real one, and every pulse is out by the same share, the ESC's too: uncorrected, that is the fan running well over or under the thrust asked for. ${sensePin >= 0 ? `So the firmware measures it: channel ${senseCh} gives a pulse of half a frame, the jumper carries it to pin ${sensePin}, and the controller times it against its own crystal at every start-up and \`reset\`. \`show\` prints the clock it found, and \`arm\` refuses until it has one (check the jumper).` : `Measure it once: a multimeter on Hz between a channel's signal pin and GND reads the frame rate; set HUB_OSC_HZ as \`config.h\` says. Better, wire a spare channel's signal pin back to a free controller pin in the design and the firmware times the board itself.`} The ESC's stop pulse (${escStop} µs) sits under its range (${escMin} to ${escMax} µs), so it arms either way. If the ESC will not arm at this frame rate, set \`servo_hz: 50\` in the design's firmware block (slower vanes, but every ESC takes 50 Hz).
 ` : ""}
@@ -1769,11 +1787,11 @@ Safety: ${estopCut ? `the e-stop's normally-closed contact is in the ${hubLabel}
 
 ## Bench order
 
-1. **Servos** (fan off): \`servo 1 10\` … check each vane turns +10° with the vane gauge; \`trim\` and \`save\`. SERVO_US_PER_DEG is ${cNum(Math.round(usPerDeg * 100) / 100)} µs/° from the servo's catalogue range: measure yours.
+1. **Servos** (fan off): \`servo 1 10\` … sight along each vane's hinge line with a protractor (or a card cut to 10°) held on the nozzle's end: the vane should stand straight at 0 and turn to +10°; \`trim\` and \`save\`. SERVO_US_PER_DEG is ${cNum(Math.round(usPerDeg * 100) / 100)} µs/° from the servo's catalogue range: measure yours.
 2. **Sign test** (fan off): \`sign\`, then \`servo 2 10\` and so on. Each vane at +10° should push the unit the way the design's drawing shows; flip VANE_DIR for any that do not.
 3. **Static force test**: roll ${yawOn ? "and yaw " : ""}locked, the load cell link fitted, \`tare\`, \`arm\`, \`t 70\`, \`sweep\`. It prints the vane moment per degree and the LIFT_K to set.
 4. **Coupling test**: roll free, ${yawOn ? "yaw locked, " : ""}pitch still on the load cell link, \`tare\`, \`arm\`, \`t 70\`, \`couple\`. Two pitch nudges give the cell's sign, then the vanes rock the unit ±5° in roll at 1 Hz for 8 s while the cell feels the rotor's gyroscopic push on pitch. It prints the rotor's momentum against the prediction, whether ROTOR_DIR is right (\`rotor\` and \`save\` if not) and the H_FULL it measured. The fan goes back to 0 at the end.
-5. **First free run**: ${yawOn ? `every axis free. Turn the unit onto its yaw stop on the side the fan's start-up twists it toward (${S.rotorDir > 0 ? "clockwise" : "anticlockwise"} seen from above; YAW_HOME_DEG ${cNum(S.yawHome)}° is that stop), then \`arm\`, \`t 50\`, \`hold\`: the loop levels the unit and walks the heading to the middle. Then \`t 70\`, which climbs slowly while the heading is held. If the heading runs to a stop instead of settling, flip YAW_DIR.` : "both axes free, `arm`, `t 50`, `hold`, then up to 70 %."} GAIN_SCALE ${cNum(S.gainScale)} first, 1.0 after the force test.
+5. **First free run**: ${yawOn ? `every axis free. ${homeStop ? `Turn the unit onto its yaw stop on the side the fan's start-up twists it toward (${S.rotorDir > 0 ? "clockwise" : "anticlockwise"} seen from above; YAW_HOME_DEG ${cNum(S.yawHome)}° is that stop), then \`arm\`, \`t 50\`, \`hold\`: the loop levels the unit and walks the heading to the middle. Left anywhere else, the start-up twist swings it onto that stop first, and the heading still counts from the stop.` : `\`arm\` with the unit pointing where heading 0 should be, then \`t 50\`, \`hold\`: the fan's start-up twists the unit ${S.rotorDir > 0 ? "clockwise" : "anticlockwise"} seen from above, and the loop levels it and walks the heading back.`} Then \`t 70\`, which climbs slowly while the heading is held. If the heading runs to a stop instead of settling, flip YAW_DIR.` : "both axes free, `arm`, `t 50`, `hold`, then up to 70 %."} GAIN_SCALE ${cNum(S.gainScale)} first, 1.0 after the force test.
 6. **Steps**: holding, \`step roll 5\` and \`step pitch 5\` (one axis locked for a locked step test)${yawOn ? ", and `step yaw 20`" : ""}. Each prints the 10–90 % rise time, the overshoot and when it settled within 10 %, with the log running.${yawOn ? " `yaw 30` turns the unit to a heading and holds it there." : ""}
 
 ## Log

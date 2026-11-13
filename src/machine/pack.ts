@@ -10,7 +10,7 @@ import type { MeshData } from "../kernel/build";
 import { xformMatrix } from "../kernel/recipe";
 import { fmtNum } from "../lang/values";
 import { materialDensity } from "../library/standards";
-import { bedTurn } from "../mfg/analyze";
+import { bedTurn, footprintTurn } from "../mfg/analyze";
 import { resolveRules } from "../mfg/profiles";
 import { fdmPrint, printWords } from "../mfg/infill";
 import { restFace } from "../mfg/printOrientation";
@@ -462,10 +462,14 @@ function printBed(p: EvalPart): [number, number] | undefined {
  * angle that leaves the most room, and centred again. Undefined when it fits square or fits no way.
  */
 export function layAcross(positions: Float32Array, size: number[], bed: [number, number]): { positions: Float32Array; deg: number } | undefined {
-  const t = bedTurn(Math.max(size[0], size[1]), Math.min(size[0], size[1]), Math.max(bed[0], bed[1]), Math.min(bed[0], bed[1]));
+  const box = bedTurn(Math.max(size[0], size[1]), Math.min(size[0], size[1]), Math.max(bed[0], bed[1]), Math.min(bed[0], bed[1]));
+  if (box === 0) return undefined;
+  // its bounding box fits no way: its real outline may (an L, a V, an arch across the bed's corners)
+  const outline = box === undefined ? footprintTurn(positions, 3, 0, 1, bed[0], bed[1])?.deg : undefined;
+  const t = box ?? outline;
   if (!t) return undefined;
-  // the part's long side along the bed's long side, then t° off it
-  const deg = (size[0] >= size[1] ? 0 : -90) + (bed[0] >= bed[1] ? 0 : 90) + t;
+  // the part's long side along the bed's long side, then t° off it; an outline's turn is from where it lies
+  const deg = box === undefined ? t : (size[0] >= size[1] ? 0 : -90) + (bed[0] >= bed[1] ? 0 : 90) + t;
   const a = (deg * Math.PI) / 180;
   const c = Math.cos(a);
   const s = Math.sin(a);

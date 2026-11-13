@@ -415,6 +415,36 @@ describe("balance firmware through the servo board", () => {
     expect(v.results["jet.stall_time"]).toBe(0);
   });
 
+  it("takes its heading from the home stop when the loop first closes, wherever the unit sat at arming", { timeout: 120_000 }, () => {
+    const m = design(
+      `scenario "Home stop" {
+  world: sim.bench()
+  duration: 12s
+  console: [sim.type("arm", at: 3s), sim.type("t 50", at: 3.1s), sim.type("hold", at: 3.2s)]
+}`,
+      { fw: `${FW3}, yaw_home: -45` },
+    );
+    // parked on the stop the rotor's start-up twists it toward (a joint's start:), or left in the middle of its travel
+    for (const parked of [true, false]) {
+      const mech = gimbal3();
+      if (parked) mech.joints.find((j) => j.name === "yaw")!.start = -45 * D2R;
+      const v = run(m, mech);
+      expect(v.results.faults).toBe(0);
+      const t = v.frames.t;
+      const yaw = v.frames.series["yaw.angle"];
+      const at = (x: number) => t.findIndex((y) => y >= x);
+      expect(yaw[0]).toBeCloseTo(parked ? -45 : 0, 1);
+      // parked, it stays put until the loop takes over; left in the middle, the twist swings it onto that stop
+      if (parked) for (let i = 0; i < at(3.6); i++) expect(Math.abs(yaw[i] + 45)).toBeLessThan(0.5);
+      let closed = at(3.6);
+      while (v.frames.series["fw.yawVane"][closed] === 0 && closed < t.length - 1) closed++;
+      expect(yaw[closed]).toBeLessThan(-40);
+      // either way, once the fan has finished climbing the loop walks it to the middle of its travel and holds it
+      // there: the heading counts from the stop
+      for (let i = at(10); i < t.length; i++) expect(Math.abs(yaw[i])).toBeLessThan(2);
+    }
+  });
+
   it("runs the static force test on the load cell board", { timeout: 60_000 }, () => {
     const m = design(
       `scenario "Force test" {
