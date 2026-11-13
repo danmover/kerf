@@ -37,6 +37,7 @@ import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/sessi
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
 import { AirflowLayer } from "./AirflowLayer";
+import { FlowLayer } from "./FlowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
 import { PickFilterMenu, PickLayer } from "./viewport/PickLayer";
 import { HandlesLayer } from "./viewport/HandlesLayer";
@@ -418,6 +419,7 @@ export function Viewport() {
 
       {scene && !inSketch && <ResultsLayer scene={scene} />}
       {scene && !inSketch && <AirflowLayer scene={scene} />}
+      {scene && !inSketch && <FlowLayer scene={scene} />}
       {scene && !inSketch && <SimLayer scene={scene} />}
       {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
       {scene && !inSketch && canFit && <FitLayer scene={scene} />}

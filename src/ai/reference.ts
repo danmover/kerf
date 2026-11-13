@@ -124,6 +124,10 @@ const UNIT_BASE: Record<string, string> = {
   Hz: "frequency (Hz)",
   kHz: "frequency (Hz)",
   degC: "temperature (°C)",
+  cfm: "volume flow (mm³/s)",
+  lpm: "volume flow (mm³/s)",
+  lps: "volume flow (mm³/s)",
+  cmh: "volume flow (mm³/s)",
 };
 
 /** Every unit suffix the lexer accepts, grouped by what it measures, with its factor into the base unit. */
@@ -306,7 +310,7 @@ firmware name { board: ctrl, ... }                             // generated firm
 test "Label": "procedure"                                      // a physical test the build must pass
 buy "Label" { qty: 1, price: 10, url: "https://…" }            // a purchase with no model
 app "Name" { telemetry, panels, ... }                          // a live control program for the machine: panels and controls on its twin or the real one over USB (see Apps)
-analysis "Label" { props }                                     // a strength analysis, drivetrain duty, UCI rules check or airflow (drag), re-run after every change (see Analysis blocks)
+analysis "Label" { props }                                     // a strength analysis, drivetrain duty, UCI rules check, airflow (drag) or flow (cooling, ducts), re-run after every change (see Analysis blocks)
 
 Operators: + - * / ^, comparisons == != < <= > >=, && || !, cond ? a : b. Vectors add, subtract and scale. Lists and ranges work with for.
 
@@ -708,6 +712,22 @@ analysis "Sign in a gale" {
   load: air("Gale")                     // optional: yaw: 5 (one of the run's angles), speed: 120kmh (pressures go as the speed squared), scale: 1.5 (a gust factor)
 }
 It is one-way: the flow is the one round the unbent parts, so it suits stiff parts (signs, wings, fairings, brackets in the wind), not flapping ones. Solid parts only (not frames analysed as beams or walls as shells). The result's loads list the force on each part and the factor that matched it to the run; parts in the air that the strength analysis leaves out are named with the force on them.
+A flow analysis (flow:) blows air through and round the design and works out how hot every part gets: electronics cooling with the design's own fans or warm air rising, and duct, manifold and nozzle flow pushed in at a set rate. A steady CFD solve on a grid of cells (LVEL turbulence, wall functions, warm air rising, each fan on its own curve), with the heat solved in the parts and the air together (conduction through the parts, convection, radiation to the surroundings); it re-runs a few seconds after the parts change:
+analysis "Cooling" {
+  flow: "fans"            // the design's fan components blow along their axes on their curves (datasheet flow and pressure when the catalogue has them, else typical for their size); fans: [fan_top] picks which run
+  heat: "auto"            // the default: every electronic part's own loss (regulators, drivers, motors, the board); add source(part, 2W) for more, or "none"
+  ambient: 35C            // the air round it (default: the brief's hottest, else 25 °C)
+  max_temp: 70C           // a cap for every part; each component already has its own limit (85 °C electronics, 60 °C cells, 100 °C driver cases, a plastic's softening point)
+}
+analysis "Passive" { flow: "natural"  up: +Z }     // no fan: only warm air rising (needs gravity, the default; up: says which way is up)
+analysis "Manifold" {
+  flow: 12lpm             // a set flow pushed in at inlet: (units cfm, lpm, lps, cmh for m³/h; a plain number is mm³/s)
+  fluid: "water"          // "air" (default) or "water"
+  inlet: face(manifold, -X)                      // the end it goes in at, into the part; or a zone(...) or point with toward: +X
+  outlets: [face(manifold, +X), face(branch, +Y)] // openings to report the flow and its share through
+  max_pressure: 20kPa     // the most the pump or blower may push against
+}
+Also: parts: [...] (default every part shown), resolution: "draft", "standard" (default) or "fine", or a cell size like 1mm (walls thinner than a cell are drawn a cell thick, so keep at least two cells across a gap that matters), gravity: false, time: 10min. The result gives each part's hottest and mean temperature against its limit, the heat made and where it goes (into the air, radiated), the air through and how much warmer it leaves, each fan's working point on its curve with a warning when it stalls (an axial fan below about 30 % of its free flow) or runs backwards, and for a set flow the pressure it takes, its loss coefficient and the share through each outlet. The viewport shows the parts coloured by temperature with the case see-through, streamlines and a cut through the air (capture_view cooling: "inside", "streamlines", "cut"). To cool parts: put vents in line with the fans so the air goes through the box rather than round it (about twice the fan's area in, the same out), move the hottest parts into the air's path or onto a metal wall, add a heatsink, keep fans blowing the same way. To cut pressure in a duct: widen the fastest passages, round bends and entries, avoid sudden changes of section.
 ## Checks the app runs automatically
 - every require statement (hard fails block "valid"; soft fails warn), with margins
 - exact solid interference between every pair of nearby parts (OpenCASCADE booleans); parts of one multi-solid component are not checked against each other; gears are checked by tooth geometry instead

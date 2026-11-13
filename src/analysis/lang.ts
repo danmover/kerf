@@ -57,6 +57,7 @@ import { MECH, mechMaterial } from "./materials";
 import { FLOORS, MIN_ELEMENT_SIZE } from "./spec";
 import { COOLING } from "./thermalMaterials";
 import { buildAirflow } from "./aeroLang";
+import { buildFlow } from "./flowLang";
 import { buildStudy } from "./studyLang";
 
 /** supports plus loads in one analysis: each one is a pass over the model's surface */
@@ -678,6 +679,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
   const fail: (msg: string, span: Span) => never = env.fail;
   if (props.some((p) => p.name === "uci")) return buildUci(label, props, flags, span, env);
   if (props.some((p) => p.name === "airflow")) return buildAirflow(label, props, flags, span, env);
+  if (props.some((p) => p.name === "flow")) return buildFlow(label, props, flags, span, env);
   if (props.some((p) => p.name === "vary")) return buildStudy(label, props, flags, span, env);
   const isDrive = props.some((p) => p.name === "drive");
   const allowed = isDrive ? DRIVETRAIN_PROPS : STRUCTURAL_PROPS;

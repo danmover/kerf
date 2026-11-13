@@ -58,6 +58,9 @@ export const CABLES_CSP = "default-src 'none'; script-src 'self'";
 /** The airflow worker steps the flow on the GPU through WebGPU (or arithmetic on the CPU): no eval, no network. */
 export const AERO_CSP = "default-src 'none'; script-src 'self'";
 
+/** The flow and cooling worker solves the air and the heat on a grid of cells: no eval, no network. */
+export const FLOW_CSP = "default-src 'none'; script-src 'self'";
+
 /** The CNC toolpath and sheet nesting workers: slicing, offsets and nesting on outlines, no eval, no network. */
 export const CAM_CSP = "default-src 'none'; script-src 'self'";
 
@@ -90,6 +93,7 @@ function securityPolicy(): Plugin {
         else if (/^\/assets\/bvh\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", BVH_CSP);
         else if (/^\/assets\/cables\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CABLES_CSP);
         else if (/^\/assets\/aero\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", AERO_CSP);
+        else if (/^\/assets\/flow\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FLOW_CSP);
         else if (/^\/assets\/twin\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", TWIN_CSP);
         else if (/^\/assets\/(cam|sheet)\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CAM_CSP);
         else if (path === "/app-sandbox.html") res.setHeader("Content-Security-Policy", APP_SANDBOX_CSP);

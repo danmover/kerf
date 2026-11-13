@@ -10,6 +10,7 @@ import { startEngine, useDesign } from "./core/engine";
 import { turns } from "./core/model";
 import { startAnalysisRuntime } from "./analysis/runtime";
 import { startAirflowRuntime } from "./analysis/aeroRuntime";
+import { startFlowRuntime } from "./analysis/flowRuntime";
 import { startBoardRuntime } from "./machine/pcb/runtime";
 import { startCableRuntime } from "./machine/harness/runtime";
 import "./core/sweepRuntime";
@@ -108,6 +109,7 @@ function useBoot() {
     startHeatAndWearChecks();
     startAnalysisRuntime();
     startAirflowRuntime();
+    startFlowRuntime();
     startBoardRuntime();
     startCableRuntime();
     startSimRuntime();

@@ -113,6 +113,11 @@ export const UNITS: Record<string, number> = {
   // wind and riding speeds, in mm/s
   kmh: 1e6 / 3600,
   mph: 447.04,
+  // volume flow, in mm³/s: cubic feet a minute (fans), litres a minute and a second, cubic metres an hour
+  cfm: 471947.443,
+  lpm: 1e6 / 60,
+  lps: 1e6,
+  cmh: 1e9 / 3600,
 };
 
 const OPS = [

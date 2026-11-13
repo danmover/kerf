@@ -4139,6 +4139,7 @@ class Evaluator {
         else if (this.memberOf.has(p)) this.current?.add(this.memberOf.get(p)!);
       }
     if (spec.kind === "airflow") for (const p of [...spec.parts, ...(spec.wheels ?? [])]) if (this.defKind.has(p)) this.current?.add(p);
+    if (spec.kind === "flow") for (const p of [...spec.parts, ...(spec.fans ?? []), ...[spec.inlet, ...spec.outlets].flatMap((o) => (o?.region.t === "face" ? [o.region.part] : []))]) if (this.defKind.has(p)) this.current?.add(p);
     if (spec.kind === "drivetrain") {
       const k = this.defKind.get(spec.drive);
       if (k !== "component" && k !== "part") throw new EvalError(`drive: "${spec.drive}" is not a component or part`, s.span);
