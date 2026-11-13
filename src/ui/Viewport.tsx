@@ -57,6 +57,9 @@ import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 import { ViewCube } from "./viewport/ViewCube";
 import { openViewportMenu } from "./viewport/contextMenus";
 
+/** Waits (ms) before each retry of a 3D view that failed to start. */
+const GL_RETRIES = [400, 1200, 3000];
+
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
   const ctl = useRef<SceneController | null>(null);
@@ -76,6 +79,8 @@ export function Viewport() {
   const settings = useSettings();
   const theme = useTheme();
   const [webglError, setWebglError] = useState("");
+  // the 3D view's start-up attempt; a failed start is retried a few times before the error card
+  const [glTry, setGlTry] = useState(0);
   const [scene, setScene] = useState<SceneController | null>(null);
   // a ring that fills while a finger is held on the model, to open the spot chat
   const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
@@ -94,12 +99,26 @@ export function Viewport() {
   useEffect(() => {
     if (!mount.current) return;
     let c: SceneController;
+    const host = mount.current;
+    const had = new Set(Array.from(host.children));
     try {
-      c = new SceneController(mount.current);
+      c = new SceneController(host);
     } catch (e) {
-      setWebglError(e instanceof Error ? e.message : String(e));
+      // a start that failed part-way may have added its canvas already
+      for (const el of Array.from(host.children)) if (!had.has(el)) el.remove();
+      const msg = e instanceof Error ? e.message : String(e);
+      // WebGL can fail for a moment, e.g. while Chromium restarts its GPU
+      // process after the card reset: try again before giving up
+      if (glTry < GL_RETRIES.length) {
+        console.warn(`The 3D view couldn't start (${msg}); trying again`);
+        const t = setTimeout(() => setGlTry(glTry + 1), GL_RETRIES[glTry]);
+        return () => clearTimeout(t);
+      }
+      console.error("The 3D view couldn't start:", e);
+      setWebglError(msg || "Unknown error");
       return;
     }
+    setWebglError("");
     ctl.current = c;
     // circuit boards drawn in full: mask, copper, silkscreen and the parts on them
     const boards = new BoardDecorator(() => c.redecorate());
@@ -174,7 +193,7 @@ export function Viewport() {
       decor.current = null;
       ctl.current = null;
     };
-  }, []);
+  }, [glTry]);
 
   useEffect(() => {
     ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme });
