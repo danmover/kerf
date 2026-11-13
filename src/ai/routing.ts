@@ -41,6 +41,8 @@ export const QUICK_TOOLS: ReadonlySet<string> = new Set([
   "view_drawing",
   // runs the app's twin headless; changes nothing
   "try_app",
+  // a firmware block's code and whether it compiles; changes nothing
+  "read_firmware",
   "process_guide",
   "compare_processes",
   "plan_manufacturing",

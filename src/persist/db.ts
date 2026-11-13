@@ -2,6 +2,7 @@
 // nothing is uploaded. Falls back to memory when IndexedDB is unavailable
 // (some private-browsing modes), and the UI warns that work will not persist.
 
+import type { FirmwareCodeRecord } from "../machine/firmware/ownCode";
 import type { ProjectImport } from "../kernel/imports";
 import { dismissToast, toast } from "../app/ui";
 
@@ -21,6 +22,8 @@ export interface ProjectRecord {
   branches?: BranchRecord[];
   /** the user's own scripts for this design (see src/scripts/): automation run by hand, by Claude or after each change */
   scripts?: ScriptRecord[];
+  /** firmware blocks' own code (code: "own"), written in place of Kerf's (see src/machine/firmware/ownCode.ts) */
+  firmware?: FirmwareCodeRecord[];
 }
 
 /** A script saved with a project: JavaScript that drives Kerf through the `kerf` API in a sandbox. */

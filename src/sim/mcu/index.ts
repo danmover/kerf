@@ -6,15 +6,17 @@ import { boardFor, NANO, type Board } from "./board";
 import { compileFirmware, type Firmware } from "./compile";
 import { typesFor } from "./ctypes";
 import { predefines, systemHeaders } from "./headers";
-import { CError } from "./lex";
-import { CLASS_NAMES } from "./lib";
-import { parseProgram } from "./parse";
+import { CError, type Tok } from "./lex";
+import { CLASS_NAMES, TEMPLATED } from "./lib";
+import { FirmwareDebugger, type DebugSpec } from "./debug";
+import { parseProgram, parseProgramForDebug } from "./parse";
 import { preprocess } from "./pre";
 import type { Hal } from "./vm";
 
 export { Halt, type Hal, type Ptr, type FnRef } from "./vm";
 export { CError } from "./lex";
 export type { Firmware } from "./compile";
+export type { DebugBreakpoint, DebugResult, DebugSpec, DebugStop, DebugSite, DebugFrame, DebugVar, TraceStep } from "./debug";
 export { boardFor, BOARDS, FEATHER_ESP32_V2, NANO, UNO, type Board } from "./board";
 
 export interface LoadedFirmware {
@@ -27,23 +29,39 @@ export interface LoadedFirmware {
 }
 
 /** RAM the AVR core and libraries take for their own buffers and state, bytes. */
-const CORE_RAM = { base: 9, serial: 175, wire: 211, servo: 50 };
+const CORE_RAM = { base: 9, serial: 175, wire: 211, servo: 50, sd: 610, fastled: 24 };
 
-export function loadFirmware(files: Record<string, string>, board: Board, hal: Hal, main?: string): LoadedFirmware {
+export function loadFirmware(files: Record<string, string>, board: Board, hal: Hal, main?: string, debug?: DebugSpec): LoadedFirmware {
   const sketch = main ?? Object.keys(files).find((f) => f.endsWith(".ino")) ?? Object.keys(files)[0];
   if (!sketch || !(sketch in files)) throw new CError("The firmware has no .ino sketch", sketch ?? "firmware", 0);
+  let expand: ((text: string, file: string) => Tok[]) | null = null;
   const toks = preprocess(`#include <Arduino.h>\n#include "${sketch}"\n`, {
     files,
     system: systemHeaders(board),
     defines: predefines(board),
+    ...(debug ? { after: (x: (text: string, file: string) => Tok[]) => (expand = x) } : {}),
   });
   const ids = new Set<string>();
   for (const t of toks) if (t.k === "id") ids.add(t.v);
   const T = typesFor(board.abi);
-  const prog = parseProgram(toks, { T, classes: CLASS_NAMES });
-  const fw = compileFirmware(prog, T, hal);
-  const uses = { serial: ids.has("Serial"), wire: ids.has("Wire"), eeprom: ids.has("EEPROM"), servo: ids.has("Servo") };
-  const staticRam = fw.staticRam + CORE_RAM.base + (uses.serial ? CORE_RAM.serial : 0) + (uses.wire ? CORE_RAM.wire : 0) + (uses.servo ? CORE_RAM.servo : 0);
+  let prog: ReturnType<typeof parseProgram>;
+  let dbg: FirmwareDebugger | undefined;
+  if (debug) {
+    const p = parseProgramForDebug(toks, { T, classes: CLASS_NAMES, templated: TEMPLATED });
+    prog = p.prog;
+    dbg = new FirmwareDebugger(debug, hal, (text) => p.parseExpr(expand!(text, "<watch>")));
+    // a firmware mistake stops the debugger there; one made reading a watch is the watch's
+    const report = hal.fault.bind(hal);
+    const d = dbg;
+    hal.fault = (msg, file, line) => {
+      if (d.fault(msg, file, line)) report(msg, file, line);
+    };
+  } else prog = parseProgram(toks, { T, classes: CLASS_NAMES, templated: TEMPLATED });
+  const fw = compileFirmware(prog, T, hal, dbg);
+  // LiquidCrystal_I2C brings Wire with it; SD keeps a 512-byte block cache and its volume
+  const uses = { serial: ids.has("Serial"), wire: ids.has("Wire") || ids.has("LiquidCrystal_I2C"), eeprom: ids.has("EEPROM"), servo: ids.has("Servo") };
+  const libs = (ids.has("SD") ? CORE_RAM.sd : 0) + (ids.has("FastLED") ? CORE_RAM.fastled : 0);
+  const staticRam = fw.staticRam + CORE_RAM.base + (uses.serial ? CORE_RAM.serial : 0) + (uses.wire ? CORE_RAM.wire : 0) + (uses.servo ? CORE_RAM.servo : 0) + (board.arch === "esp32" ? 0 : libs);
   return { fw, board, staticRam, uses };
 }
 

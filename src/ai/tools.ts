@@ -32,6 +32,7 @@ import { calcParams } from "./reference";
 import { PROCESS_TOOL_DEFS, PROCESS_TOOL_TITLES, runProcessTool } from "./processTools";
 import { SIM_TOOL_DEFS, SIM_TOOL_TITLES, runSimTool } from "./simTools";
 import { APP_TOOL_DEFS, APP_TOOL_TITLES, runAppTool } from "./appTools";
+import { FIRMWARE_TOOL_DEFS, FIRMWARE_TOOL_TITLES, runFirmwareTool } from "./firmwareTools";
 import { PROCESSES } from "../mfg/profiles";
 import { processFromText } from "../mfg/spec";
 import { pmiNote, sheetFor, useDrawings } from "../drawing/engine";
@@ -72,6 +73,7 @@ import { ASKS_TOOL, AsksInput, asksState, asksText, remeasure, setAsks } from ".
 import { EXAMPLE_TOOL, ExampleInput, exampleText } from "./examples";
 import { LESSON_TOOL, LessonInput, saveLesson } from "./lessons";
 import { DEFERRED, ReferenceInput, referenceText } from "./leanReference";
+import { withOwnCode } from "../app/firmwareCode";
 
 // no generated code: the page CSP forbids eval
 z.config({ jitless: true });
@@ -410,6 +412,7 @@ export const TOOL_DEFS = [
   ...PROCESS_TOOL_DEFS,
   ...SIM_TOOL_DEFS,
   ...APP_TOOL_DEFS,
+  ...FIRMWARE_TOOL_DEFS,
   BUILD_TOOL,
   REVIEW_TOOL,
   {
@@ -920,7 +923,7 @@ export function firmwareSummary(m: Model | null): { text: string; warnings: numb
   const mm = m?.machine;
   if (!m || !mm?.firmware.length) return { text: "", warnings: 0 };
   try {
-    const outs = generateFirmware(mm, m.name);
+    const outs = generateFirmware(withOwnCode(mm), m.name);
     const warnings = outs.reduce((s, o) => s + o.warnings.length, 0);
     const lines = outs.map((o) => {
       const head = `  - ${o.name} (board ${o.board || "?"}): ${o.target === "none" ? "no code generated" : o.target === "arduino" ? "Arduino sketch" : o.target === "marlin" ? "Marlin config" : o.target === "reprapfirmware" ? "RepRapFirmware config" : "Klipper config"}. ${o.summary}. ${o.files.length} file${o.files.length === 1 ? "" : "s"}, ${o.pinTable.length} wired signal${o.pinTable.length === 1 ? "" : "s"}.`;
@@ -1549,6 +1552,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (simOutcome) return simOutcome;
   const appOutcome = await runAppTool(name, input);
   if (appOutcome) return appOutcome;
+  const firmwareOutcome = await runFirmwareTool(name, input, ctx);
+  if (firmwareOutcome) return firmwareOutcome;
   const imported = await runImportTool(name, input);
   if (imported) return imported;
   const material = await runMaterialTool(name, input, ctx);
@@ -1611,6 +1616,7 @@ export const TOOL_TITLES: Record<string, string> = {
   ...PROCESS_TOOL_TITLES,
   ...SIM_TOOL_TITLES,
   ...APP_TOOL_TITLES,
+  ...FIRMWARE_TOOL_TITLES,
   build_subassemblies: "Building subassemblies in parallel",
   review_design: "Reviewing the design",
   suggest_next_steps: "Suggesting next steps",

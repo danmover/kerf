@@ -20,6 +20,8 @@ export interface PreOptions {
   system: Record<string, string>;
   /** predefined macros: name -> replacement text */
   defines: Record<string, string>;
+  /** handed a way to expand more text with the macros as they stand at the end (the debugger's watch expressions) */
+  after?: (expand: (text: string, file: string) => Tok[]) => void;
 }
 
 const MAX_INCLUDE_DEPTH = 20;
@@ -389,5 +391,9 @@ export function preprocess(main: string, opts: PreOptions): Tok[] {
     else res.push(t);
   }
   res.push({ k: "eof", v: "", file: "", line: 0 });
+  opts.after?.((text, file) => {
+    expansions = 0;
+    return [...expand(lex(text, file).filter((t) => t.k !== "eof"), new Set()), { k: "eof", v: "", file, line: 1 }];
+  });
   return res;
 }

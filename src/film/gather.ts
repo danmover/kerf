@@ -19,6 +19,7 @@ import { lightingPreset } from "../ui/viewport/render/studio";
 import type { FilmLayout } from "../app/viewportApi";
 import { prettyName, type FilmFacts, type FilmPart } from "./facts";
 import type { FilmLook } from "./spec";
+import { withOwnCode } from "../app/firmwareCode";
 
 const HARDWARE = new Set(["screw", "nut", "washer", "insert", "pin", "rivet"]);
 
@@ -67,7 +68,7 @@ export function gatherFacts(layout: FilmLayout, look: FilmLook): FilmFacts {
   let firmware: FilmFacts["firmware"] = null;
   if (machine?.firmware.length) {
     try {
-      const fw = generateFirmware(machine, model.name).find((f) => f.files.length);
+      const fw = generateFirmware(withOwnCode(machine), model.name).find((f) => f.files.length);
       const file = fw?.files.find((f) => /\.(ino|cpp|c|py)$/i.test(f.path)) ?? fw?.files[0];
       if (fw && file) {
         const lines = file.content.split("\n").filter((l, i, all) => !(l.trim() === "" && all[i - 1]?.trim() === ""));

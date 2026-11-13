@@ -16,6 +16,7 @@ import "./core/sweepRuntime";
 import { startSimRuntime } from "./sim/runtime";
 import { startScripts } from "./scripts/runtime";
 import { startLearn } from "./learn/runtime";
+import { startFirmwareDebug } from "./app/firmwareDebug";
 import { loadRememberedKey } from "./persist/vault";
 import { loadOpenAIKey } from "./persist/openaiVault";
 import { loadChat, useChat } from "./ai/chat";
@@ -110,6 +111,7 @@ function useBoot() {
     startBoardRuntime();
     startCableRuntime();
     startSimRuntime();
+    startFirmwareDebug();
     startScripts(() => useChat.getState().busy);
     startLearn();
     void Promise.allSettled([loadRememberedKey(), loadOpenAIKey(), refreshProjects(), initAccount()]).then(() => {

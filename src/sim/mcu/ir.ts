@@ -38,6 +38,8 @@ export interface Ctx {
   hal: Hal;
   /** library state of this chip (Wire buffers, random seed) */
   lib: LibState;
+  /** a struct a library's header declares (FastLED's CRGB, once the sketch includes it) */
+  structType?(name: string): Extract<CType, { k: "struct" }> | undefined;
   /** report a firmware mistake found at compile time */
   error(msg: string, pos: Pos): never;
   /** report a firmware mistake while it runs */

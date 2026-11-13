@@ -45,6 +45,8 @@ export interface Board {
   battMonitor?: { pin: number; ratio: number };
   /** the pins Serial1, Serial2 use when begin() names none (ESP32: any pins can be given) */
   uarts?: ({ rx: number; tx: number } | undefined)[];
+  /** the SPI library's pins (SS is the default chip select) */
+  spi?: { ss: number; mosi: number; miso: number; sck: number };
 }
 
 const atmega328p = (name: string, parts: string[], board: string, analog: number[], analogOnly: number[]): Board => ({
@@ -65,6 +67,7 @@ const atmega328p = (name: string, parts: string[], board: string, analog: number
   ledBuiltin: 13,
   sda: 18,
   scl: 19,
+  spi: { ss: 10, mosi: 11, miso: 12, sck: 13 },
   adcBits: 10,
   adcRefV: 5,
   logicV: 5,
@@ -112,6 +115,7 @@ export const FEATHER_ESP32_V2: Board = {
   ledBuiltin: 13,
   sda: 22,
   scl: 20,
+  spi: { ss: 33, mosi: 19, miso: 21, sck: 5 },
   adcBits: 12,
   adcRefV: 3.3,
   logicV: 3.3,
