@@ -21,6 +21,7 @@ import { fmtNum } from "../../lang/values";
 import { useChatDraft } from "../chatDraft";
 import { useView } from "../../app/view";
 import { useUi } from "../../app/ui";
+import { isCommand } from "../../app/shortcuts";
 import { useSketch } from "../sketch/session";
 import { useMarkup } from "../Markup";
 import { Icon } from "../icons";
@@ -103,13 +104,13 @@ export function MeasureTool({ host }: { host: () => MeasureHost | null }) {
   // the R key toggles the tool, Esc clears the picks and then leaves it
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.metaKey || e.ctrlKey || e.altKey || isTyping(e.target) || useDrawings.getState().open) return;
+      if (isTyping(e.target) || useDrawings.getState().open) return;
       // dialogs, the sketch editor and markup keep their own keys
       const ui = useUi.getState();
       const sk = useSketch.getState();
       if (ui.settingsOpen || ui.shortcutsOpen || ui.findOpen || ui.confirm || sk.active || sk.picking || useMarkup.getState().on) return;
-      if (e.key === "r" || e.key === "R") toggleMeasure();
-      else if (e.key === "Escape" && measuring()) {
+      if (isCommand(e, "measure")) toggleMeasure();
+      else if (e.key === "Escape" && !e.metaKey && !e.ctrlKey && !e.altKey && measuring()) {
         if (picksRef.current.length) clear();
         else toggleMeasure(false);
       }

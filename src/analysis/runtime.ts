@@ -537,6 +537,7 @@ export function structuralInput(
     maxDeflection: spec.maxDeflection,
     masses: spec.masses,
     modes: spec.modal?.modes,
+    ...(spec.modal?.prestressed ? { prestress: true } : {}),
     ...(spec.modal?.shake || spec.modal?.random
       ? {
           ...(spec.modal.shake ? { shake: { lo: spec.modal.shake.lo, hi: spec.modal.shake.hi, ...(spec.modal.shake.accel !== undefined ? { accel: spec.modal.shake.accel, dir: spec.modal.shake.dir } : {}) } } : {}),

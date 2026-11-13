@@ -1,6 +1,7 @@
 // Builtin functions and constants for the Kerf language.
 
 import { Args } from "./args";
+import { PATTERN_FNS } from "./patterns";
 import { Fn, Obj, Pending, ProfileV, Ref, ShapeV, Vec, typeName, type CallCtx, type Value } from "./values";
 import { frameAt, vlen, vnorm, vsub, type ShapeRecipe, type ThreadSpec3, type V2, type V3 } from "../kernel/recipe";
 import { parseSection, sectionProfile } from "./frames";
@@ -476,6 +477,8 @@ export const MATH_FNS: Record<string, Fn> = Object.fromEntries([
   def("cross", ["a", "b"], (a) => { const p = a.vec3("a"); const q = a.vec3("b"); return new Vec([p[1] * q[2] - p[2] * q[1], p[2] * q[0] - p[0] * q[2], p[0] * q[1] - p[1] * q[0]]); }, "cross(a, b)"),
   def("normalize", ["v"], (a) => new Vec(a.dir("v")), "normalize(v)"),
   def("center_distance", ["m", "z1", "z2"], (a) => centerDistance(a.num("m"), a.num("z1"), a.num("z2")), "center_distance(m, z1, z2) → m·(z1+z2)/2 for meshing spur gears"),
+  // patterns along curves, at sketch points, filling areas and with uneven spacing
+  ...Object.entries(PATTERN_FNS),
 ]);
 
 export const GEO_FNS = ["min_distance", "volume", "mass", "bbox_min", "bbox_max", "size"];

@@ -29,7 +29,7 @@ export interface DragScene {
   setMotionAngle(deg: number): void;
 }
 
-type Held = { kind: "mates"; body: string; moves: Map<string, BodyMove>; rev: number } | { kind: "motion"; part: string; label: string; from: number; angle: number };
+type Held = { kind: "mates"; body: string; moves: Map<string, BodyMove>; coords?: Map<string, number>; rev: number } | { kind: "motion"; part: string; label: string; from: number; angle: number };
 
 /** A pose left showing after a drag, until it is kept, put back or the design changes. */
 export const useDragPose = create<{ held: Held | null }>(() => ({ held: null }));
@@ -113,8 +113,8 @@ export function DragLayer({ host, scene }: { host: () => PickHost | null; scene:
       const before = useDragPose.getState().held;
       const d: NonNullable<typeof drag.current> = { x0: e.clientX, y0: e.clientY, moved: false, normal, at: hit.point.clone(), angle0: scene.motionAngle, before };
       if (how.kind === "mates") {
-        const shown = before?.kind === "mates" && before.rev === rev ? before.moves : undefined;
-        d.mates = startMateDrag(model, how.body, v3(hit.point), shown);
+        const shown = before?.kind === "mates" && before.rev === rev ? before : undefined;
+        d.mates = startMateDrag(model, how.body, v3(hit.point), shown?.moves, shown?.coords);
       } else {
         if (!mesh.geometry.boundingSphere) mesh.geometry.computeBoundingSphere();
         d.motion = startMotionDrag(part, v3(hit.point), scene.motionAngle, mesh.geometry.boundingSphere?.radius ?? 20) ?? undefined;
@@ -162,7 +162,7 @@ export function DragLayer({ host, scene }: { host: () => PickHost | null; scene:
       if (!d.moved) return;
       if (pending) apply(pending);
       pending = null;
-      if (d.mates) useDragPose.setState({ held: { kind: "mates", body: d.mates.body, moves: d.mates.moves, rev } });
+      if (d.mates) useDragPose.setState({ held: { kind: "mates", body: d.mates.body, moves: d.mates.moves, coords: d.mates.coords, rev } });
       else if (d.motion) {
         const from = d.before?.kind === "motion" ? d.before.from : d.angle0;
         useDragPose.setState({ held: { kind: "motion", part: part.id, label: part.label, from, angle: d.motion.angle } });

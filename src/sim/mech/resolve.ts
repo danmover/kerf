@@ -1123,9 +1123,11 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   const power: Record<string, [number, number][]> = {};
   for (const it of spec.items) if (it.k === "power") power[it.comp] = it.value;
   const follow = spec.follow ? bodyIdOf(spec.follow, "follow") : base === "free" ? FRAME : undefined;
+  // points followed for motion plots, on the body their part rides
+  const traces = spec.items.flatMap((it) => (it.k === "trace" ? [{ name: it.name, body: bodyIdOf(it.on, `sim.trace(${it.name})`), at: SI(it.at) }] : []));
 
   return {
-    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, notes },
+    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, notes, ...(traces.length ? { traces } : {}) },
   };
 }
 

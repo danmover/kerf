@@ -14,6 +14,7 @@ import { FEATURE_FNS, MODELLING_FNS, PATH_FNS, PROFILE_FNS, SELECT_FNS, SOLID_FN
 import { SHEET_FNS } from "../../lang/sheet";
 import { MOULD_FNS } from "../../lang/mould";
 import { SPLIT_FNS } from "../../lang/split";
+import { DECAL_FNS } from "../../lang/decals";
 import { AERO_FNS } from "../../lang/aero";
 import { LIBRARY } from "../../library/components";
 import { PROCESSES, PROCESS_IDS } from "../../mfg/profiles";
@@ -214,6 +215,7 @@ export function kerfCompletions(getModel: () => Model | null) {
     ...Object.values(FEATURE_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "feature", apply: f.name + "(" })),
     ...Object.values({ ...SHEET_FNS, ...MOULD_FNS }).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "mould" ? "mould" : "sheet metal", apply: f.name + "(" })),
     ...Object.values(SPLIT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "split into pieces", apply: f.name + "(" })),
+    ...Object.values(DECAL_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "printing on a part", apply: f.name + "(" })),
     ...Object.values(AERO_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: f.name === "airfoil" ? "profile" : "aero tube", apply: f.name + "(" })),
     ...Object.values(SELECT_FNS).map((f) => ({ label: f.name, type: "function", info: f.doc, detail: "selection", apply: f.name + "(" })),
     ...Object.entries(CONSTRAINTS).map(([k, c]) => ({ label: k, type: "keyword", info: c.doc, detail: c.dim ? "sketch dimension" : "sketch relation" })),
@@ -226,10 +228,15 @@ export function kerfCompletions(getModel: () => Model | null) {
       .filter(([k]) => k !== "note")
       .map(([k, d]) => ({ label: k, type: "function", info: d, detail: "drawing", apply: k + "(" })),
   ];
-  // mates: face(), axis(), point() and plane() share names with sketch and analysis functions, listed once
-  for (const f of Object.values(MATE_FNS)) if (!fnCompletions.some((c) => c.label === f.name)) fnCompletions.push({ label: f.name, type: "function", info: f.doc, detail: "mate", apply: f.name + "(" });
+  // mates: face(), axis(), point() and plane() share names with sketch and analysis functions (gear() and slot()
+  // with shapes), listed once with what each does in a mate as well
+  for (const f of Object.values(MATE_FNS)) {
+    const same = fnCompletions.find((c) => c.label === f.name);
+    if (!same) fnCompletions.push({ label: f.name, type: "function", info: f.doc, detail: "mate", apply: f.name + "(" });
+    else if (typeof same.info === "string" && f.doc && !["face", "axis", "point", "plane"].includes(f.name)) same.info = `${same.info}\n\nIn a mate: ${f.doc}`;
+  }
   const kw: Completion[] = [...KEYWORDS].map((k) => ({ label: k, type: "keyword" }));
-  kw.push({ label: "mate", type: "keyword", detail: "how two parts meet", info: "mate name = against(face(lid, -Z), face(box, +Z)): places the first part by how its faces, holes and points meet the second's (against, flush, concentric, pin, distance, angle, parallel, perpendicular, tangent, coincident, rigid); what the mates leave free can be dragged" });
+  kw.push({ label: "mate", type: "keyword", detail: "how two parts meet", info: "mate name = against(face(lid, -Z), face(box, +Z)): places the first part by how its faces, holes and points meet the second's (against, flush, concentric, pin, distance, angle, parallel, perpendicular, tangent, coincident, rigid; joints revolute, slider, cylindrical, planar, ball, slot), or relates two joint mates (gear, belt, chain, rack, screw, cam); what the mates leave free can be dragged" });
   kw.push({ label: "fn", type: "keyword", detail: "your own function", info: "fn name(a, b: 2) = expr, or fn name(a) { let t = ...  value }: works out a number, vector, shape or profile from its values, callable anywhere after it; b: 2 is a default" });
   kw.push({ label: "feature", type: "keyword", detail: "your own feature", info: 'feature name(at, d: 8) "what it is" { add ... as post  cut ...  fillet(0.5, edges: post.root) }: steps used in any part on their own line, name(...) or name(...) as label; label.root, label.tip, label.edges and label.faces pick what it made' });
   kw.push({ label: "frame", type: "keyword", detail: "structural frame", info: 'frame name { profile: "2020", box: (w, d, h) } or path: [(x, y, z), ...]: 2020 extrusion or steel sections along lines, trimmed where they meet, with a cut list' });
@@ -239,7 +246,7 @@ export function kerfCompletions(getModel: () => Model | null) {
   const mfgItems: Completion[] = PROCESS_IDS.map((id) => ({ label: id, type: "class", info: `${PROCESSES[id].label}. ${PROCESSES[id].summary}\n\nSettings: ${PROCESSES[id].settings.map((s) => `${s.key}: ${s.doc}`).join("; ") || "none"}`, detail: "process", apply: id + "(" }));
   const processNames: Completion[] = PROCESS_IDS.map((id) => ({ label: `"${id}"`, type: "text", detail: PROCESSES[id].label }));
   fnCompletions.push({ label: "mfg", type: "namespace", detail: "manufacturing processes" });
-  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "split", "chain", "label", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
+  const props: Completion[] = [...new Set(["color", "material", "process", "group", "at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "explode", "mass", "split", "chain", "label", "decal", "axis_at", "plane", "offset", "profile", "box", "path", "levels", "ends", ...STRUCTURAL_PROPS, ...DRIVETRAIN_PROPS, ...AIRFLOW_PROPS, ...UCI_PROPS, ...DRAWING_PROPS])].map((p) => ({ label: p + ":", type: "property" }));
   const briefProps: Completion[] = [...BRIEF_FIELDS, "load", "dir", "on", "cycles", "note", "file", "url", "notes"].filter((p) => !props.some((q) => q.label === p + ":")).map((p) => ({ label: p + ":", type: "property", detail: "brief" }));
   const materials: Completion[] = Object.keys(MATERIALS).map((m) => ({ label: `"${m}"`, type: "text", detail: "material" }));
 

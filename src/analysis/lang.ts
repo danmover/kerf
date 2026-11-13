@@ -86,6 +86,7 @@ export const STRUCTURAL_PROPS = [
   "resolution",
   "carries",
   "modes",
+  "prestressed",
   "excite",
   "damping",
   "ringing",
@@ -112,7 +113,7 @@ export const STRUCTURAL_PROPS = [
 ];
 export const DRIVETRAIN_PROPS = ["drive", "torque", "speed", "life", "safety"];
 export const UCI_PROPS = ["uci", "bottom_bracket", "wheels", "saddle", "bars", "hoods", "forward", "parts", "rim_depth"];
-const FLAGS = ["gravity", "printed", "locked", "buckling", "converge", "large_deflection"];
+const FLAGS = ["gravity", "printed", "locked", "buckling", "converge", "large_deflection", "prestressed"];
 
 const REGION = "region";
 const LOAD = "load";
@@ -696,7 +697,7 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
       );
     }
   }
-  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge, large_deflection.`, f.span);
+  for (const f of flags) if (!FLAGS.includes(f.name)) fail(`Unknown flag "${f.name}" in an analysis. Flags: gravity, printed, buckling, converge, large_deflection, prestressed.`, f.span);
   const one = (name: string) => {
     const all = props.filter((p) => p.name === name);
     if (all.length > 1) fail(`"${name}:" is given twice`, all[1].span);
@@ -971,10 +972,18 @@ export function buildAnalysis(label: string, props: AnalysisItem[], flags: Analy
     if (one("cycles")) fail("Give duration: (how long it is shaken) or cycles: (how many cycles), not both.", one("cycles")!.span);
   }
   const life = shaking ? shakeLife(one, fail) : {};
+  // ---- natural frequencies under the loads (pre-stressed modal): tension stiffens the parts, compression softens them ----
+  const prestressed = bool("prestressed");
+  if (prestressed) {
+    const at = (one("prestressed") ?? flags.find((f) => f.name === "prestressed"))!.span;
+    if (shaking) fail("Shaking is answered from the natural frequencies with the parts unloaded; check the frequencies under load (prestressed) in an analysis of its own.", at);
+    if (!loads.length && !accelP && !gravityOn && !thermalOn && !one("temperature") && !supports.some((sp) => sp.move)) fail("prestressed finds the natural frequencies under the loads, so it needs loads: add load:, gravity or accel: (the stress they make stiffens or softens the parts).", at);
+  }
   const modal: ModalSpec | undefined =
-    modesN !== undefined || exP || damping !== undefined || ringing !== undefined || shaking
+    modesN !== undefined || exP || damping !== undefined || ringing !== undefined || shaking || prestressed
       ? {
           modes: modesN ?? (shaking ? 12 : 6),
+          ...(prestressed ? { prestressed: true } : {}),
           excite,
           damping: damping ?? 0.02,
           ringing,

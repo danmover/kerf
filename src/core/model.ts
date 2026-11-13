@@ -268,6 +268,36 @@ export interface EvalPart {
   split?: { part: string; piece?: number; of: number };
   /** made by another design placed in this one (component mount = design("Motor mount")): the component, the design, and the part's name there; edits go to that design */
   insert?: { block: string; design: string; part: string };
+  /** printing on its surface (decal:), drawn in the 3D view and renders; not in the solid */
+  decals?: DecalSpec[];
+}
+
+/**
+ * A decal: lettering or a project image printed or stuck on a part, in the
+ * part's own coordinates (mm). It is projected along -dir onto the faces that
+ * face dir within a width × height × depth box centred on at.
+ */
+export interface DecalSpec {
+  text?: string;
+  /** a project image (asset id, "ast_...") */
+  image?: string;
+  at: V3;
+  /** the way the printed side faces (unit) */
+  dir: V3;
+  /** the decal's up, square to dir (unit) */
+  up: V3;
+  width: number;
+  /** left out for an image: from the image's shape */
+  height?: number;
+  /** how far the projection reaches each side of at, along dir */
+  depth: number;
+  /** lettering colour */
+  color: string;
+  /** a sticker's colour behind the lettering (none: just the print) */
+  background?: string;
+  bold?: boolean;
+  /** an image colour left unprinted, for a logo on white */
+  clear?: string;
 }
 
 /** A frame member as a beam: the line it was drawn on (through the joints), its section's own axes across it, the section. */
@@ -537,6 +567,8 @@ export interface Model {
     /** each mated part's move from where it is drawn */
     moves: [string, BodyMove][];
     free: BodyFreedom[];
+    /** turning joints' turns from where drawn (radians, counted round), by mate name: drags carry them on */
+    coords?: [string, number][];
   };
   /** geometry hashes of the solids mates pick faces from (the engine has the kernel list any it has not, then evaluates again) */
   mateQueries?: string[];

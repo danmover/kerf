@@ -2,6 +2,8 @@
 
 import { create } from "zustand";
 import { sanitizeMachines, sanitizeMachineFor, type MachineProfile } from "../mfg/machines";
+import { cleanKeys } from "./keymap";
+import { isMouseScheme, type MouseScheme } from "./mouse";
 
 export const TERMS_VERSION = "2026-10-draft-2";
 
@@ -119,6 +121,12 @@ export interface Settings {
   machineFor: Record<string, string>;
   /** what the user said they make with Kerf ("maker", "engineer", "student", "manufacturer"; empty: not asked yet), which orders the starting points */
   audience: string;
+  /** how the mouse turns, pans and zooms the 3D view (see app/mouse) */
+  mouseScheme: MouseScheme;
+  /** the wheel zooms the other way */
+  wheelReverse: boolean;
+  /** shortcut keys moved from where they start, by command (see app/keymap) */
+  keys: Record<string, string[]>;
   /** version of these defaults the stored settings were last migrated to */
   rev: number;
 }
@@ -178,6 +186,9 @@ const DEFAULTS: Settings = {
   machines: [],
   machineFor: {},
   audience: "",
+  mouseScheme: "kerf",
+  wheelReverse: false,
+  keys: {},
   rev: SETTINGS_REV,
 };
 
@@ -250,6 +261,8 @@ function load(): Settings {
     out.lessons = cleanLessons(out.lessons);
     out.machines = sanitizeMachines(out.machines);
     out.machineFor = sanitizeMachineFor(out.machineFor) as Record<string, string>;
+    if (!isMouseScheme(out.mouseScheme)) out.mouseScheme = DEFAULTS.mouseScheme;
+    out.keys = cleanKeys(out.keys);
     // the photoreal view starts off on every load: a GPU that hangs while path tracing must not be sent back into it
     out.photoreal = false;
     return out;

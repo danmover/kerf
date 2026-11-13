@@ -49,6 +49,7 @@ import { briefContext, briefData, briefHasErrors, emptyBrief, FIELDS, openAssump
 import { IMPORT_TOOL_DEFS, IMPORT_TOOL_TITLES, importsSummary, runImportTool } from "./importTools";
 import { MATERIAL_TOOL_DEFS, MATERIAL_TOOL_TITLES, runMaterialTool } from "./materialTools";
 import { FASTEN_TOOL_DEFS, FASTEN_TOOL_TITLES, runFastenTool } from "./fastenTool";
+import { MASS_TOOL_DEFS, MASS_TOOL_TITLES, runMassTool } from "./massTool";
 import { VIEW_TOOL_DEFS, VIEW_TOOL_TITLES, runViewTool } from "./viewTools";
 import { FILM_TOOL_DEFS, FILM_TOOL_TITLES, runFilmTool } from "./filmTool";
 import { CAM_TOOL_DEFS, CAM_TOOL_TITLES, runCamTool } from "./camTool";
@@ -447,6 +448,7 @@ export const TOOL_DEFS = [
   ...IMPORT_TOOL_DEFS,
   ...MATERIAL_TOOL_DEFS,
   ...FASTEN_TOOL_DEFS,
+  ...MASS_TOOL_DEFS,
   ...VIEW_TOOL_DEFS,
   ...FILM_TOOL_DEFS,
   ...CAM_TOOL_DEFS,
@@ -1602,6 +1604,8 @@ async function runOne(name: string, input: unknown, ctx: ToolContext): Promise<T
   if (material) return material;
   const fasten = await runFastenTool(name, input, ctx);
   if (fasten) return fasten;
+  const weighed = await runMassTool(name, input);
+  if (weighed) return weighed;
   const viewed = await runViewTool(name, input);
   if (viewed) return viewed;
   const filmed = await runFilmTool(name, input);
@@ -1640,6 +1644,7 @@ export const TOOL_TITLES: Record<string, string> = {
   compare_designs: COMPARE_TITLE,
   ...MATERIAL_TOOL_TITLES,
   ...FASTEN_TOOL_TITLES,
+  ...MASS_TOOL_TITLES,
   ...VIEW_TOOL_TITLES,
   ...FILM_TOOL_TITLES,
   ...CAM_TOOL_TITLES,

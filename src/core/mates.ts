@@ -19,7 +19,8 @@ export interface FaceCatalogue {
 
 /** Geometry a mate holds, where the part is drawn (world coordinates). */
 /** u: a direction square to an axis, fixed to its part (a slider keeps it from turning about the axis) */
-export type MateGeom = { t: "plane"; p: V3; n: V3 } | { t: "axis"; p: V3; d: V3; r?: number; u?: V3 } | { t: "point"; p: V3 } | { t: "body" };
+/** len: a segment's length from p along d (a slot's middle line) */
+export type MateGeom = { t: "plane"; p: V3; n: V3 } | { t: "axis"; p: V3; d: V3; r?: number; u?: V3; len?: number } | { t: "point"; p: V3 } | { t: "body" };
 
 export interface MateRef {
   body: string;
@@ -46,7 +47,42 @@ export type MateKind =
   | "slider"
   | "cylindrical"
   | "planar"
-  | "ball";
+  | "ball"
+  // a pin's centre (or axis) kept on a slot's middle line, between its ends
+  | "slot"
+  // relations between two joints (see MateCoupling): what one turns or slides, the other follows
+  | "gear"
+  | "belt"
+  | "chain"
+  | "rack"
+  | "screw"
+  | "cam";
+
+/** Mates that relate other mates instead of holding faces together. */
+export const RELATION_KINDS: readonly MateKind[] = ["gear", "belt", "chain", "rack", "screw", "cam"];
+/** Joints whose turn about their axis a relation or a limit can read (radians from where drawn). */
+export const TURN_JOINTS: readonly MateKind[] = ["revolute", "pin", "cylindrical", "concentric"];
+/** Joints whose slide along their axis (or a distance between faces) a relation can read (mm from where drawn). */
+export const SLIDE_JOINTS: readonly MateKind[] = ["slider", "cylindrical", "concentric", "distance"];
+
+/**
+ * A relation between two joints, by their mates' names: gears and belts turn the second as the first turns, a
+ * rack slides as its pinion turns, a lead screw's nut slides as it turns (or a nut turns and slides on one
+ * cylindrical mate), a cam's follower lifts as it turns. Each joint counts from where it is drawn.
+ */
+export interface MateCoupling {
+  /** the mates it relates: the first drives, the second follows (a screw on one cylindrical mate names it twice) */
+  p: string;
+  q: string;
+  /** gear, belt: how many times as far the second turns; rack: the pinion's pitch radius (mm); screw: its lead (mm a turn) */
+  ratio: number;
+  /** cam: the follower's lift through one turn (evenly spaced from where drawn: mm, or radians for a swinging follower) */
+  lift?: number[];
+  /** a left-hand screw */
+  left?: boolean;
+  /** the other way round (an internal gear, a crossed belt, a rack that runs backwards) */
+  reverse?: boolean;
+}
 
 export interface MateSpec {
   /** the mate's name (given, or "mate 3") */
@@ -56,9 +92,12 @@ export interface MateSpec {
   b: MateRef;
   /** distance (mm) or angle (radians) it holds, or the gap against: and flush: leave */
   value?: number;
-  /** limits instead of a value (angle and distance): it is free between them */
+  /** limits instead of a value (angle and distance): it is free between them; on a revolute or pin its turn
+   * (radians) and on a slider its slide (mm) from where drawn, on a slot where along it the pin is */
   min?: number;
   max?: number;
+  /** a relation between two joints (gear, belt, rack, screw, cam) */
+  couple?: MateCoupling;
 }
 
 /** A body's move from where it is drawn: q = R (p − c) + c + t. */
@@ -100,6 +139,9 @@ export interface MateSolution {
   free: BodyFreedom[];
   /** bodies in the order they were solved (a body after the ones it is mated to) */
   order: string[];
+  /** each turning joint's turn from where drawn (radians, counted round past a whole turn), by mate name: a drag
+   * passes them back so gears that do not divide evenly stay in step */
+  coords: Map<string, number>;
 }
 
 // ---------- small vector and matrix helpers ----------
@@ -352,8 +394,40 @@ const placed = (g: MateGeom, m: BodyMove): MateGeom =>
         : g;
 const dirOf = (g: MateGeom): V3 | null => (g.t === "plane" ? g.n : g.t === "axis" ? g.d : null);
 
+type Axis = Extract<MateGeom, { t: "axis" }>;
+
+/** Where along a slot's middle line (mm from its start) a pin's centre is, or where its axis crosses the line. */
+function slotAlong(A: MateGeom, B: Axis): number {
+  if (A.t === "body") return 0;
+  const w = sub(A.p, B.p);
+  if (A.t === "axis") {
+    const c = dot(A.d, B.d);
+    if (1 - c * c > 1e-9) return (dot(w, B.d) - c * dot(w, A.d)) / (1 - c * c);
+  }
+  return dot(w, B.d);
+}
+
+/** How far a joint's first part has turned about the second's axis from where they are drawn (radians, counted round from ref). */
+function turnOf(A: MateGeom, B: MateGeom, ref = 0): number {
+  if (A.t !== "axis" || B.t !== "axis" || !A.u || !B.u) return 0;
+  const ua = sub(A.u, scl(B.d, dot(A.u, B.d)));
+  const raw = Math.atan2(dot(cross(B.u, ua), B.d), dot(B.u, ua));
+  return raw + 2 * Math.PI * Math.round((ref - raw) / (2 * Math.PI));
+}
+
+/** How far a joint's first part has slid along the second's axis (or face normal) from where they are drawn (mm). */
+function slideOf(s: MateSpec, A: MateGeom, B: MateGeom): number {
+  const a0 = s.a.geom,
+    b0 = s.b.geom;
+  const d = dirOf(B),
+    d0 = dirOf(b0);
+  if (!d || !d0 || A.t === "body" || a0.t === "body" || B.t === "body" || b0.t === "body") return 0;
+  return dot(sub(A.p, B.p), d) - dot(sub(a0.p, b0.p), d0);
+}
+
 /** What a mate measures (for limits and messages): an angle (radians) or a distance (mm). */
 export function mateMeasure(k: MateKind, A: MateGeom, B: MateGeom, side = 1): number {
+  if (k === "slot") return B.t === "axis" ? slotAlong(A, B) : 0;
   if (k === "angle") {
     const a = dirOf(A),
       b = dirOf(B);
@@ -397,6 +471,15 @@ export function mateFits(k: MateKind, a: MateGeom, b: MateGeom, value?: number):
     case "coincident":
       return a.t !== "body" && b.t !== "body" && !(a.t === "axis" && b.t === "plane") && !(a.t === "plane" && b.t === "axis") ? null : "coincident() takes points, flat faces or axes (a point on a face or an axis, or two of a kind)";
     case "rigid":
+      return null;
+    case "slot":
+      return (a.t === "point" || a.t === "axis") && b.t === "axis" && b.len !== undefined ? null : "slot() takes the pin (a point, or its axis) and the slot's middle line, like slot(axis(pin, d: 5), segment(plate, from: (0, 0, 0), to: (40, 0, 0)))";
+    case "gear":
+    case "belt":
+    case "chain":
+    case "rack":
+    case "screw":
+    case "cam":
       return null;
   }
 }
@@ -477,7 +560,22 @@ function residuals(s: MateSpec, A: MateGeom, B: MateGeom, L: number, side: numbe
       if (A.t === "axis" && B.t === "axis") return [...same(A.d, B.d), ...cross(sub(A.p, B.p), B.d)];
       return [];
     }
+    case "slot": {
+      // a pin's axis crosses the slot's middle line; a point lies on it (where along it is the limit's to hold)
+      const b = B as Axis;
+      if (A.t === "axis") {
+        const n = cross(A.d, b.d);
+        if (len(n) > 1e-6) return [dot(sub(A.p, b.p), unit(n))];
+      }
+      return cross(sub((A as { p: V3 }).p, b.p), b.d);
+    }
     case "rigid":
+    case "gear":
+    case "belt":
+    case "chain":
+    case "rack":
+    case "screw":
+    case "cam":
       return [];
   }
 }
@@ -494,11 +592,14 @@ function sideOf(s: MateSpec): number {
   return d < 0 ? -1 : 1;
 }
 
-/** A slider holds the turn about its axis too: a direction square to each axis, the same way where they are drawn. */
+/**
+ * A direction square to each axis of a joint, the same way where they are drawn: a slider holds them together (so
+ * it does not turn about its axis), and a turning joint's turn is read from them.
+ */
 function withTurnRefs(s: MateSpec): MateSpec {
   const A = s.a.geom,
     B = s.b.geom;
-  if (s.kind !== "slider" || A.t !== "axis" || B.t !== "axis") return s;
+  if (!(s.kind === "slider" || TURN_JOINTS.includes(s.kind)) || A.t !== "axis" || B.t !== "axis") return s;
   // the world axis farthest from lying along either
   const lean = (e: V3) => Math.max(Math.abs(dot(e, A.d)), Math.abs(dot(e, B.d)));
   const e = ([[1, 0, 0], [0, 1, 0], [0, 0, 1]] as V3[]).reduce((best, x) => (lean(x) < lean(best) - 1e-9 ? x : best));
@@ -516,7 +617,14 @@ interface Group {
 /** Bodies in groups that move each other, ordered so a group comes after the bodies it is mated to (Tarjan). */
 function groups(mates: MateSpec[], moving: Set<string>): Group[] {
   const parents = new Map<string, Set<string>>();
-  for (const s of mates) if (moving.has(s.a.body) && s.a.body !== s.b.body) (parents.get(s.a.body) ?? parents.set(s.a.body, new Set()).get(s.a.body)!).add(s.b.body);
+  const link = (a: string, b: string) => {
+    if (moving.has(a) && a !== b) (parents.get(a) ?? parents.set(a, new Set()).get(a)!).add(b);
+  };
+  for (const s of mates) {
+    link(s.a.body, s.b.body);
+    // a relation's two joints move each other: either part can drive the other
+    if (s.couple) link(s.b.body, s.a.body);
+  }
   const index = new Map<string, number>(),
     low = new Map<string, number>(),
     on = new Set<string>();
@@ -558,6 +666,144 @@ export interface SolveOptions {
   drag?: { body: string; point: V3; target: V3 };
   /** bodies held where they are (start, or as drawn) */
   hold?: Set<string>;
+  /** each turning joint's turn so far (the last solution's coords), so turns are counted round from there */
+  coords?: Map<string, number>;
+}
+
+/** A relation worked out: the two joints, what each gives (a turn or a slide), and how the second follows. */
+interface Rel {
+  p: number;
+  q: number;
+  qc: "turn" | "slide";
+  /** the second = k × the first (a cam: its lift at k × the first) */
+  k: number;
+  lift?: number[];
+}
+
+/** The design's mates set up for solving: each one's equations, what its limits measure, and the turns counted round. */
+interface System {
+  mates: MateSpec[];
+  moveOf: (b: string) => BodyMove;
+  /** a mate's equations with the bodies at M (bound: the limit it is held at) */
+  eq: (i: number, M: Map<string, BodyMove>, refs: Map<string, number>, L: number, bound?: number) => number[];
+  /** what a mate with limits measures with the bodies at M */
+  measure: (i: number, M: Map<string, BodyMove>, refs: Map<string, number>) => number;
+  /** a joint's turn with the bodies at M (radians from where drawn), counted round from refs */
+  turn: (i: number, M: Map<string, BodyMove>, refs: Map<string, number>) => number;
+  /** the joints whose turns are counted round (related or limited), by mate index */
+  turning: number[];
+  /** the relations, by mate index */
+  rels: (Rel | undefined)[];
+}
+
+/** A cam's lift at a turn (radians): the list spread evenly round one turn, smooth between its values (Catmull–Rom). */
+export function camLift(lift: number[], a: number): number {
+  const n = lift.length;
+  if (n < 2) return lift[0] ?? 0;
+  const t = ((((a / (2 * Math.PI)) % 1) + 1) % 1) * n;
+  const i = Math.floor(t);
+  const f = t - i;
+  const y = (k: number) => lift[(((i + k) % n) + n) % n];
+  const p0 = y(-1),
+    p1 = y(0),
+    p2 = y(1),
+    p3 = y(2);
+  return p1 + 0.5 * f * (p2 - p0 + f * (2 * p0 - 5 * p1 + 4 * p2 - p3 + f * (3 * (p1 - p2) + p3 - p0)));
+}
+
+/** Joints whose limits hold their turn or slide while the joint itself always holds (a slot's ends likewise). */
+const LIMITED_JOINTS: readonly MateKind[] = ["revolute", "pin", "slider", "slot"];
+
+function system(mates: MateSpec[], sides: number[], info: Map<string, MateBody>, moveOf: (b: string) => BodyMove, outcomes: MateOutcome[]): System {
+  const byName = new Map(mates.map((s, i) => [s.name, i]));
+  const poseOf = (b: string, M: Map<string, BodyMove>) => M.get(b) ?? moveOf(b);
+  const geoms = (i: number, M: Map<string, BodyMove>): [MateGeom, MateGeom] => {
+    const s = mates[i];
+    return [placed(s.a.geom, poseOf(s.a.body, M)), placed(s.b.geom, poseOf(s.b.body, M))];
+  };
+  const turn = (i: number, M: Map<string, BodyMove>, refs: Map<string, number>) => {
+    const [A, B] = geoms(i, M);
+    return turnOf(A, B, refs.get(mates[i].name) ?? 0);
+  };
+  const slide = (i: number, M: Map<string, BodyMove>) => {
+    const [A, B] = geoms(i, M);
+    return slideOf(mates[i], A, B);
+  };
+  const relate = (s: MateSpec): Rel | string => {
+    const c = s.couple!;
+    const p = byName.get(c.p),
+      q = byName.get(c.q);
+    if (p === undefined || q === undefined) return `${s.name} cannot hold: ${p === undefined ? c.p : c.q} is not a mate it can read`;
+    const P = mates[p],
+      Q = mates[q];
+    const qc = s.kind === "gear" || s.kind === "belt" || s.kind === "chain" || (s.kind === "cam" && (Q.kind === "revolute" || Q.kind === "pin")) ? "turn" : "slide";
+    const dP = dirOf(P.b.geom),
+      dQ = dirOf(Q.b.geom);
+    if (!dP || !dQ) return `${s.name} cannot hold: ${dP ? c.q : c.p} has no axis to turn or slide along`;
+    // each joint counts its turn about its own axis: axes drawn opposite ways turn the count round
+    const along = dot(dP, dQ);
+    const sense = Math.abs(along) > 0.5 ? Math.sign(along) : 1;
+    let k = 1;
+    if (s.kind === "gear") k = -sense * c.ratio;
+    else if (s.kind === "belt" || s.kind === "chain") k = sense * c.ratio;
+    else if (s.kind === "rack") {
+      if (Math.abs(along) > 0.1) return `${s.name} cannot hold: the rack (${c.q}) should slide square to the pinion's axis (${c.p})`;
+      // the pinion's edge on the rack's side moves along its axis × the way to the rack
+      const rack = Q.a.body === P.b.body ? Q.b.body : Q.a.body;
+      const at: V3 = P.b.geom.t === "axis" ? P.b.geom.p : [0, 0, 0];
+      const w0 = sub(info.get(rack)?.c ?? at, at);
+      const w = sub(sub(w0, scl(dP, dot(w0, dP))), scl(dQ, dot(w0, dQ)));
+      k = (len(w) > 1e-9 ? Math.sign(dot(cross(dP, w), dQ)) || 1 : 1) * c.ratio;
+    } else if (s.kind === "screw") {
+      // a right-hand thread: turning one forward about the axis drives the other back along it
+      const hand = c.left ? -1 : 1;
+      if (p === q) k = (hand * c.ratio) / (2 * Math.PI);
+      else {
+        if (Math.abs(along) < 0.99) return `${s.name} cannot hold: the nut (${c.q}) should slide along the screw's axis (${c.p})`;
+        k = (-sense * hand * c.ratio) / (2 * Math.PI);
+      }
+    }
+    return { p, q, qc, k: c.reverse ? -k : k, ...(c.lift ? { lift: c.lift } : {}) };
+  };
+  const rels = mates.map((s, i) => {
+    if (!s.couple) return undefined;
+    const r = relate(s);
+    if (typeof r !== "string") return r;
+    outcomes[i] = { name: s.name, status: "conflict", message: r };
+    return undefined;
+  });
+  const turning = [
+    ...new Set([
+      ...rels.flatMap((r) => (r ? (r.qc === "turn" ? [r.p, r.q] : [r.p]) : [])),
+      ...mates.flatMap((s, i) => ((s.kind === "revolute" || s.kind === "pin") && (s.min !== undefined || s.max !== undefined) ? [i] : [])),
+    ]),
+  ];
+  const measure = (i: number, M: Map<string, BodyMove>, refs: Map<string, number>) => {
+    const s = mates[i];
+    if (s.kind === "revolute" || s.kind === "pin") return turn(i, M, refs);
+    if (s.kind === "slider") return slide(i, M);
+    const [A, B] = geoms(i, M);
+    return mateMeasure(s.kind, A, B, sides[i]);
+  };
+  const eq = (i: number, M: Map<string, BodyMove>, refs: Map<string, number>, L: number, bound?: number): number[] => {
+    const s = mates[i];
+    if (s.couple) {
+      const r = rels[i];
+      if (!r) return [];
+      const tp = turn(r.p, M, refs);
+      const tq = r.qc === "turn" ? turn(r.q, M, refs) : slide(r.q, M);
+      const want = r.lift ? camLift(r.lift, r.k * tp) - r.lift[0] : r.k * tp;
+      return [(tq - want) * (r.qc === "turn" ? L : 1)];
+    }
+    const [A, B] = geoms(i, M);
+    if (s.min === undefined && s.max === undefined) return residuals(s, A, B, L, sides[i]);
+    // a joint with limits holds as a joint, and at a limit it would pass; other limits hold only there
+    if (!LIMITED_JOINTS.includes(s.kind)) return bound === undefined ? [] : residuals(s, A, B, L, sides[i], bound);
+    const r = residuals(s, A, B, L, sides[i]);
+    if (bound !== undefined) r.push((measure(i, M, refs) - bound) * (s.kind === "revolute" || s.kind === "pin" ? L : 1));
+    return r;
+  };
+  return { mates, moveOf, eq, measure, turn, turning, rels };
 }
 
 /** Solve every mate: where each mated body goes, which mates hold, and what each body can still do. */
@@ -571,6 +817,8 @@ export function solveMates(bodies: MateBody[], specs: MateSpec[], opts: SolveOpt
   const moving = new Set(mates.filter((s) => s.a.body !== s.b.body && !opts.hold?.has(s.a.body)).map((s) => s.a.body));
   const moveOf = (b: string) => moves.get(b) ?? opts.start?.get(b) ?? moveIdentity(info.get(b)?.c ?? [0, 0, 0]);
   const sides = mates.map(sideOf);
+  const sys = system(mates, sides, info, moveOf, outcomes);
+  const coords = new Map(opts.coords ?? []);
   for (const g of groups(mates, moving)) {
     order.push(...g.bodies);
     // rigid: a body fastened to another as drawn takes its move (a single body with nothing else to solve)
@@ -592,32 +840,37 @@ export function solveMates(bodies: MateBody[], specs: MateSpec[], opts: SolveOpt
     // the mates that hold together: all of them, or else the ones that do not conflict with those before them
     let keep = own.slice();
     const drag = opts.drag && g.bodies.includes(opts.drag.body) ? opts.drag : undefined;
-    let res = solveGroup(g.bodies, keep, mates, sides, start, moveOf, L, drag);
+    let res = solveGroup(g.bodies, keep, sys, start, L, coords, drag);
     if (!res.ok) {
       keep = [];
       const out: number[] = [];
       for (const i of own) {
-        if (solveGroup(g.bodies, [...keep, i], mates, sides, start, moveOf, L).ok) keep.push(i);
+        if (solveGroup(g.bodies, [...keep, i], sys, start, L, coords).ok) keep.push(i);
         else out.push(i);
       }
-      res = solveGroup(g.bodies, keep, mates, sides, start, moveOf, L, drag);
+      res = solveGroup(g.bodies, keep, sys, start, L, coords, drag);
       // how far each left out is from holding, where the others put the parts
       for (const i of out) {
         const s = mates[i];
-        const at = (b: string) => res.moves.get(b) ?? moveOf(b);
-        const A = placed(s.a.geom, at(s.a.body)),
-          B = placed(s.b.geom, at(s.b.body));
-        const r = residuals(s, A, B, 1, sides[i]);
+        const rel = sys.rels[i];
+        let r: number[];
+        if (rel) r = sys.eq(i, res.moves, res.refs, 1);
+        else {
+          const at = (b: string) => res.moves.get(b) ?? moveOf(b);
+          r = residuals(s, placed(s.a.geom, at(s.a.body)), placed(s.b.geom, at(s.b.body)), 1, sides[i]);
+        }
         const turned = s.kind === "angle" || s.kind === "parallel" || s.kind === "perpendicular";
-        const off = turned ? (Math.asin(Math.min(1, Math.hypot(...r))) * 180) / Math.PI : Math.hypot(...r);
-        outcomes[i] = { name: s.name, status: "conflict", off, message: `${s.name} cannot hold with the mates before it (off by ${+off.toFixed(off < 1 ? 3 : 1)}${turned ? "°" : " mm"}), so it is left out` };
+        const off = turned ? (Math.asin(Math.min(1, Math.hypot(...r))) * 180) / Math.PI : rel?.qc === "turn" ? (Math.abs(r[0] ?? 0) * 180) / Math.PI : Math.hypot(...r);
+        const deg = turned || rel?.qc === "turn";
+        outcomes[i] = { name: s.name, status: "conflict", off, message: `${s.name} cannot hold with the mates before it (off by ${+off.toFixed(off < 1 ? 3 : 1)}${deg ? "°" : " mm"}), so it is left out` };
       }
     }
     for (const i of res.atLimit) outcomes[i] = { name: mates[i].name, status: "limit" };
     for (const [b, m] of res.moves) moves.set(b, m);
-    free.push(...freedom(g.bodies, keep, mates, sides, moves, moveOf, L, info));
+    for (const [k, v] of res.refs) coords.set(k, v);
+    free.push(...freedom(g.bodies, keep, sys, moves, L, info, res.refs));
   }
-  return { moves, outcomes, free, order };
+  return { moves, outcomes, free, order, coords };
 }
 
 const TOL = 1e-7;
@@ -626,27 +879,30 @@ const TOL = 1e-7;
 function solveGroup(
   bodies: string[],
   use: number[],
-  mates: MateSpec[],
-  sides: number[],
+  sys: System,
   start: Map<string, BodyMove>,
-  moveOf: (b: string) => BodyMove,
   L: number,
+  coords: Map<string, number>,
   drag?: SolveOptions["drag"],
-): { ok: boolean; moves: Map<string, BodyMove>; atLimit: number[] } {
+): { ok: boolean; moves: Map<string, BodyMove>; atLimit: number[]; refs: Map<string, number> } {
+  const { mates, moveOf } = sys;
   const col = new Map(bodies.map((b, i) => [b, i]));
   const n = 6 * bodies.length;
   let cur = new Map([...start].map(([b, m]) => [b, { R: m.R.slice(), c: m.c, t: m.t.slice() as V3 }]));
   const poseOf = (b: string, M: Map<string, BodyMove>) => M.get(b) ?? moveOf(b);
+  // turns counted round from where the solve starts, kept up after each step (each turns less than half a turn)
+  const refs = new Map(coords);
+  const mine = sys.turning.filter((i) => bodies.includes(mates[i].a.body) || bodies.includes(mates[i].b.body));
+  const recount = () => {
+    for (const i of mine) refs.set(mates[i].name, sys.turn(i, cur, refs));
+  };
+  recount();
   // limits: a range is free inside it and held at the bound it would pass
   const held = new Map<number, number>();
   const ranged = use.filter((i) => mates[i].min !== undefined || mates[i].max !== undefined);
   const eqs = (M: Map<string, BodyMove>) => {
     const out: number[] = [];
-    for (const i of use) {
-      const s = mates[i];
-      if ((s.min !== undefined || s.max !== undefined) && !held.has(i)) continue;
-      out.push(...residuals(s, placed(s.a.geom, poseOf(s.a.body, M)), placed(s.b.geom, poseOf(s.b.body, M)), L, sides[i], held.get(i)));
-    }
+    for (const i of use) out.push(...sys.eq(i, M, refs, L, held.get(i)));
     return out;
   };
   const perturb = (M: Map<string, BodyMove>, k: number, h: number) => {
@@ -754,16 +1010,18 @@ function solveGroup(
         const w: V3 = [0, 0, 0];
         w[kicks % 3] = 0.6;
         cur = new Map([...cur].map(([b, mv]) => [b, { R: mm(expRot(w), mv.R), c: mv.c, t: mv.t }]));
+        recount();
         continue;
       }
       cur = step(cur, x);
+      recount();
       if (moved < 1e-9 * L && err < TOL * L) break;
     }
     // limits: hold the ones passed at the bound they passed (each solve starts with none held)
     let changed = false;
     for (const i of ranged) {
       const s = mates[i];
-      const v = mateMeasure(s.kind, placed(s.a.geom, poseOf(s.a.body, cur)), placed(s.b.geom, poseOf(s.b.body, cur)), sides[i]);
+      const v = sys.measure(i, cur, refs);
       const lo = s.min ?? -Infinity,
         hi = s.max ?? Infinity;
       if (!held.has(i) && (v < lo - 1e-9 || v > hi + 1e-9)) {
@@ -775,15 +1033,15 @@ function solveGroup(
   }
   const r = eqs(cur);
   const ok = Math.hypot(...r) < 1e-5 * L;
-  return { ok, moves: cur, atLimit: [...held.keys()] };
+  return { ok, moves: cur, atLimit: [...held.keys()], refs };
 }
 
 /** What each body of a group can still do once its mates hold: the null space of their equations. */
-function freedom(bodies: string[], use: number[], mates: MateSpec[], sides: number[], moves: Map<string, BodyMove>, moveOf: (b: string) => BodyMove, L: number, info: Map<string, MateBody>): BodyFreedom[] {
+function freedom(bodies: string[], use: number[], sys: System, moves: Map<string, BodyMove>, L: number, info: Map<string, MateBody>, refs: Map<string, number>): BodyFreedom[] {
   const n = 6 * bodies.length;
-  const poseOf = (b: string, M: Map<string, BodyMove>) => M.get(b) ?? moveOf(b);
-  const active = use.filter((i) => mates[i].min === undefined && mates[i].max === undefined);
-  const eqs = (M: Map<string, BodyMove>) => active.flatMap((i) => residuals(mates[i], placed(mates[i].a.geom, poseOf(mates[i].a.body, M)), placed(mates[i].b.geom, poseOf(mates[i].b.body, M)), L, sides[i]));
+  const moveOf = sys.moveOf;
+  // what holds as it moves: every mate but the limits it is inside (a joint with limits still holds as a joint)
+  const eqs = (M: Map<string, BodyMove>) => use.flatMap((i) => sys.eq(i, M, refs, L));
   const r0 = eqs(moves);
   const m = r0.length;
   const S = new Float64Array(n * n);

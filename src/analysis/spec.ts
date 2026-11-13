@@ -159,6 +159,8 @@ export interface Excitation {
 export interface ModalSpec {
   /** how many natural frequencies to find */
   modes: number;
+  /** find them under the loads (pre-stressed modal): the loads' stress stiffens (tension) or softens (compression) the parts */
+  prestressed?: boolean;
   excite: Excitation[];
   /** damping ratio (0.02: bolted frames and printed parts) */
   damping: number;

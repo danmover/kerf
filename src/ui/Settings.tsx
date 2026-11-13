@@ -26,6 +26,7 @@ import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
 import { desktop, graphicsCard, isSoftwareRenderer, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
+import { MOUSE_SCHEMES, MOUSE_SCHEME_IDS, type MouseScheme } from "../app/mouse";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
   { id: "ai", label: "AI", icon: <Icon.Sparkle size={14} /> },
@@ -527,6 +528,19 @@ function AppSettings() {
         </Row>
         <Row t="Edge lines" d="Outlines the sharp edges of every part.">
           <Toggle on={s.edges} onChange={(v) => updateSettings({ edges: v })} label="Edge lines" />
+        </Row>
+      </Section>
+      <Section title="Mouse and keys">
+        <Row t="Mouse" d={MOUSE_SCHEMES[s.mouseScheme].d}>
+          <Segmented id="mouse" value={s.mouseScheme} options={MOUSE_SCHEME_IDS.map((id) => ({ value: id, label: MOUSE_SCHEMES[id].label }))} onChange={(v) => updateSettings({ mouseScheme: v as MouseScheme })} />
+        </Row>
+        <Row t="Reverse wheel zoom" d="Rolling the wheel towards you zooms in instead of out.">
+          <Toggle on={s.wheelReverse} onChange={(v) => updateSettings({ wheelReverse: v })} label="Reverse wheel zoom" />
+        </Row>
+        <Row t="Keyboard shortcuts" d={Object.keys(s.keys).length ? `You moved ${Object.keys(s.keys).length === 1 ? "one key" : `${Object.keys(s.keys).length} keys`}. The sheet puts any key, or all of them, back.` : "Move any single-key shortcut to the key you are used to, or take the standard view keys of SolidWorks or Onshape."}>
+          <button className="btn" onClick={() => (closeSettings(), useUi.setState({ shortcutsOpen: true }))}>
+            <Icon.Keyboard size={14} /> Change keys
+          </button>
         </Row>
       </Section>
       <GraphicsSettings />

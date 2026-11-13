@@ -39,7 +39,20 @@ const dotv = (a: Float64Array, b: Float64Array) => {
  * Smallest `k` eigenpairs of K φ = λ M φ. `mass` is the lumped mass per dof (0 where not free).
  * Guard vectors (a few more than asked for) speed up convergence of the last wanted mode.
  */
-export function lowestModes(H: Hierarchy, mass: Float64Array, k: number, opts: { tol?: number; maxIter?: number; onIter?: (it: number, res: number) => void } = {}): ModalSolve {
+export function lowestModes(
+  H: Hierarchy,
+  mass: Float64Array,
+  k: number,
+  opts: {
+    tol?: number;
+    maxIter?: number;
+    onIter?: (it: number, res: number) => void;
+    /** more stiffness added to K (full dofs, y = K₊·x): the loads' geometric stiffness for modes under load */
+    extra?: (x: Float64Array, y: Float64Array) => void;
+    /** shapes to start from (full dofs), such as the unloaded modes when finding them under load */
+    start?: Float64Array[];
+  } = {},
+): ModalSolve {
   const L = H.levels[0];
   const full = mass.length;
   const free = L.free;
@@ -65,9 +78,14 @@ export function lowestModes(H: Hierarchy, mass: Float64Array, k: number, opts: {
   const tol = opts.tol ?? 1e-3;
   const maxIter = opts.maxIter ?? 120;
   const m = k + Math.min(4, Math.max(2, Math.ceil(k / 2)));
+  const fe = opts.extra ? new Float64Array(full) : null;
   const A = (x: Float64Array, y: Float64Array) => {
     scatter(x);
     applyK(L, fx, fy);
+    if (fe) {
+      opts.extra!(fx, fe);
+      for (let i = 0; i < full; i++) fy[i] += fe[i];
+    }
     gather(y);
   };
   const M = (x: Float64Array, y: Float64Array) => {
@@ -79,10 +97,15 @@ export function lowestModes(H: Hierarchy, mass: Float64Array, k: number, opts: {
     gather(z);
   };
 
-  // start from random vectors; the preconditioner smooths them toward low modes at once
+  // start from the shapes given, then random vectors; the preconditioner smooths them toward low modes at once
   const r0 = rng(12345);
   let X: Float64Array[] = [];
-  for (let j = 0; j < m; j++) {
+  for (const s of (opts.start ?? []).slice(0, m)) {
+    const v = new Float64Array(n);
+    for (let i = 0; i < n; i++) v[i] = s[idx[i]];
+    X.push(v);
+  }
+  while (X.length < m) {
     const v = new Float64Array(n);
     for (let i = 0; i < n; i++) v[i] = r0();
     const z = new Float64Array(n);

@@ -35,6 +35,8 @@ export interface JointStats {
   travel: number;
   /** most force across the joint (what its bearing carries), N */
   peakReaction: number;
+  /** the force the joint carries across its anchor this step, N */
+  reaction: number;
   /** most axis load averaged over any one second (what its drive carries steadily), N·m or N */
   holdLoad: number;
   /** tenth-of-a-second sums of |axis load| × dt behind holdLoad, newest last */
@@ -99,7 +101,7 @@ export class MechSystem {
       const j = jd.kind === "pivot" ? new Pivot(jd.name, A, B, jd.at, jd.axis) : jd.kind === "slider" ? new Slider(jd.name, A, B, jd.at, jd.axis) : jd.kind === "ball" ? new Ball(jd.name, A, B, jd.at) : new Weld(jd.name, A, B, jd.at);
       s.add(j);
       this.joints.set(jd.name, j);
-      this.stats.set(jd.name, { min: 0, max: 0, maxSpeed: 0, peakLoad: 0, travel: 0, peakReaction: 0, holdLoad: 0, ring: [{ sum: 0, t: 0 }] });
+      this.stats.set(jd.name, { min: 0, max: 0, maxSpeed: 0, peakLoad: 0, travel: 0, peakReaction: 0, reaction: 0, holdLoad: 0, ring: [{ sum: 0, t: 0 }] });
       if (jd.limits) this.stops.set(jd.name, s.add(new Stops(j, jd.limits[0], jd.limits[1], jd.kind === "pivot" ? 0.2 : 0.005)));
       if ((jd.friction ?? 0) > 0 || (jd.frictionPerLoad ?? 0) > 0) s.add(new AxisFriction(j, (jd.friction ?? 0) * f.friction, (jd.frictionPerLoad ?? 0) * f.friction));
       if ((jd.spring ?? 0) > 0 || (jd.damping ?? 0) > 0) s.add(new AxisSpring(j, jd.spring ?? 0, jd.damping ?? 0, jd.free ?? 0));
@@ -276,6 +278,7 @@ export class MechSystem {
       }
       st.travel += Math.abs(j.speed) * dt;
       const rf = j.kind === "pivot" || j.kind === "slider" || j.kind === "ball" ? j.reaction(dt) : 0;
+      st.reaction = rf;
       if (rf > st.peakReaction) st.peakReaction = rf;
     }
     if (!this.frame.fixed) {
