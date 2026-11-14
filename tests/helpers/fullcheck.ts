@@ -34,6 +34,8 @@ export interface FullCheck {
 export interface FullCheckOptions {
   /** also run the mount and wiring checks, which the app runs after the others (machines only) */
   wiring?: boolean;
+  /** called with the solids the cables are routed among, before the wiring runs (for probing the free space) */
+  onSolids?: (input: ReturnType<typeof solidsInput>) => void;
 }
 
 export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promise<FullCheck> {
@@ -95,7 +97,9 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
       const m = e ? core.mesh(h, "preview") : undefined;
       return e && m ? { positions: m.positions, indices: m.indices, bbox: e.bbox } : undefined;
     };
-    const { geos, placed } = solidsInput({ ...model, parts: model.parts.filter((p) => !p.hidden) }, wmesh, mounts);
+    const sin = solidsInput({ ...model, parts: model.parts.filter((p) => !p.hidden) }, wmesh, mounts);
+    opts.onSolids?.(sin);
+    const { geos, placed } = sin;
     // as the app routes them: cables keep out of fans' airflow and cross pivots beside their bearings
     const run = runWiring({ geos, placed, wires: [] }, { harness, mounts: mountSpecs(model, (h) => core.get(h)?.bbox, mounts), screws: screwSpecs(model), pivots: pivotJoints(model), flow: flowZones(model) });
     const items = [...report.items, ...wiringItems(harness, run.findings ?? null, run.mounts, model)];
@@ -105,7 +109,7 @@ export async function fullCheck(src: string, opts: FullCheckOptions = {}): Promi
     wiring = run;
   }
   // the model with geometry measurements filled in, when the design asks for any
-  return { model: geoModel ?? model, report, buildErrors, core, kernel: result, wiring, ms: Date.now() - t0 };
+  return { model: geoModel ?? model, report, buildErrors, core, kernel: result, wiring, process, ms: Date.now() - t0 };
 }
 
 /** One line per item that is not a pass, for test output. */

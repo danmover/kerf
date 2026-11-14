@@ -50,13 +50,16 @@ const isFastener = (p: EvalPart) => !!p.fastener || FASTENER_KINDS.has(p.libKind
 const BORED_KINDS = new Set(["bearing", "nut", "insert", "spur_gear", "spring", "band", "seal", "linear_bearing", "coupler", "pulley"]);
 
 /** The box a bought part is filled as, or undefined for a made part or one marked as its exact shape. */
-export const solidBox = (p: EvalPart, bbox: [V3, V3]) => (p.kind === "component" && !BORED_KINDS.has(p.libKind ?? "") ? bbox : undefined);
+export const solidBox = (p: EvalPart, bbox: [V3, V3], exact = false) => (p.kind === "component" && !BORED_KINDS.has(p.libKind ?? "") && !exact ? bbox : undefined);
 
 /** Every visible solid with a mesh, in the form the router and checks take. */
 export function solidsInput(model: Model, mesh: MeshLookup, mounts = mountParts(model)): { geos: SolidGeometry[]; placed: (SolidPlaced & { box?: [V3, V3] })[] } {
   const geoIndex = new Map<string, number>();
   const geos: SolidGeometry[] = [];
   const placed: (SolidPlaced & { box?: [V3, V3] })[] = [];
+  // the instances of catalog parts that ask to be routed round by their exact shape (every solid of the instance)
+  const exact = new Set<string>();
+  for (const p of model.parts) if (p.kind === "component" && p.bom?.catalogId && catalogPart(p.bom.catalogId)?.geom.route === "exact") exact.add(instanceOf(p));
   for (const p of model.parts) {
     if (p.hidden) continue;
     const m = mesh(p.hash);
@@ -69,7 +72,7 @@ export function solidsInput(model: Model, mesh: MeshLookup, mounts = mountParts(
     }
     const comp = instanceOf(p);
     const role: SolidRole = p.kind === "part" ? "made" : isFastener(p) ? "fastener" : mounts.has(comp) ? "mount" : "part";
-    placed.push({ geo: g, m: xformMatrix(p.xf), box: solidBox(p, m.bbox), id: p.id, comp, role, removable: p.removable });
+    placed.push({ geo: g, m: xformMatrix(p.xf), box: solidBox(p, m.bbox, exact.has(comp)), id: p.id, comp, role, removable: p.removable });
   }
   return { geos, placed };
 }

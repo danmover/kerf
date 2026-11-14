@@ -13,6 +13,7 @@
 import { catalogPart } from "../../machine/catalog";
 import type { Net } from "../../machine/erc";
 import type { CatalogPart, MachineComponent } from "../../machine/types";
+import { SdCard } from "../mcu/sdcard";
 import { Regulator } from "./devices";
 import type { I2CDevice } from "./hal";
 import type { Plant } from "./plant";
@@ -29,6 +30,8 @@ export interface OrbitSpec {
   decl: number;
   /** where the run starts, degrees round the orbit from the point nearest the sun */
   start: number;
+  /** start where the orbit leaves (or enters) Earth's shadow instead of at start: */
+  startAt?: "eclipse_exit" | "eclipse_entry";
   /** body rates at separation, deg/s */
   tipoff: number;
   /** the satellite's moment of inertia about its tumble axis, kg·m² */
@@ -370,15 +373,18 @@ function craftOf(p: Plant): Craft {
   const craft = c;
   const o = p.world.orbit?.();
   if (o) {
-    craft.orbit = o;
-    craft.geo = orbitGeometry(o);
-    const g = craft.geo;
+    const g = orbitGeometry(o);
+    // the shadow is centred on the point furthest from the sun, eclipse × 180° either side of it
+    const start = o.startAt === "eclipse_exit" ? 180 + g.eclipse * 180 : o.startAt === "eclipse_entry" ? 180 - g.eclipse * 180 : o.start;
+    craft.orbit = { ...o, start };
+    craft.geo = g;
     p.assumptions.push(
       `Orbit: circular, ${o.alt} km, sun-synchronous at ${g.incl.toFixed(1)}° with its ascending node at ${fmtLtan(o.ltan)} local time; period ${(g.period / 60).toFixed(1)} min, beta angle ${g.beta.toFixed(1)}°, ${(g.eclipse * 100).toFixed(0)} % of each orbit in eclipse (${((g.eclipse * g.period) / 60).toFixed(1)} min)`,
       "Sunlight 1361 W/m² (AM0), no albedo or Earth infrared on the panels; cells at their start-of-life efficiency less 8 % for their working temperature, through each EPS input's MPPT converter at 90 %",
       `Separation: ${o.tipoff}°/s tip-off rate; detumbling with the magnetorquers in a ${(fieldT(craft.geo) * 1e6).toFixed(0)} µT field, and ${o.inertia} kg·m² about the tumble axis`,
     );
     if (o.deployed) p.assumptions.push("The wings start open: this run is a later orbit in normal operations, after the deployment");
+    if (o.startAt) p.assumptions.push(`The run starts as the satellite ${o.startAt === "eclipse_exit" ? "leaves" : "enters"} Earth's shadow, ${start.toFixed(1)}° round the orbit from the point nearest the sun`);
     const s = craft.sunAt(0);
     craft.sun = s.v;
   } else p.notes.push("No orbit for the spacecraft boards: use world: sim.orbit(...) for the sun and eclipse. Without it the panels see full sun on their faces and nothing tumbles.");
@@ -485,6 +491,16 @@ function finish(p: Plant, c: Craft) {
       b.cutAt = 0;
       b.openAt = 0;
     }
+  // the flight computer's own microSD slot, on its SPI port with its chip select (specs.sd_cs, a pin name)
+  const obc = p.machine.components.find((m) => m.name === p.mcu);
+  const op = obc ? catalogPart(obc.catalogId) : undefined;
+  const csName = op?.specs.sd_cs;
+  const cs = typeof csName === "string" ? p.board.pinMacros?.[csName] : undefined;
+  if (op && cs !== undefined && p.board.spi && !p.hal.spi.device(cs)) {
+    const card = new SdCard(`${p.mcu} microSD`, num(op, "card_gb", 8) * 2 ** 30);
+    card.powered = () => p.mcuV >= 2.9;
+    p.hal.spi.attach(cs, card);
+  }
 }
 
 const be16 = (v: number) => {

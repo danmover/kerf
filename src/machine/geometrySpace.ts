@@ -146,9 +146,10 @@ export function solarPanelGeometry(p: CatalogPart): GeomResult {
     const ends: V3[] = n ? [[xs[0] - pitch / 2 - 0.6, 0, zk + kh], [xs[n - 1] + pitch / 2 + 0.6, 0, zk + kh]] : [];
     solids.push(solid("tabs", `${p.name} interconnects`, one({ t: "instances", items: [{ shape: box(gap + 3, 4.5, 0.28, Z0), xfs: tabs.map((v) => tr(v)) }, { shape: box(3, 30, 0.3, Z0), xfs: ends.map((v) => tr(v)) }] }), SILVER, "Copper", "polished"));
   }
-  // the panel's harness connector and its strain relief on the back
+  // the panel's harness: a pigtail out of a potted grommet on the back, through the structure beside it
   const connX = num(d, "conn_x", NaN);
-  if (Number.isFinite(connX)) solids.push(solid("conn", `${p.name} connector`, one(union([box(9, 6, 3.2, [connX, w / 2 - 10, -3.2], 0.3), box(4, 4, 1.4, [connX - 7, w / 2 - 10, -1.4], 0.3)])), WHITE, "PA66"));
+  const connY = num(d, "conn_y", w / 2 - 10);
+  if (Number.isFinite(connX)) solids.push(solid("conn", `${p.name} harness grommet`, one(box(10, 5, 2.6, [connX, connY, -2.6], 1)), "#202326", "Silicone"));
   return {
     placement: "free",
     solids,
@@ -200,7 +201,7 @@ export function telescopeGeometry(p: CatalogPart): GeomResult {
       { op: "cut", shape: cyl(bore, zRear - 30, [0, 0, -1]) },
       ...holes4.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: 2.5, depth: 6, at: [x, y, fz] as V3, dir: ZP } })),
       // weight-saving pockets in the barrel's flats, as the housing is machined
-      ...[0, 90, 180, 270].map((a) => ({ op: "cut" as const, shape: rot(box(bw * 0.55, 3, zRear - zBody0 - 30, [0, bw / 2 - 1.2, zBody0 + 12], 3), a, ZP) })),
+      ...[0, 90, 180, 270].map((a) => ({ op: "cut" as const, shape: rot(box(bw * 0.66, 3, zRear - zBody0 - 30, [0, bw / 2 - 1.2, zBody0 + 12], 3), a, ZP) })),
       { op: "chamfer", r: 0.5, edges: "convex", cosmetic: true },
     ],
   };
@@ -333,7 +334,8 @@ export function antsGeometry(p: CatalogPart): GeomResult {
     resAt.push([px * Math.cos(ar) - py * Math.sin(ar), px * Math.sin(ar) + py * Math.cos(ar), t]);
   }
   solids.push(solid("burn", `${p.name} burn resistors`, one(copies(res, resAt)), "#20262c", "FR4"));
-  solids.push(solid("conn", `${p.name} connector`, one(box(10, 4.5, 3.6, [w / 2 - 11.5, -20, -3.6], 0.3)), WHITE, "PA66"));
+  solids.push(solid("conn", `${p.name} connector`, one(box(4.5, 10, 3.6, [w / 2 - 3.5, -20, -3.6], 0.3)), WHITE, "PA66"));
+  solids.push(solid("rf", `${p.name} MMCX jack`, one(cyl(3.2, 3, [w / 2 - 3.5, -8, -3])), GOLD, "Brass", "polished"));
   return {
     placement: "free",
     solids,
@@ -397,8 +399,9 @@ function pc104Board(w: number, d: number, t: number, z: number, color: string, s
 function stackConnectors(z: number, t: number, ys: number[]): { bodies: ShapeRecipe; tails: ShapeRecipe } {
   const bodies = union(ys.map((y) => box(66.04, 5.08, 8.5, [0, y, z + t], 0.3)));
   const pins: V3[] = [];
-  for (const y of ys) for (let i = 0; i < 26; i++) for (const r of [-1.27, 1.27]) pins.push([-31.75 + i * 2.54, y + r, z - 7]);
-  return { bodies, tails: copies(box(0.64, 0.64, 7, Z0), pins) };
+  for (const y of ys) for (let i = 0; i < 26; i++) for (const r of [-1.27, 1.27]) pins.push([-31.75 + i * 2.54, y + r, z - 6.4]);
+  // the pins under a board stop just short of the next board's sockets 15 mm down (in the stack they go in)
+  return { bodies, tails: copies(box(0.64, 0.64, 6.4, Z0), pins) };
 }
 
 // ---------------- the ADCS module ----------------
@@ -442,6 +445,8 @@ export function adcsGeometry(p: CatalogPart): GeomResult {
       // countersunk on the wheels' side, so the flat heads sit flush beside the wheels
       { op: "cut" as const, shape: cone(2.2, 4.2, 1.01, [wallX + 2, y, zb + 18 + z], XP) },
     ]),
+    // relieved round the stack holes it passes over, clear of the screws and spacers there
+    ...holes.filter(([x]) => x > wallX).map(([x, y]) => ({ op: "cut" as const, shape: cyl(7, 5, [x, y, zb - 1]) })),
     { op: "chamfer", r: 0.4, edges: "convex", cosmetic: true },
   ]);
   solids.push(solid("bracket", `${p.name} wheel bracket`, bracket, "#b9bec6", "Aluminum 6061", "bead-blasted"));
@@ -463,7 +468,7 @@ export function adcsGeometry(p: CatalogPart): GeomResult {
   solids.push(solid("wheel_screws", `${p.name} wheel lid screws`, one(union(wheelAt.map((wa) => placeWheel({ t: "xform", shape: lidScrews, xf: tr([0, 0, wheelH]) }, wa)))), "#9ea4ab", "Stainless 304", "machined"));
   // the torquer rods: one along Y at the +X edge, one along X in the -X half beside the tracker's space
   const rodA = box(rodW, 60, rodW, [w / 2 - rodW / 2 - 0.3, 0, zb + 0.4], 1.5);
-  const rodB = { t: "xform" as const, shape: box(rodW, 50, rodW, Z0, 1.5), xf: [{ op: "rotate" as const, angle: 90, origin: Z0, axis: ZP }, { op: "translate" as const, v: [-w / 2 + 25 + 1, 40, zb + 0.4] as V3 }] };
+  const rodB = { t: "xform" as const, shape: box(rodW, 40, rodW, Z0, 1.5), xf: [{ op: "rotate" as const, angle: 90, origin: Z0, axis: ZP }, { op: "translate" as const, v: [-w / 2 + 30, 40, zb + 0.4] as V3 }] };
   solids.push(solid("rods", `${p.name} magnetorquer rods`, one(union([rodA, rodB])), "#7a2a1c", "Copper", "machined"));
   // the air-core coil under the upper board, over the wheels
   const cx0 = wallX + 4;
@@ -521,8 +526,8 @@ export function bp4Geometry(p: CatalogPart): GeomResult {
   solids.push(solid("strips", `${p.name} nickel interconnects`, one(union([box(span - 8, 1, 10, [0, y0 - cl / 2 - 0.6, zc - 5]), box(span - 8, 1, 10, [0, y0 + cl / 2 + 0.6, zc - 5])])), "#b9bcbf", "Steel", "polished"));
   const sc = stackConnectors(0, t, [dd / 2 - 6.2, dd / 2 - 12.3]);
   solids.push(solid("stack", `${p.name} stack connectors`, one(sc.bodies), "#111214", "PA66"));
-  // the battery connector at the -X edge, beside the cells
-  solids.push(solid("conn", `${p.name} battery connector`, one(box(5, 10, 4.2, [-42, -20, t], 0.3)), WHITE, "PA66"));
+  // the battery connector at the +X edge, beside the cells
+  solids.push(solid("conn", `${p.name} battery connector`, one(box(5, 10, 4.2, [num(d, "conn_x", 42), -20, t], 0.3)), WHITE, "PA66"));
   solids.push(solid("pins", `${p.name} connector tails`, one(sc.tails), GOLD, "Brass", "polished"));
   return {
     placement: "free",
@@ -613,8 +618,8 @@ export function holddownGeometry(p: CatalogPart): GeomResult {
   const solids = [solid("", p.name, one(box(w, dd, t, Z0, 1), holes.map(([x, y]) => ({ op: "cut" as const, shape: cyl(2.2, t + 2, [x, y, -1]) }))), g.color ?? "#16301f", "FR4", "solder-mask")];
   solids.push(solid("resistors", `${p.name} burn resistors`, one(copies(box(3.2, 1.6, 0.6, Z0), [[rx - 3.5, 0, t], [rx + 3.5, 0, t]] as V3[])), "#202326", "FR4"));
   solids.push(solid("post", `${p.name} tie-off post`, one(union([cyl(3, 4, [px, py, t]), cyl(4.5, 0.6, [px, py, t + 4])])), ALU, "Aluminum 6061", "machined"));
-  // its harness connector hangs under the board, through a hole in the panel it is bonded to
-  solids.push(solid("conn", `${p.name} connector`, one(box(6, 3.5, 3, [cx, cy, -3], 0.3)), WHITE, "PA66"));
+  // its two wires leave solder pads under the board, potted where they go through the panel it is bonded to
+  solids.push(solid("conn", `${p.name} wire exit`, one(box(6, 3.5, 0.8, [cx, cy, -0.8], 0.3)), "#202326", "Silicone"));
   return { placement: "free", solids, fields: { scalars: { w, d: dd, t, height: t + 4.6 }, points: { top: [0, 0, t], post: [px, py, t + 4], line: [rx, 0, t + 0.6], bottom: Z0 }, pointLists: { holes: holes.map(([x, y]) => [x, y, 0] as V3) } } };
 }
 

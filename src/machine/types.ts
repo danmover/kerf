@@ -261,6 +261,11 @@ export interface GeomSpec {
   hole_d?: number;
   /** space_panel: the holes are countersunk for flat-head screws, to this diameter at the top face */
   csink?: number;
+  /**
+   * how the wiring router sees the part: "exact" for one whose solids are mostly open (a telescope's hollow barrel,
+   * a module's corner spacers), so the cables can use the room round it; filled boxes otherwise
+   */
+  route?: "exact";
   features?: BoardFeature[];
   color?: string;
   /** colour of the secondary solid (heatsink, gearbox, wrap) */
