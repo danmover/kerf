@@ -184,6 +184,7 @@ export function flightFirmware(c: FwContext): FlightResult {
   W("uint8_t outMask = 0, batMode = 0;");
   W("int16_t rate[3] = { 0, 0, 0 }; // body rates, 0.01 deg/s");
   W("bool rfOk = false;      // the 45 minutes are up (or this is a reboot later in the mission)");
+  W("bool txOn = false;      // the UHF transmitter is enabled");
   W("bool rebooted = false;   // came up with the wings already open: a reboot later in the mission");
   W("bool antsFired = false, imagerAsked = false;");
   W("char line[96];");
@@ -266,6 +267,7 @@ export function flightFirmware(c: FwContext): FlightResult {
   W("");
   W("// ---- the UHF radio: 0x01 [on] enables its transmitter, 0x10 [length, bytes] sends a frame");
   W("void uhfTransmitter(bool on) {");
+  W("  txOn = on;");
   W("  Wire.beginTransmission(UHF_ADDR);");
   W("  Wire.write(0x01); Wire.write(on ? 1 : 0);");
   W("  Wire.endTransmission();");
@@ -276,6 +278,7 @@ export function flightFirmware(c: FwContext): FlightResult {
   W("  // one frame through the Wire library's 32-byte buffer: the command, the length and 30 characters at most");
   W('  snprintf(line, 31, "%s T%lu S%d V%u I%u", CALLSIGN, (unsigned long)now(), (int)state, vbatMv, sysMa);');
   W("  int n = strlen(line);");
+  W("  if (!txOn) uhfTransmitter(true);");
   W("  Wire.beginTransmission(UHF_ADDR);");
   W("  Wire.write(0x10); Wire.write((uint8_t)n);");
   W("  for (int i = 0; i < n; i++) Wire.write((uint8_t)line[i]);");
@@ -448,7 +451,6 @@ export function flightFirmware(c: FwContext): FlightResult {
   W("      if (in >= 2) startOps();");
   W("      break;");
   W("    case OPS:");
-  W("      if (lastBeacon == 0 && rfOk) uhfTransmitter(true);");
   W("      if (HAS_IMAGER && !imaged && t - opsAt >= IMAGE_AT_S) {");
   W("        imaged = true;");
   W("        aim(AIM_IMAGER);");
