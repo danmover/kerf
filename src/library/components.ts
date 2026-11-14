@@ -711,7 +711,7 @@ export const LIBRARY: Record<string, LibEntry> = {
 
   standoff: {
     signature: 'lib.standoff(M3, 10, type: "FF", grade: "brass") { at: bottom_point, axis: Z }',
-    doc: `Hex standoff (spacer) that holds a circuit board or panel off a base: M2, M2_5, M3 or M4, length ${STANDOFF_LENGTHS.join(", ")} mm. type: "FF" (threaded inside at both ends: a screw from each side) or "MF" (a male stud under \`at\` screws into the base, a screw from above). grade: "brass" (default), "nylon" (insulating) or "A2-70". \`at\` is the centre of the bottom face, it extends along \`axis\`. Fields: top, bottom, stud_tip, length, af.`,
+    doc: `Hex standoff (spacer) that holds a circuit board or panel off a base: M2, M2_5, M3 or M4, length ${STANDOFF_LENGTHS.join(", ")} mm. type: "FF" (threaded inside at both ends: a screw from each side) or "MF" (a male stud under \`at\` screws into the base, a screw from above). grade: "brass" (default), "nylon" (insulating), "A2-70" or "7075" (anodised aluminium, as drone frames use). \`at\` is the centre of the bottom face, it extends along \`axis\`. Fields: top, bottom, stud_tip, length, af.`,
     params: ["size", "length", "type", "grade"],
     make(a) {
       const t = a.thread("size", "M3");
@@ -721,7 +721,7 @@ export const LIBRARY: Record<string, LibEntry> = {
       const sd = standoffDims(t);
       if (!sd) throw new Error(`Standoffs here come in M2, M2_5, M3 and M4, not ${t.name}`);
       if (!STANDOFF_LENGTHS.some((x) => Math.abs(x - L) < 0.05)) throw new Error(`Standoffs come in ${STANDOFF_LENGTHS.join(", ")} mm`);
-      const grade = gradeArg(a, "brass", ["brass", "nylon", "A2-70"]);
+      const grade = gradeArg(a, "brass", ["brass", "nylon", "A2-70", "7075"]);
       const g = GRADES[grade];
       const depth = Math.min(L / 2 - 0.3, 1.5 * t.d + 1);
       const ops: PartRecipe["ops"] = [{ op: "cut", shape: { t: "thread", spec: isoThread(t), length: depth + 0.1, at: [0, 0, L - depth], dir: ZP, internal: true, lead: 0, fastD: t.tap } }];
@@ -733,7 +733,7 @@ export const LIBRARY: Record<string, LibEntry> = {
         kind: "standoff",
         label,
         placement: "axis",
-        solids: [{ suffix: "", label, recipe: { base: { t: "prism", pts: hexPoints(sd.af), h: L, at: Z0, dir: ZP, rot: 0 }, ops }, color: g.color, material: g.material, finish: grade === "nylon" ? "matte" : "machined" }],
+        solids: [{ suffix: "", label, recipe: { base: { t: "prism", pts: hexPoints(sd.af), h: L, at: Z0, dir: ZP, rot: 0 }, ops }, color: g.color, material: g.material, finish: grade === "nylon" ? "matte" : grade === "7075" ? "anodized" : "machined" }],
         fields: { scalars: { length: L, af: sd.af, type }, points: { at: Z0, bottom: Z0, top: [0, 0, L], stud_tip: [0, 0, type === "MF" ? -sd.stud : 0] }, dirs: { axis: ZP } },
         bom: { description: `Hex standoff ${t.name} × ${fmt(L)} mm, ${type === "FF" ? "female–female" : `male–female (${sd.stud} mm stud)`}, ${g.label}`, price, priceNote: PACK_NOTE, search: `${t.name} ${fmt(L)}mm ${type === "FF" ? "female female" : "male female"} hex standoff ${grade}`, key: `standoff|${t.name}|${fmt(L)}|${type}|${grade}` },
       };

@@ -172,8 +172,8 @@ export function headsFor(t: ThreadSpec): HeadType[] {
 
 // ---------------------------------------------------------------- grades and materials
 
-export type Grade = "4.8" | "8.8" | "10.9" | "12.9" | "A2-70" | "A4-80" | "brass" | "nylon";
-export const GRADE_IDS: Grade[] = ["4.8", "8.8", "10.9", "12.9", "A2-70", "A4-80", "brass", "nylon"];
+export type Grade = "4.8" | "8.8" | "10.9" | "12.9" | "A2-70" | "A4-80" | "brass" | "nylon" | "7075";
+export const GRADE_IDS: Grade[] = ["4.8", "8.8", "10.9", "12.9", "A2-70", "A4-80", "brass", "nylon", "7075"];
 
 interface GradeInfo {
   label: string;
@@ -200,6 +200,8 @@ export const GRADES: Record<Grade, GradeInfo> = {
   "A4-80": { label: "stainless A4-80 (316)", proof: 600, uts: 800, material: "Stainless 316", finish: "machined", color: "#b9bfc7", corrosion: 2, conductive: true, priceFactor: 1.8 },
   brass: { label: "brass", proof: 250, uts: 370, material: "Brass", finish: "machined", color: "#c9a24b", corrosion: 1, conductive: true, priceFactor: 2 },
   nylon: { label: "nylon 6/6", proof: 50, uts: 70, material: "Nylon", finish: "matte", color: "#ecebe6", corrosion: 2, conductive: false, priceFactor: 1 },
+  // anodised 7075-T6: the light standoffs drone frames use (standoffs only)
+  "7075": { label: "aluminium 7075-T6, anodised", proof: 435, uts: 505, material: "Aluminum 7075", finish: "anodized", color: "#2b2e34", corrosion: 1, conductive: true, priceFactor: 1.6 },
 };
 
 /** Grade from loose text: "A2", "a2-70", "12.9", "stainless", "316", "nylon". */
@@ -215,6 +217,7 @@ export function gradeFrom(text: string | undefined): Grade | undefined {
   if (/^4\.8/.test(s)) return "4.8";
   if (/brass/.test(s)) return "brass";
   if (/nylon|plastic|pa66|pa6/.test(s)) return "nylon";
+  if (/7075|alu/.test(s)) return "7075";
   return undefined;
 }
 
