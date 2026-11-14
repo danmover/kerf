@@ -14,7 +14,7 @@ export interface ParseOptions {
   T: Types;
   /** library classes objects can be declared with (Servo) */
   classes: Set<string>;
-  /** library methods that take template arguments, worked out here as constants (FastLED.addLeds<WS2812B, 6, GRB>) */
+  /** library methods and classes that take template arguments, worked out here as constants (FastLED.addLeds<WS2812B, 6, GRB>, FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>) */
   templated?: Set<string>;
 }
 
@@ -243,6 +243,20 @@ class Parser {
         this.next();
       } else if (!type && !base && signed === undefined && !short && !long && (this.typedefs.has(v) || this.structs.has(v) || this.enums.has(v) || this.opts.classes.has(v))) {
         type = this.typedefs.get(v) ?? this.structs.get(v) ?? this.enums.get(v) ?? { k: "class", name: v };
+        // a library class template's arguments, constants known here: FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>
+        if (type.k === "class" && this.opts.templated?.has(v) && this.is("<", 1)) {
+          this.next();
+          this.next();
+          const targs: number[] = [];
+          if (!this.eat(">"))
+            for (;;) {
+              targs.push(this.constExpr(this.binary(7)));
+              if (this.eat(">")) break;
+              this.expect(",", `"," or ">" in ${v}<...>`);
+            }
+          type = { k: "class", name: v, targs };
+          continue;
+        }
       } else break;
       this.next();
     }

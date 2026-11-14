@@ -6,6 +6,7 @@ import { AUDIO } from "./audio";
 import { BOARDS } from "./boards";
 import { ELECTRONICS } from "./electronics";
 import { FIELDS } from "./fields";
+import { LEGGED } from "./legged";
 import { LIGHTS } from "./lights";
 import { MODULES } from "./modules";
 import { MOTION } from "./motion";
@@ -13,7 +14,7 @@ import { MOTORS } from "./motors";
 import { ROBOTICS } from "./robotics";
 import { SENSING } from "./sensing";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...BOARDS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS, ...SENSING, ...MODULES];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...BOARDS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS, ...SENSING, ...MODULES, ...LEGGED];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 

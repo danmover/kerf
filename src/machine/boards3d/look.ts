@@ -356,6 +356,23 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
     ],
     smd: 0.7,
   },
+  // PJRC Teensy 4.1: green, gold pads, the i.MX RT1062 in the middle, flash beside it, microSD socket at the far end;
+  // two rows of 24 pins, the -Y row (GND, 0 to 12, 3.3V, 24 to 32) first, both from the USB end (catalog order)
+  teensy_41: {
+    mask: GREEN,
+    silk: WHITE_SILK,
+    finish: "enig",
+    title: ["Teensy 4.1"],
+    marks: ["MIMXRT1062\nDVJ6B", "W25Q64JV"],
+    looks: ["usb_micro", "qfp", "soic", "sdcard"],
+    extras: [
+      { look: "header_m", x: 0, y: -7.62, w: 60.96, d: 2.54, h: 8.5 },
+      { look: "header_m", x: 0, y: 7.62, w: 60.96, d: 2.54, h: 8.5 },
+      { look: "button", x: -17, y: 0, w: 3.2, d: 2.6, h: 1.2 },
+      { look: "crystal", x: 3, y: 4.6, w: 3.2, d: 2.5, h: 0.8 },
+    ],
+    smd: 1.1,
+  },
   blackpill_f411: {
     mask: BLACK,
     silk: WHITE_SILK,

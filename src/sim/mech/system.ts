@@ -293,6 +293,14 @@ export class MechSystem {
         }
       } else for (const b of moved) if (!b.fixed) b.x = addScaled(b.x, a, jd.start!);
     }
+    // a free machine on a level floor is set down on it in its new pose: a robot that starts lying folded up rests
+    // on whatever of it is lowest now, not on where its feet were in the design pose
+    const floor = this.ground?.planes[0];
+    if (this.model.base === "free" && floor && Math.abs(floor.n[2]) > 0.999 && !this.model.loose.length) {
+      let low = Infinity;
+      for (const c of this.contacts) if (!c.body.fixed) for (const p of c.points) low = Math.min(low, c.body.point(p)[2] - floor.p[2]);
+      if (Number.isFinite(low) && Math.abs(low) > 1e-4) for (const b of this.bodies.values()) if (!b.fixed) b.x = [b.x[0], b.x[1], b.x[2] - low];
+    }
     for (const [name, j] of this.joints) {
       j.update();
       const st = this.stats.get(name)!;

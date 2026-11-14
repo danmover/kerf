@@ -10,6 +10,7 @@ import { footprintSolids } from "./catalog/footprints";
 import { THREADS, type ThreadSpec } from "../library/standards";
 import { EDF_STUB, edfLeadExit } from "./harness/plugs";
 import { busServoGeometry } from "./geometryBusServo";
+import { leggedGeometry } from "./geometryLegged";
 import { deskSupplyGeometry, endoscopeGeometry } from "./geometryBenchParts";
 
 const Z0: V3 = [0, 0, 0];
@@ -269,6 +270,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
   const g = p.geom;
   const d = g.dims;
   switch (g.g) {
+    // legged-robot parts: actuators, depth camera, Jetson kit, relay, HTD pulley (geometryLegged.ts)
+    case "qdd":
+    case "depth_camera":
+    case "jetson_devkit":
+    case "auto_relay":
+    case "htd_pulley":
+      return leggedGeometry(p)!;
     // board: w (X), d (Y), t (thickness). `at` is the centre of the underside.
     // features sit on the top face; holes are through the board.
     case "board": {

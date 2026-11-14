@@ -190,6 +190,12 @@ export type GeomClass =
   | "servo"
   // serial bus servo: a flat case with an output horn and an idler horn on one axis (geometryBusServo.ts)
   | "bus_servo"
+  // legged-robot parts (geometryLegged.ts): an AK-series actuator, a depth camera, a Jetson kit, an ISO relay, a flanged HTD pulley
+  | "qdd"
+  | "depth_camera"
+  | "jetson_devkit"
+  | "auto_relay"
+  | "htd_pulley"
   | "actuator"
   | "box"
   | "extrusion"
