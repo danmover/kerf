@@ -137,6 +137,32 @@ part block { material: "PETG" ${extra} body box(20, 20, 15, at: (0, 0, 5)) }
     }
   });
 
+  it("never pairs a part that turns on a sim joint, such as a hinge's moving leaf", () => {
+    const m = model(`design "t"
+part plate { material: "PETG" body box(60, 40, 5) }
+part block { material: "PETG" body box(20, 20, 15, at: (0, 0, 5)) }
+scenario "Swing" {
+  mechanism: sim.mechanism(sim.pivot(block, at: (0, 0, 5), axis: Z))
+  firmware: none
+  duration: 1s
+}
+`);
+    const r = dfaReport(m, boxFacts(m, () => true));
+    expect(r.merges).toEqual([]);
+    expect(r.items.find((w) => w.id === "block")).toMatchObject({ essential: true, reason: "moves" });
+    // a free body (a whole vehicle) moves in the world, not against its neighbours: its parts may still merge
+    const free = model(`design "t"
+part plate { material: "PETG" body box(60, 40, 5) }
+part block { material: "PETG" body box(20, 20, 15, at: (0, 0, 5)) }
+scenario "Fly" {
+  mechanism: sim.mechanism(sim.free([plate, block]))
+  firmware: none
+  duration: 1s
+}
+`);
+    expect(dfaReport(free, boxFacts(free, () => true)).merges).toHaveLength(1);
+  });
+
   it("never pairs a part that a sprung blade on the other presses on", () => {
     const m = model(`design "t"
 part plate {

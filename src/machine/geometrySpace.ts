@@ -197,12 +197,14 @@ export function telescopeGeometry(p: CatalogPart): GeomResult {
   const housing: PartRecipe = {
     base: union([plate(oct(fw, ch + 1), ft, fz, 1), tube(od, bore, frontL, Z0), plate(oct(bw, ch), zRear - zBody0, zBody0, 2)]),
     ops: [
+      // every edge broken first, inside corners too (convex alone leaves the kernel an invalid solid where the baffle meets
+      // the flange), and before the pockets and holes are cut, as a chamfer over their edges fails
+      { op: "chamfer", r: 0.4, edges: "sharp", cosmetic: true },
       // the light path: open down to the primary mirror's cell
       { op: "cut", shape: cyl(bore, zRear - 30, [0, 0, -1]) },
       ...holes4.map(([x, y]) => ({ op: "cut" as const, shape: { t: "hole" as const, d: 2.5, depth: 6, at: [x, y, fz] as V3, dir: ZP } })),
       // weight-saving pockets in the barrel's flats, as the housing is machined
       ...[0, 90, 180, 270].map((a) => ({ op: "cut" as const, shape: rot(box(bw * 0.66, 3, zRear - zBody0 - 30, [0, bw / 2 - 1.2, zBody0 + 12], 3), a, ZP) })),
-      { op: "chamfer", r: 0.5, edges: "convex", cosmetic: true },
     ],
   };
   const solids: CompSolid[] = [solid("", p.name, housing, g.color ?? BLACK_AL, "Aluminum 6061", "anodized")];
@@ -441,6 +443,8 @@ export function adcsGeometry(p: CatalogPart): GeomResult {
   const zb = t;
   const fl = w / 2 - wallX - 1;
   const bracket: PartRecipe = one(union([box(fl, 88, 3, [wallX + fl / 2, 0, zb], 1.5), box(3, 52, topZ - t - 1.5, [wallX + 1.5, 0, zb], 1)]), [
+    // the edges broken before the countersinks and reliefs are cut (a chamfer over their thin lands fails)
+    { op: "chamfer", r: 0.4, edges: "convex", cosmetic: true },
     ...[[21, 13.5], [-21, 13.5], [-21, -13.5], [21, -13.5]].flatMap(([y, z]) => [
       { op: "cut" as const, shape: cyl(2.2, 5, [wallX - 1, y, zb + 18 + z], XP) },
       // countersunk on the wheels' side, so the flat heads sit flush beside the wheels
@@ -448,7 +452,6 @@ export function adcsGeometry(p: CatalogPart): GeomResult {
     ]),
     // relieved round the stack holes it passes over, clear of the screws and spacers there
     ...holes.filter(([x]) => x > wallX).map(([x, y]) => ({ op: "cut" as const, shape: cyl(7, 5, [x, y, zb - 1]) })),
-    { op: "chamfer", r: 0.4, edges: "convex", cosmetic: true },
   ]);
   solids.push(solid("bracket", `${p.name} wheel bracket`, bracket, "#b9bec6", "Aluminum 6061", "bead-blasted"));
   // the wheels: square housings with a round lid and four screws, their axes along Y, Z and X
@@ -517,11 +520,11 @@ export function bp4Geometry(p: CatalogPart): GeomResult {
   const span = n * pitch + 8;
   const clampAt = [y0 - cl / 2 + 5, y0 + cl / 2 - 5];
   const clamp = (y: number): ShapeRecipe => box(span, 8, h - t, [0, y, t], 1.2);
-  const clampOps: PartRecipe["ops"] = [];
+  // the edges broken before the cell saddles and screw holes are cut
+  const clampOps: PartRecipe["ops"] = [{ op: "chamfer", r: 0.5, edges: "convex", cosmetic: true }];
   for (const y of clampAt) for (const x of xs) clampOps.push({ op: "cut", shape: cyl(cd + 0.3, 9, [x, y - 4.5, zc], YP) });
   const sx = (n - 1) / 2 * pitch + cd / 2 + 1.8;
   for (const y of clampAt) for (const x of [-sx, sx]) clampOps.push({ op: "cut", shape: { t: "hole", d: 2.4, depth: h, at: [x, y, h] as V3, dir: ZN } });
-  clampOps.push({ op: "chamfer", r: 0.5, edges: "convex", cosmetic: true });
   solids.push(solid("clamps", `${p.name} cell clamps`, one(union(clampAt.map(clamp)), clampOps), "#c3c8cf", "Aluminum 6061", "anodized"));
   // nickel strips joining the cells in series at each end, and the stack connectors
   solids.push(solid("strips", `${p.name} nickel interconnects`, one(union([box(span - 8, 1, 10, [0, y0 - cl / 2 - 0.6, zc - 5]), box(span - 8, 1, 10, [0, y0 + cl / 2 + 0.6, zc - 5])])), "#b9bcbf", "Steel", "polished"));
