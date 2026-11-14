@@ -1038,10 +1038,11 @@ class Evaluator {
       case "net": {
         if (this.machine.nets.some((n) => n.name === s.name)) throw new EvalError(`Net "${s.name}" is already defined: add the pins to it`, s.nameSpan);
         const pins = s.pins.map((e) => this.pinRef(e));
-        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "width", "pour"], "net");
+        const pr = this.machineProps(s.items, ["gauge", "insulation", "color", "width", "pour", "chain"], "net");
         if (pr.width !== undefined && !(typeof pr.width === "number" && pr.width >= 0.15 && pr.width <= 5)) throw new EvalError("width: is the copper track width on a circuit board, 0.15 to 5 mm", s.span);
         if (pr.pour !== undefined && typeof pr.pour !== "boolean") throw new EvalError("pour: should be true (fill the board's spare copper with this net) or false", s.span);
-        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), insulation: this.insulationOf(pr.insulation, s.span), color: str(pr.color), width: numv(pr.width), pour: typeof pr.pour === "boolean" ? pr.pour : undefined, span: s.span });
+        if (pr.chain !== undefined && typeof pr.chain !== "boolean") throw new EvalError("chain: should be true (wire the pins one to the next in the order listed, as a CAN bus is) or false", s.span);
+        this.machine.nets.push({ name: s.name, pins, gauge: numv(pr.gauge), insulation: this.insulationOf(pr.insulation, s.span), color: str(pr.color), width: numv(pr.width), pour: typeof pr.pour === "boolean" ? pr.pour : undefined, chain: pr.chain === true || undefined, span: s.span });
         return;
       }
       case "firmware": {

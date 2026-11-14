@@ -464,6 +464,8 @@ export interface NetDef {
   width?: number;
   /** fill the board's free copper with this net (true), or never pour it (false) */
   pour?: boolean;
+  /** wire the pins one to the next in the order given (a CAN or RS-485 bus), not as a star from the first */
+  chain?: boolean;
   span: Span;
 }
 
