@@ -11,6 +11,7 @@ import { THREADS, type ThreadSpec } from "../library/standards";
 import { EDF_STUB, edfLeadExit } from "./harness/plugs";
 import { busServoGeometry } from "./geometryBusServo";
 import { deskSupplyGeometry, endoscopeGeometry } from "./geometryBenchParts";
+import { fpvAntennaGeometry, fpvBuzzerGeometry, fpvCamGeometry, fpvGpsGeometry, fpvMotorGeometry, fpvRxGeometry, fpvVtxGeometry, propGeometry, radialCapGeometry } from "./geometryDrone";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -785,6 +786,25 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
     }
 
+    // FPV quad parts drawn as the real products (geometryDrone.ts)
+    case "fpv_motor":
+      return fpvMotorGeometry(p);
+    case "prop":
+      return propGeometry(p);
+    case "fpv_cam":
+      return fpvCamGeometry(p);
+    case "fpv_vtx":
+      return fpvVtxGeometry(p);
+    case "fpv_antenna":
+      return fpvAntennaGeometry(p);
+    case "fpv_rx":
+      return fpvRxGeometry(p);
+    case "fpv_gps":
+      return fpvGpsGeometry(p);
+    case "fpv_buzzer":
+      return fpvBuzzerGeometry(p);
+    case "radial_cap":
+      return radialCapGeometry(p);
     // bus_servo: a serial bus servo with an output horn and an idler horn (geometryBusServo.ts)
     case "bus_servo":
       return busServoGeometry(p);

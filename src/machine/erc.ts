@@ -598,7 +598,9 @@ function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined, 
         const n = c.nl.netOf.get(q.key);
         if (!n) continue;
         const iout = load(n);
-        const switching = p.part.kind === "regulator" && !/linear/i.test(p.part.summary);
+        // a regulator part, or a board whose catalogue entry says its own regulators are switching (a flight
+        // controller's 5 V and 9 V BECs are bucks): the input carries the output power, not the output current
+        const switching = (p.part.kind === "regulator" && !/linear/i.test(p.part.summary)) || p.part.specs?.regulator === "switching";
         a += switching && vin ? (iout * (q.pin.v ?? vin)) / (vin * 0.85) : iout;
       }
       if (q.pin.type === "motor_out") {
