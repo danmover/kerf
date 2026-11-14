@@ -8,6 +8,7 @@
 
 import type { MachineData } from "../../machine/types";
 import { catalogPart } from "../../machine/catalog";
+import type { OrbitSpec } from "../engine/spacecraft";
 import type { BenchSupplySpec, MotorLoad, Orientation, PlantView, SceneSpec, World, WorldEvent } from "./types";
 import type { VariantName } from "./common";
 import { describeSignal, signalFn, type SignalSpec } from "./signals";
@@ -28,6 +29,10 @@ export interface BenchSpec {
   signals?: SignalSpec[];
   /** a bench supply in place of the design's own batteries and supplies */
   supply?: BenchSupplySpec;
+  /** gravity's pull, m/s² (Earth's standard 9.80665 when left out; 0 in orbit) */
+  gravity?: number;
+  /** the orbit a spacecraft flies in (sim.orbit(...)): the sun, eclipse and no gravity */
+  orbit?: OrbitSpec;
 }
 
 const K: Record<VariantName, number> = { pessimistic: 1.3, expected: 1, optimistic: 0.7 };
@@ -66,6 +71,10 @@ export class Bench implements World {
 
   supply() {
     return this.spec.supply;
+  }
+
+  orbit() {
+    return this.spec.orbit;
   }
 
   motorLoad(comp: string): MotorLoad {

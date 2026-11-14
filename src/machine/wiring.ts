@@ -234,12 +234,41 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     });
     return out;
   };
+  // pins on a stack connector (PC/104) of boards stacked in one column: the connector joins each one to the pin in the
+  // same place on the next board, so they need one wire between them at most (to whatever is off the stack)
+  const stackKey = (p: NetPin) => {
+    if (!p.pin.stack || !p.mc.at) return undefined;
+    const z = p.mc.axes?.[2] ?? [0, 0, 1];
+    const [x, y, zz] = p.mc.at;
+    // the column: the boards' common axis and where it passes through the plane across it
+    const ax = Math.abs(z[0]) > 0.9 ? 0 : Math.abs(z[1]) > 0.9 ? 1 : Math.abs(z[2]) > 0.9 ? 2 : -1;
+    if (ax < 0) return undefined;
+    const across = [x, y, zz].filter((_, i) => i !== ax).map((v) => Math.round(v));
+    return `${p.pin.stack}|${ax}|${across.join(",")}|${p.pin.label ?? p.pin.id}`;
+  };
+  const throughStack = (pins: NetPin[]): NetPin[] => {
+    const keys = pins.map(stackKey);
+    const off = new Set(pins.filter((_, i) => !keys[i]).map((p) => p.comp));
+    const groups = new Map<string, NetPin[]>();
+    pins.forEach((p, i) => keys[i] && groups.set(keys[i]!, [...(groups.get(keys[i]!) ?? []), p]));
+    // a board in the column with another pin on the net (a side connector) reaches the column through its own copper
+    const bridged = new Set([...groups].filter(([, g]) => g.some((p) => off.has(p.comp))).map(([k]) => k));
+    const seenStack = new Set<string>();
+    return pins.filter((_, i) => {
+      const k = keys[i];
+      if (!k) return true;
+      if (bridged.has(k) || seenStack.has(k)) return false;
+      seenStack.add(k);
+      return true;
+    });
+  };
   for (const w of m.wires) {
     const a = resolve(w.a);
     const b = resolve(w.b);
     if (!a || !b || a.key === b.key) continue;
     // the two halves of a connector pair, or a fuse or switch, join inside the part: no wire to make
     if (a.comp === b.comp && a.index === b.index && a.pin.through === b.pin.id) continue;
+    if (throughStack([a, b]).length < 2) continue;
     add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label, spots: spotsOf([w.a, w.b], [a, b]), bought: w.cable, boughtMm: w.length, own: w.own, via: w.via });
   }
   // a net joining pins on one circuit board is copper on that board, not a wire to make
@@ -250,7 +279,8 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const pins = all.filter((p): p is NetPin => !!p && !seen.has(p.key) && !!seen.add(p.key));
     const boards = new Set(pins.map((p) => boardOf.get(p.comp) ?? ""));
     if (boards.size === 1 && !boards.has("")) continue;
-    if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation, spots: spotsOf(n.pins, all) });
+    const wired = throughStack(pins);
+    if (wired.length >= 2) add(wired, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation, spots: spotsOf(n.pins, all) });
   }
   // pins with a wire of their own straight to a battery's or supply's terminal, and switch contacts that only sense
   // (an e-stop's spare contact tied to ground): neither is somewhere a trunk runs out to

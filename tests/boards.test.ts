@@ -80,7 +80,7 @@ describe("every board", () => {
 
   it("knows each one's catalogue part", () => {
     for (const b of BOARDS) for (const id of b.parts) expect(boardFor(id)).toBe(b);
-    expect(BOARDS.map((b) => b.name)).toEqual(["Arduino Nano", "Arduino Uno", "ESP32 Feather V2", "Arduino Mega 2560", "ESP32-DevKitC", "XIAO ESP32S3", "XIAO ESP32C3", "Raspberry Pi Pico", "STM32F411 Black Pill", "Adafruit Trinket 5V"]);
+    expect(BOARDS.map((b) => b.name)).toEqual(["Arduino Nano", "Arduino Uno", "ESP32 Feather V2", "Arduino Mega 2560", "ESP32-DevKitC", "XIAO ESP32S3", "XIAO ESP32C3", "Raspberry Pi Pico", "STM32F411 Black Pill", "EnduroSat OBC", "Adafruit Trinket 5V"]);
   });
 
   it("starts an output at the level each core leaves it", () => {

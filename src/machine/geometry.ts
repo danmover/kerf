@@ -11,6 +11,7 @@ import { THREADS, type ThreadSpec } from "../library/standards";
 import { EDF_STUB, edfLeadExit } from "./harness/plugs";
 import { busServoGeometry } from "./geometryBusServo";
 import { deskSupplyGeometry, endoscopeGeometry } from "./geometryBenchParts";
+import { spaceGeometry } from "./geometrySpace";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -794,6 +795,19 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       return deskSupplyGeometry(p);
     case "endoscope":
       return endoscopeGeometry(p);
+
+    // spacecraft hardware: solar panels, telescope, star tracker, antennas, ADCS, battery board, switches (geometrySpace.ts)
+    case "space_panel":
+    case "space_telescope":
+    case "space_tracker":
+    case "space_ants":
+    case "space_patch":
+    case "space_adcs":
+    case "space_bp4":
+    case "space_switch":
+    case "space_sun":
+    case "space_holddown":
+      return spaceGeometry(p)!;
 
     // box: batteries, power supplies, modules. w (X), d (Y), h (Z), r corner
     // radius; `at` is the centre of the bottom face. band: a wrap band height.

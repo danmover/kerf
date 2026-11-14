@@ -518,6 +518,46 @@ export const BLACKPILL_F411: Board = {
   arch: "stm32",
 };
 
+// EnduroSat's Onboard Computer (OBC): an STM32F4 (Cortex-M4F at 180 MHz, 2 MB flash, 256 KB RAM) on a PC/104 board,
+// as STM32duino's generic STM32F4 core runs it. Pins are numbered by port: PA0..PA15 = 0..15, PB0.. = 16.., PC0.. = 32..,
+// PD0.. = 48.., PE0.. = 64..; A0 to A15 are PA0 to PA7, PB0, PB1 and PC0 to PC5. I2C1 on PB6 and PB7 is the satellite's
+// command bus to the other boards, USART1 (Serial1) on PA9 and PA10 the payload link, SPI on PB13 to PB15 the board's
+// own microSD slot with PB12 its chip select, and Serial the debug port on the umbilical connector. The status LED is
+// PE2 and lights when HIGH. The pin map follows the board's stack connector, not a published variant file.
+const OBC_NAMES: Record<number, string> = Object.fromEntries(["A", "B", "C", "D", "E"].flatMap((port, k) => range(0, 15).map((n) => [16 * k + n, `P${port}${n}`])));
+const OBC_PIN = Object.fromEntries(Object.entries(OBC_NAMES).map(([n, name]) => [name, +n])) as Record<string, number>;
+const OBC_IO = range(0, 79);
+const OBC_PWM = Object.keys(BP_TIMER).map((name) => OBC_PIN[name]);
+export const ENDUROSAT_OBC: Board = {
+  ...BLACKPILL_F411,
+  parts: ["endurosat_obc"],
+  name: "EnduroSat OBC",
+  mcu: "STM32F4 (Cortex-M4F)",
+  fcpu: 180_000_000,
+  ramBytes: 256 * 1024,
+  flashBytes: 2 * 1024 * 1024,
+  digitalPins: 79,
+  analog: [0, 1, 2, 3, 4, 5, 6, 7, 16, 17, 32, 33, 34, 35, 36, 37],
+  noPins: {},
+  pinWarn: {
+    13: "PA13 is SWDIO: using it as a pin cuts off the debugger on the umbilical",
+    14: "PA14 is SWCLK: using it as a pin cuts off the debugger on the umbilical",
+  },
+  interrupts: each(OBC_IO, (p) => p),
+  irqLine: each(OBC_IO, (p) => p % 16),
+  pwm: each(OBC_PWM, () => 1000),
+  pwmShare: each(OBC_PWM, (p) => BP_TIMER[OBC_NAMES[p]]),
+  ledBuiltin: OBC_PIN.PE2,
+  sda: OBC_PIN.PB7,
+  scl: OBC_PIN.PB6,
+  spi: { ss: OBC_PIN.PB12, mosi: OBC_PIN.PB15, miso: OBC_PIN.PB14, sck: OBC_PIN.PB13 },
+  uarts: [{ rx: OBC_PIN.PA10, tx: OBC_PIN.PA9 }],
+  usbSerial: false,
+  pinNames: OBC_NAMES,
+  pinMacros: OBC_PIN,
+  defines: { ARDUINO: "10607", ARDUINO_ARCH_STM32: "1", ARDUINO_GENERIC_F4: "1", STM32F4xx: "1", F_CPU: "180000000L", __KERF_SIM__: "1" },
+};
+
 // Adafruit Trinket 5V (ATtiny85 at 8 MHz) on Adafruit's AVR boards: the standard Arduino core with the tiny8 variant.
 // Pins #0 to #4 are PB0 to PB4 (#5 is RESET). analogRead() takes ADC channels: 1 is #2, 2 is #4, 3 is #3, and A1 to
 // A3 are 7 to 9 (channel + 6). PWM on #0, #1 (timer 0) and #4 (timer 1). The chip has no UART, TWI or SPI port, so the
@@ -568,7 +608,7 @@ export const TRINKET_5V: Board = {
   arch: "avr",
 };
 
-export const BOARDS: Board[] = [NANO, UNO, FEATHER_ESP32_V2, MEGA, ESP32_DEVKITC, XIAO_ESP32S3, XIAO_ESP32C3, PICO, BLACKPILL_F411, TRINKET_5V];
+export const BOARDS: Board[] = [NANO, UNO, FEATHER_ESP32_V2, MEGA, ESP32_DEVKITC, XIAO_ESP32S3, XIAO_ESP32C3, PICO, BLACKPILL_F411, ENDUROSAT_OBC, TRINKET_5V];
 
 /** A pin's name as the board's pinout prints it: D13 and A0 on an AVR, GPIO13, GP13, PA5, #2. */
 export function pinLabel(b: Board, pin: number): string {
