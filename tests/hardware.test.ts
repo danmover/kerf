@@ -345,7 +345,8 @@ describe("electronics drawn as the real part", () => {
         expect(hi[2], `${p.id} ${s.suffix}`).toBeLessThanOrEqual(h + 0.01);
       }
     }
-  });
+    // it builds every styled part's solids, so it grows with the catalogue
+  }, 30_000);
 
   it("takes their leads off where the real ones leave", () => {
     const part = (id: string) => CATALOG.find((p) => p.id === id)!;
