@@ -64,5 +64,5 @@ export const SPACE_STYLES: Record<string, BoardStyle> = {
     smd: 1.1,
     labels: [{ text: "RF OUT", x: 30, y: -42, size: 1.4 }],
   },
-  cubespace_css: { mask: "#18191c", silk: SILK, finish: "enig", marks: ["PD"], looks: ["qfn"], smd: 0.2 },
+  cubespace_css: { mask: "#18191c", silk: SILK, finish: "enig", marks: ["PD"], looks: ["qfn"], smd: 0.2, labels: [{ text: "CSS", x: 0, y: -3.6, size: 1 }] },
 };
