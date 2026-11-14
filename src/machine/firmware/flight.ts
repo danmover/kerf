@@ -111,7 +111,7 @@ export function flightFirmware(c: FwContext): FlightResult {
   const W = (x = "") => L.push(x);
   W(`// ${cComment(c.designName)}: flight software for the ${cComment(bp.name)} (STM32duino, generic STM32F4)`);
   W("// Written by Kerf from the design's wiring. It flies the CubeSat Design Specification (Rev 14.1) launch sequence:");
-  W(`// detumble at once, no deployable before ${deployWait / 60} min (CDS 3.4.4), no transmission before ${rfWait / 60} min (CDS 3.4.5), then`);
+  W(`// detumble at once, no deployable before ${deployWait / 60} min (CDS 2.4.4), no transmission before ${rfWait / 60} min (CDS 2.4.5), then`);
   W("// the wings' and antenna's releases, then a beacon; then normal operations. Every step prints a \"state:\" line on the");
   W("// debug port and goes in /FLIGHT.LOG on the board's microSD card.");
   W("//");

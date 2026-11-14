@@ -435,7 +435,8 @@ export function adcsGeometry(p: CatalogPart): GeomResult {
   solids.push(solid("pins", `${p.name} connector tails`, one({ t: "instances", items: [...items(low.tails), ...items(up.tails)] }), GOLD, "Brass", "polished"));
   // the internal spacers between the two boards
   // tapped M3 right through: the stack's screws come up into them from below, the next standoff's stud down from above
-  solids.push(solid("spacers", `${p.name} internal spacers`, one(copies(tube(5, 2.5, topZ - t, Z0), holes.map(([x, y]) => [x, y, t] as V3))), "#b7b9bd", "Aluminum 6061", "machined"));
+  // (a union of tubes, not instances, so the fastener checks see their tapped bores)
+  solids.push(solid("spacers", `${p.name} internal spacers`, one(union(holes.map(([x, y]) => tube(5, 2.5, topZ - t, [x, y, t])))), "#b7b9bd", "Aluminum 6061", "machined"));
   // the wheel bracket: a floor under the wheels and the wall a star tracker is screwed to, with its four M2 holes
   const zb = t;
   const fl = w / 2 - wallX - 1;

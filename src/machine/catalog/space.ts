@@ -321,7 +321,7 @@ export const P110_3U_WINDOW: CatalogPart = {
   summary: `A body-mounted 3U side panel with a window for a star tracker's baffle: four cells in series on a 1.6 mm circuit board. ${cellNote}.`,
   specs: { ...P110_3U.specs, cells: 4, v_mp: 9.7, v_oc: 10.8, mass_g: 110 },
   pins: panelPins(9.7, 0.505),
-  geom: { ...P110_3U.geom, dims: { ...P110_3U.geom.dims, n: 4, x0: -61, win_x: 46.1, win_y: 0, win_w: 38, win_d: 38 }, holes: [...(P110_3U.geom.holes ?? []), [73, -20]] },
+  geom: { ...P110_3U.geom, dims: { ...P110_3U.geom.dims, n: 4, x0: -61, win_x: 46.7, win_y: 0, win_w: 38, win_d: 38 }, holes: [...(P110_3U.geom.holes ?? []), [73.6, -20]] },
 };
 
 export const DSP_HOLDDOWN: CatalogPart = {
