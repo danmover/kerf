@@ -30,6 +30,8 @@ export type PlugKind =
   | "ring"
   | "usb_c"
   | "usb_micro"
+  /** USB-A plug on a cable, into a computer's socket */
+  | "usb_a"
   /** XT60 battery connector */
   | "xt60"
   /** a lead that leaves the part itself (fans, heater cartridges, sensors) */
@@ -79,6 +81,7 @@ export const PITCH: Record<PlugKind, number> = {
   ring: 8,
   usb_c: 0,
   usb_micro: 0,
+  usb_a: 0,
   xt60: 7.2,
   lead: 1.6,
   solder: 4,
@@ -100,6 +103,7 @@ export const PLUG_NAME: Record<PlugKind, string> = {
   ring: "ring terminal",
   usb_c: "USB-C",
   usb_micro: "micro-USB",
+  usb_a: "USB-A",
   xt60: "XT60",
   lead: "the part's own lead",
   solder: "soldered to the pad",
@@ -523,6 +527,20 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart, sp
   const i = part.pins.indexOf(pin);
   const n = part.pins.length;
   switch (part.geom.g) {
+    case "depth_camera":
+      // the USB-C socket in the +X end, half way back (geometryLegged.ts)
+      return { kind: "usb_c", at: [num(d, "w", 90) / 2, 0, num(d, "d", 25) / 2], out: X, row: Y, ways: 1 };
+    case "jetson_devkit": {
+      // the ports along the -Y edge (geometryLegged.ts): two stacks of two USB-A, and the DC jack
+      const top = 3.2 + num(d, "t", 1.6);
+      const y = -num(d, "d", 79) / 2 - 1.5;
+      const usb = /^USB(\d)$/.exec(pinId);
+      if (usb) {
+        const k = Number(usb[1]) - 1;
+        return { kind: "usb_a", at: [k < 2 ? -8.5 : 9.5, y, top + (k % 2 ? 4.9 : 12.6)], out: NY, row: X, ways: 1 };
+      }
+      return { kind: "barrel", at: [-40, y, top + 6.2], out: NY, row: X, ways: 1 };
+    }
     case "board": {
       // on the header pin or terminal contact drawn on the board, when it has them
       const spot = pinSpots(part).get(pinId);

@@ -132,7 +132,7 @@ export const LEGGED: CatalogPart[] = [
       ...[23, 22, 21, 20, 19, 18, 17, 16, 15, 14, 13].map(tp),
       { id: "GND3", type: "gnd", label: "GND" },
       ...[41, 40, 39, 38, 37, 36, 35, 34, 33].map(tp),
-      port("USB", "usb", "source", { label: "Micro USB (to the computer: Serial, programming)" }),
+      port("USB", "usb", "sink", { label: "Micro USB (to the computer: Serial, programming)", note: "A USB device: the host powers VUSB" }),
     ],
     geom: {
       g: "board",
@@ -155,8 +155,6 @@ export const LEGGED: CatalogPart[] = [
     ],
   },
 
-  // Waveshare SN65HVD230 CAN Board: TI's 3.3 V CAN transceiver with a 120 Ω terminator fitted, a 4-pin header to the
-  // controller and the bus on a 2-way screw terminal (Core Electronics' listing). Its size is read off photos.
   // SparkFun's TXB0104 translator: the Teensy's 3.3 V data line up to the 5 V the status LEDs need (WS2812B reads high above 3.5 V).
   {
     id: "sparkfun_txb0104",
@@ -166,22 +164,35 @@ export const LEGGED: CatalogPart[] = [
     mpn: "BOB-11771",
     summary: "Four-bit bidirectional level translator, TI TXB0104: 1.2 to 3.6 V on the A side, 1.65 to 5.5 V on the B side, up to 100 Mbps, so it carries a NeoPixel's 800 kHz data cleanly.",
     specs: { va_min: 1.2, va_max: 3.6, vb_min: 1.65, vb_max: 5.5, rate_mbps: 100, mass_g: 1 },
+    // in header order: the low-voltage (A) row along one edge, the high-voltage (B) row along the other
     pins: [
       pwrIn("VA", 1.2, 3.6, { label: "VCCA", draw: 0.001, vabs: 4.6 }),
-      pwrIn("VB", 1.65, 5.5, { label: "VCCB", draw: 0.001, vabs: 6.5 }),
-      gnd("GND", "GND"),
-      { id: "OE", type: "in", vmax: 3.6, vih: 1.0, label: "OE", note: "Pulled up to VCCA on the board: leave it open to run" },
       { id: "A1", type: "in", vmax: 3.6, vih: 1.6, label: "A1", required: true, note: "Low side in, at VCCA" },
-      { id: "B1", type: "out", v: 5, vref: "VB", label: "B1", note: "High side out, at VCCB" },
       { id: "A2", type: "in", vmax: 3.6, vih: 1.6, label: "A2" },
+      { id: "OE", type: "in", vmax: 3.6, vih: 1.0, label: "OE", note: "Pulled up to VCCA on the board: leave it open to run" },
+      pwrIn("VB", 1.65, 5.5, { label: "VCCB", draw: 0.001, vabs: 6.5 }),
+      { id: "B1", type: "out", v: 5, vref: "VB", label: "B1", note: "High side out, at VCCB" },
       { id: "B2", type: "out", v: 5, vref: "VB", label: "B2" },
+      gnd("GND", "GND"),
     ],
-    geom: { g: "board", dims: { w: 15.2, d: 15.2, t: 1.6 }, holes: [], features: [{ kind: "chip", x: 0, y: 0, w: 4, d: 3.5, h: 1 }], color: "#c0262d" },
+    geom: {
+      g: "board",
+      dims: { w: 15.2, d: 15.2, t: 1.6 },
+      holes: [],
+      features: [
+        { kind: "chip", x: 0, y: 0, w: 4, d: 3.5, h: 1 },
+        { kind: "header", x: 0, y: -6.35, w: 10.16, d: 2.54, h: 8.5 },
+        { kind: "header", x: 0, y: 6.35, w: 10.16, d: 2.54, h: 8.5 },
+      ],
+      color: "#c0262d",
+    },
     price_usd: 6.5,
     buy: [{ vendor: CORE, url: "https://core-electronics.com.au/sparkfun-voltage-level-translator-breakout-txb0104.html" }],
     source: "https://www.sparkfun.com/products/11771",
     notes: ["Its 0.1 in pads take a header strip or wires soldered straight on; the board has no mounting holes."],
   },
+  // Waveshare SN65HVD230 CAN Board: TI's 3.3 V CAN transceiver with a 120 Ω terminator fitted, a 4-pin header to the
+  // controller and the bus on a 2-way screw terminal (Core Electronics' listing). Its size is read off photos.
   {
     id: "waveshare_sn65hvd230",
     kind: "connector",
@@ -190,13 +201,14 @@ export const LEGGED: CatalogPart[] = [
     mpn: "SN65HVD230 CAN Board",
     summary: "Turns a controller's CAN TX and RX into a CAN bus pair: TI SN65HVD230 at 3.3 V with ESD protection and a 120 Ω terminator fitted, so it is one end of the bus. Up to 1 Mbps.",
     specs: { v_min: 3.0, v_max: 3.6, baud_max: 1000000, terminator_ohm: 120, mass_g: 4 },
+    // in the order they meet their wires: the bus pair in the screw terminal, then the 4-pin header
     pins: [
-      pwrIn("V3V3", 3.0, 3.6, { label: "3.3V", draw: 0.017, vabs: 4 }),
-      gnd("GND", "GND"),
-      { id: "CAN_RX", type: "out", v: 3.3, label: "CAN RX", required: true, note: "To the controller's CRX pin" },
-      { id: "CAN_TX", type: "in", vmax: 3.6, vih: 2.0, label: "CAN TX", required: true, note: "From the controller's CTX pin" },
       { id: "CAN_H", type: "passive", label: "CANH", required: true },
       { id: "CAN_L", type: "passive", label: "CANL", required: true },
+      pwrIn("V3V3", 3.0, 3.6, { label: "3.3V", draw: 0.017, vabs: 4 }),
+      gnd("GND", "GND"),
+      { id: "CAN_TX", type: "in", vmax: 3.6, vih: 2.0, label: "CAN TX", required: true, note: "From the controller's CTX pin" },
+      { id: "CAN_RX", type: "out", v: 3.3, label: "CAN RX", required: true, note: "To the controller's CRX pin" },
     ],
     geom: {
       g: "board",
@@ -206,6 +218,7 @@ export const LEGGED: CatalogPart[] = [
       features: [
         { kind: "chip", x: 1, y: 0, w: 5, d: 6.2, h: 1.6 },
         { kind: "terminal", x: 13.5, y: 0, w: 7.6, d: 10.2, h: 10 },
+        { kind: "header", x: -9.5, y: 0, w: 2.54, d: 10.16, h: 8.5 },
       ],
       color: "#1d4fa0",
     },

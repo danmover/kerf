@@ -874,7 +874,14 @@ function insideCorners(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFindin
   const along = (d: V3) => !ir.dirs || ir.dirs.some((x) => Math.abs(d[0] * x[0] + d[1] * x[1] + d[2] * x[2]) > 0.98);
   const perp = (n: V3) => !ir.dirs || ir.dirs.some((x) => Math.abs(n[0] * x[0] + n[1] * x[1] + n[2] * x[2]) < 0.1);
   // sharp concave edges
-  const sharp = c.sharpEdges().filter((e) => e.concave && e.angle > 30 && along(e.dir) && (!ir.dirs || (perp(e.n1) && perp(e.n2))));
+  // the rim round a cylinder (a blind hole's flat floor, a boss's foot) is a curve: where it runs along a side tool's
+  // axis it only touches it, so it is not a corner that tool leaves round
+  const rim = (e: SharpEdge) =>
+    [e.f1, e.f2].some((i) => {
+      const f = c.m.faces[i];
+      return f?.type === "CYLINDRE" && !!f.axis && Math.abs(f.axis.d[0] * e.dir[0] + f.axis.d[1] * e.dir[1] + f.axis.d[2] * e.dir[2]) < 0.5;
+    });
+  const sharp = c.sharpEdges().filter((e) => e.concave && e.angle > 30 && along(e.dir) && (!ir.dirs || (perp(e.n1) && perp(e.n2) && !rim(e))));
   // fillets tighter than the minimum
   const tight = new Set<number>();
   let tightest = Infinity;

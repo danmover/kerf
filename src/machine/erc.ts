@@ -837,12 +837,13 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
     n.pins.flatMap((p) => {
       if (p.pin.type !== "passive" || !p.pin.through) return [];
       const o = c.nl.netOf.get(key(p.comp, p.index, p.pin.through)) === n ? n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through) : undefined;
-      return o && p.key < o.key ? [{ a: p, b: o }] : [];
+      // once per pair: a lever nut's C, D and E go through to A, with no pin going back to them
+      return o && (p.key < o.key || o.pin.through !== p.pin.id) ? [{ a: p, b: o }] : [];
     });
-  // pins reached from `from` without crossing the skipped run or link
-  const reach = (n: Net, from: NetPin[], skip?: { a: NetPin; b: NetPin }) => {
+  // pins reached from `from` without crossing the skipped run or link (nor, with stop, the links through those parts)
+  const reach = (n: Net, from: NetPin[], skip?: { a: NetPin; b: NetPin }, stop?: Set<string>) => {
     const same = (e: { a: NetPin; b: NetPin }) => !!skip && e.a.key === skip.a.key && e.b.key === skip.b.key;
-    const edges = [...n.segs, ...links(n)].filter((e) => e !== skip && !same(e));
+    const edges = [...n.segs, ...links(n)].filter((e) => e !== skip && !same(e) && !(stop && e.a.comp === e.b.comp && stop.has(e.a.comp)));
     const seen = new Set(from.map((p) => p.key));
     const todo = [...from];
     while (todo.length) {
@@ -894,6 +895,7 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
   }
 
   // a fuse must blow before the thinnest wire after it overheats, and must not blow in normal use
+  const fuseNames = c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "fuse").map((x) => x.name);
   for (const f of c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "fuse")) {
     const part = catalogPart(f.catalogId)!;
     const rating = f.rating ?? Number(part.specs.rating_a ?? 0);
@@ -906,7 +908,8 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
       const fromSrc = reach(n, src, link);
       // the side the supply doesn't reach without going through the fuse is what it protects
       const out = pins.find((p) => !fromSrc.has(p.key)) ?? pins.find((p) => p.pin.id === "OUT") ?? pins[1];
-      const side = reach(n, [out], link);
+      // up to the next fuse down the line: that one protects the wires after it
+      const side = reach(n, [out], link, new Set(fuseNames.filter((x) => x !== f.name)));
       const after = n.segs.filter((sg) => side.has(sg.a.key) && side.has(sg.b.key) && sg.gauge !== undefined);
       const fname = `${f.name}${f.count > 1 ? `[${i}]` : ""}`;
       // a holder's contacts are rated too: a bigger blade than it takes lets them overheat before the fuse blows

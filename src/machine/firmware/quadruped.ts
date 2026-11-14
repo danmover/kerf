@@ -150,6 +150,8 @@ export function quadrupedFirmware(c: FwContext): QuadResult {
   const vMax = setting(c.fw, "max_speed", 0.6);
   const kpStand = setting(c.fw, "kp", 180);
   const kdStand = setting(c.fw, "kd", 3);
+  // the robot's mass, for the stance legs' share of its weight (kg)
+  const mass = setting(c.fw, "mass", 12);
   const reach = standH - footR;
   if (reach >= L1 + L2 - 0.005) warnings.push(`stand: the legs (${cNum(L1 * 1000)} + ${cNum(L2 * 1000)} mm) cannot reach ${cNum(standH * 1000)} mm with a foot radius of ${cNum(footR * 1000)} mm.`);
   for (const l of legs) if (!l.ok) warnings.push(`Leg ${l.name} is left limp.`);
@@ -194,6 +196,8 @@ export function quadrupedFirmware(c: FwContext): QuadResult {
 #define V_MAX ${cFloat(vMax)}
 #define KP_STAND ${cFloat(kpStand)}
 #define KD_STAND ${cFloat(kdStand)}
+// the whole robot's mass, kg: the feet in stance share its weight
+#define MASS ${cFloat(mass)}
 
 // MIT mode ranges of the ${oneLine(ap?.name ?? "actuator", 60)}
 #define P_MAX ${cFloat(P_MAX)}
@@ -246,6 +250,7 @@ uint8_t seen[N_LEGS][3];
 // ---- what they are told: joint angles and speeds from the standing pose, and the gains
 float qd[N_LEGS][3];
 float vd[N_LEGS][3];
+float tff[N_LEGS][3];
 float kp[N_LEGS][3];
 float kd[N_LEGS][3];
 uint8_t enabled = 0;
@@ -329,7 +334,7 @@ static void command(uint8_t L, uint8_t j) {
   uint16_t vi = f2u(v, -V_MAXR, V_MAXR, 12);
   uint16_t kpi = f2u(kp[L][j], 0, KP_MAX, 12);
   uint16_t kdi = f2u(kd[L][j], 0, KD_MAX, 12);
-  uint16_t ti = f2u(0, -T_MAXR, T_MAXR, 12);
+  uint16_t ti = f2u(s * tff[L][j], -T_MAXR, T_MAXR, 12);
   CAN_message_t m;
   m.id = CAN_ID[L][j];
   m.len = 8;
@@ -387,6 +392,7 @@ static void motorMode(uint8_t on) {
       kp[L][j] = 0;
       kd[L][j] = 0;
       vd[L][j] = 0;
+      tff[L][j] = 0;
     }
   enabled = on;
 }
@@ -498,7 +504,27 @@ static void gains(float p, float d) {
       kp[L][j] = j == 0 ? p * 1.5f : p;
       kd[L][j] = d;
       vd[L][j] = 0;
+      tff[L][j] = 0;
     }
+}
+
+// a foot in stance: the joint torques that make it push down with w newtons (its share of the weight, J^T of the
+// leg), and the joint speeds that move it at xd m/s along the body in the leg's plane (J^-1), at the joint angles f
+// for the foot at (y, z) from the ab/ad axis. The PD then only corrects, so the body neither sags nor drags its feet.
+static void stanceFF(uint8_t L, float *f, float y, float z, float w, float xd) {
+  float a1 = f[1] + TH0;
+  float a2 = f[2] + (QS0 - TH0) + a1;
+  float s1 = sin(a1), c1 = cos(a1), s2 = sin(a2), c2 = cos(a2);
+  float jxh = -L1 * c1 - L2 * c2, jxk = -L2 * c2;
+  float jzh = L1 * s1 + L2 * s2, jzk = L2 * s2;
+  tff[L][0] = -w * y;
+  tff[L][1] = -w * jzh;
+  tff[L][2] = -w * jzk;
+  float det = jxh * jzk - jxk * jzh;
+  if (fabs(det) > 1e-4f) {
+    vd[L][1] = jzk * xd / det;
+    vd[L][2] = -jzh * xd / det;
+  }
 }
 
 static float smooth(float u) {
@@ -540,6 +566,8 @@ static void control() {
       for (uint8_t L = 0; L < N_LEGS; L++) {
         ik(L, 0, LEG_Y[L], -zh, f);
         for (uint8_t j = 0; j < 3; j++) qd[L][j] = f[j];
+        // the weight comes onto the feet as it rises
+        stanceFF(L, f, LEG_Y[L], -zh, e * MASS * 9.81f / 4, 0);
       }
       if (t >= 3.2f) say(ST_STAND);
     }
@@ -570,6 +598,8 @@ static void control() {
     gains(state_now == ST_TROT ? KP_STAND * 0.85f : KP_STAND, KD_STAND);
     for (uint8_t L = 0; L < N_LEGS; L++) {
       float x = 0, y = LEG_Y[L], z = -(STAND_H - FOOT_R);
+      uint8_t inStance = 1;
+      float xdot = 0;
       if (state_now == ST_TROT) {
         // diagonal pairs: front left and rear right, then front right and rear left
         float ph = phase + ((L == 0 || L == 3) ? 0 : 0.5f);
@@ -582,7 +612,9 @@ static void control() {
           x = sx / 2 - sx * u;
           y += sy / 2 - sy * u;
           z += level(L);
+          xdot = -sx / half;
         } else {
+          inStance = 0;
           float u = (ph - 0.5f) / 0.5f;
           float e = smooth(u);
           x = -sx / 2 + sx * e;
@@ -598,6 +630,7 @@ static void control() {
       } else z += level(L);
       ik(L, x, y, z, f);
       for (uint8_t j = 0; j < 3; j++) qd[L][j] = f[j];
+      if (inStance) stanceFF(L, f, y, z, MASS * 9.81f / (state_now == ST_TROT ? 2 : 4), xdot);
     }
   } else if (state_now == ST_SIT) {
     // 1.5 s down to the crouch, then 1.5 s folding back to where it lay

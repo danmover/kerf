@@ -160,9 +160,10 @@ function qddGeometry(p: CatalogPart): GeomResult {
     fields: {
       scalars: { d: D, l: L, flange_d: Q.flangeD, out_pcd: Q.outPcd, mount_pcd: Q.mountPcd, back: L + Q.coverT + 7.2, screw: "M3", screw_depth: 5.5, mount_depth: 6, screw_clearance: 3.4 },
       points: { at: [0, 0, 0], back: [0, 0, z0], center: [0, 0, -L / 2], plug: [xt[0], xt[1], coverZ - 7.2], can: [can[0], can[1], coverZ - 4.4] },
-      pointLists: { out_holes: ring(Q.outN, Q.outPcd / 2, 0, Math.PI / Q.outN), mount_holes: ring(Q.mountN, Q.mountPcd / 2, z0, Math.PI / Q.mountN) },
+      // holes and mount: the names every motor gives for its back-face fixing
+      pointLists: { out_holes: ring(Q.outN, Q.outPcd / 2, 0, Math.PI / Q.outN), mount_holes: ring(Q.mountN, Q.mountPcd / 2, z0, Math.PI / Q.mountN), holes: ring(Q.mountN, Q.mountPcd / 2, z0, Math.PI / Q.mountN) },
       dirs: { axis: ZP, back: ZN },
-      shapes: { mount_cut: mountCut, flange_cut: flangeCut },
+      shapes: { mount_cut: mountCut, flange_cut: flangeCut, mount: mountCut },
     },
   };
 }

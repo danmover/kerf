@@ -2376,7 +2376,8 @@ class Evaluator {
       if (layout.nodes[drive].smooth) throw new EvalError(`drive: ${dn} is a smooth idler and cannot drive a timing belt`, argSpan("drive"));
     }
     const tensionV = args.value("tension");
-    if (tensionV !== undefined && !(typeof tensionV === "number" && tensionV > 0 && tensionV <= 3000)) throw new EvalError("tension: the installation tension in newtons, like tension: 15N", argSpan("tension"));
+    // up to ten times what the belt is rated to: past that it is a typo, not a setting to check
+    if (tensionV !== undefined && !(typeof tensionV === "number" && tensionV > 0 && tensionV <= Math.max(500, 10 * spec.tMax))) throw new EvalError("tension: the installation tension in newtons, like tension: 15N", argSpan("tension"));
     const loadArg = (k: string, what: string) => {
       const v = args.value(k);
       if (v === undefined) return undefined;
