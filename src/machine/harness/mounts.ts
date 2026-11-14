@@ -112,8 +112,9 @@ function checkOne(s: MountSpec, screws: ScrewSpec[], solids: Solids): MountResul
       return off <= Math.max(hole.d, sc.d) / 2 + 0.3;
     });
     if (screw) {
-      // it must bite into something besides the module: a boss, insert, standoff or nut along its shank
-      const notScrew: Skip = (it, i) => others(it, i) || it.id === screw.id;
+      // it must bite into something besides the module: a boss, insert, standoff or nut along its shank, or the
+      // bracket of another module it is screwed to (a star tracker on its attitude module's wall)
+      const notScrew: Skip = (it) => it.comp === s.partId || it.id === screw.id;
       let bites = false;
       for (let a = 0.5; a <= screw.length && !bites; a += 1) {
         const p: V3 = [screw.seat[0] + screw.axis[0] * a, screw.seat[1] + screw.axis[1] * a, screw.seat[2] + screw.axis[2] * a];

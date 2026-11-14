@@ -10,6 +10,7 @@ import { SdCard, type SdFileReport } from "../mcu/sdcard";
 import { pinLabel } from "../mcu/board";
 import type { Ssd1306 } from "./devices";
 import { Hd44780, Pcf8574Lcd } from "./lcd";
+import { attachSpacecraft } from "./spacecraft";
 import type { Plant } from "./plant";
 
 /** A microSD card at the end of a run, for the run's results. */
@@ -37,6 +38,7 @@ export interface DisplayLook {
 
 /** Put the peripheral a part is on its bus: true when the part is one (wired right or not). */
 export function attachPeripheral(p: Plant, mc: MachineComponent, part: CatalogPart): boolean {
+  if (part.specs.space_dev) return attachSpacecraft(p, mc, part);
   if (part.specs.driver === "SDCARD") {
     sdModule(p, mc, part);
     return true;

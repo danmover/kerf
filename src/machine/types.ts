@@ -30,6 +30,11 @@ export interface PinDef {
   id: string;
   /** label printed on the part, e.g. "5V", "B+" */
   label?: string;
+  /**
+   * The stack connector the pin is on ("pc104"): boards stacked on one another join it to the pin in the same place
+   * (the same label) on the next board through the connector, so a net between them needs no wire.
+   */
+  stack?: string;
   type: PinType;
   /** volts: logic level (io/out), supply voltage (pwr_out/pwr_rail), rating (motor) */
   v?: number;
@@ -218,7 +223,19 @@ export type GeomClass =
   | "led"
   | "disc"
   // differential pressure sensor: a housing with two tube ports and a screw lug
-  | "dp_sensor";
+  | "dp_sensor"
+  // spacecraft hardware (geometrySpace.ts): solar panels cell by cell, a telescope, a star tracker, a deployable
+  // antenna, a patch antenna, an ADCS module, a battery board, microswitches, a sun sensor and a burn-wire hold-down
+  | "space_panel"
+  | "space_telescope"
+  | "space_tracker"
+  | "space_ants"
+  | "space_patch"
+  | "space_adcs"
+  | "space_bp4"
+  | "space_switch"
+  | "space_sun"
+  | "space_holddown";
 
 export interface BoardFeature {
   kind: "usb" | "jack" | "header" | "terminal" | "chip" | "heatsink" | "cap" | "socket" | "module";
@@ -242,6 +259,8 @@ export interface GeomSpec {
   /** mounting hole centres relative to the part's local origin (board centre, motor face centre) */
   holes?: [number, number][];
   hole_d?: number;
+  /** space_panel: the holes are countersunk for flat-head screws, to this diameter at the top face */
+  csink?: number;
   features?: BoardFeature[];
   color?: string;
   /** colour of the secondary solid (heatsink, gearbox, wrap) */

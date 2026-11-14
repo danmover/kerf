@@ -3,6 +3,8 @@
 // and how to draw it. Worlds are reduced-order models: a few state variables
 // and calibrated formulas, not particles or finite elements.
 
+import type { OrbitSpec } from "../engine/spacecraft";
+
 /** The load on a motor's output shaft for one step. */
 export interface MotorLoad {
   /** friction-like torque the load resists with (and holds when stopped), N·m */
@@ -162,6 +164,8 @@ export interface World {
   drives?(): { on: string; v: (t: number) => number }[];
   /** a bench supply that powers the machine in place of its own batteries and supplies */
   supply?(): BenchSupplySpec | undefined;
+  /** the orbit a spacecraft flies in (sim.orbit(...)): its sun and eclipse */
+  orbit?(): OrbitSpec | undefined;
   /** ambient temperature, °C, and how well motors shed heat here (1 = still air) */
   thermal(): { ambient: number; cooling: number };
   /** numbers to record each frame (pose, contact forces, progress) */

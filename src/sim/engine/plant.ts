@@ -312,6 +312,10 @@ export class Plant implements PlantPort, PlantView {
   t = 0;
   /** called after every step with the time at its end, seconds */
   afterStep?: (t: number) => void;
+  /** models that keep their own state across the run (the spacecraft boards): stepped, recorded and reported with the plant */
+  extras: { tick?(dt: number, t: number): void; channels?(out: Record<string, number>): void; results?(): Record<string, number | boolean | string> }[] = [];
+  /** run once every part is on its bus, before the first step */
+  finishers: (() => void)[] = [];
   private rng: () => number;
   private mcuPart?: CatalogPart;
 
@@ -547,6 +551,7 @@ export class Plant implements PlantPort, PlantView {
         this.assumptions.push(`Powered from a bench supply at ${bench.volts} V with its current limit at ${bench.amps} A, clipped on ${where}${bench.on && replaced.length ? `, with ${listOf(replaced)} left out` : ""}`);
       }
     }
+    for (const f of this.finishers.splice(0)) f();
     // a regulator's depth down a chain of regulators
     const depth = (g: RegSlot, n = 0): number => {
       const up = n < this.regs.length ? this.regs.find((u) => u !== g && u.vout && g.vin && u.vout.id === g.vin.id) : undefined;
@@ -1302,7 +1307,13 @@ export class Plant implements PlantPort, PlantView {
     const vinv = at(vin);
     const bat = this.netOf(this.mcu, "BAT");
     const batv = at(bat);
-    if (v5v !== undefined && v5v > 0.5) {
+    // a board fed straight at its logic voltage (a flight computer on its stack's 3.3 V bus)
+    const v33 = this.board.logicV < 4 ? (this.netOf(this.mcu, "V3V3") ?? this.netOf(this.mcu, "3V3")) : undefined;
+    const v33fed = !!v33 && !!this.mcuPart?.pins.some((x) => (x.id === "V3V3" || x.id === "3V3") && x.type === "pwr_in");
+    if (v33fed && at(v33) !== undefined) {
+      this.mcuV = at(v33) ?? 0;
+      this.mcuSupply = "3.3 V pin";
+    } else if (v5v !== undefined && v5v > 0.5) {
       this.mcuV = v5v;
       this.mcuSupply = "5 V pin";
     } else if (v5 && this.regs.some((g) => g.vout?.id === v5.id)) {
@@ -1454,6 +1465,7 @@ export class Plant implements PlantPort, PlantView {
       const said = s.step(nets.reduce((a, n) => a + carried(n), 0), dt);
       if (said) this.events.push({ t, kind: "warn", text: said });
     }
+    for (const x of this.extras) x.tick?.(dt, t);
     if (this.mcuSupply === "USB") {
       const said = this.usb.step(this.logicLoad, dt);
       if (said) this.events.push({ t, kind: "warn", text: `The ${this.board.name}'s ${said}` });
@@ -1470,7 +1482,7 @@ export class Plant implements PlantPort, PlantView {
         this.hal.powerFail = `fuse ${f.comp} blew`;
       }
     }
-    if (this.mcuV < (this.board.logicV < 4 ? 3.4 : 4)) {
+    if (this.mcuV < (this.mcuSupply === "3.3 V pin" ? 2.9 : this.board.logicV < 4 ? 3.4 : 4)) {
       this.events.push({ t, kind: "warn", text: `The ${this.board.name} browned out: its supply fell to ${this.mcuV.toFixed(1)} V` });
       this.hal.powerFail = "brownout";
     }
@@ -1776,6 +1788,7 @@ export class Plant implements PlantPort, PlantView {
     }
     if (this.mcuSupply === "USB") out["usb.amps"] = this.usb.current;
     out["logic.volts"] = this.mcuV;
+    for (const x of this.extras) x.channels?.(out);
     this.steppers.channels(out);
     this.sensing.channels(out);
   }
@@ -1806,6 +1819,7 @@ export function fieldResults(plant: Plant): Record<string, number | boolean | st
     r[`${g.comp}.pressure`] = g.dev.last;
   }
   Object.assign(r, plant.steppers.results(), plant.sensing.results());
+  for (const x of plant.extras) Object.assign(r, x.results?.() ?? {});
   return r;
 }
 

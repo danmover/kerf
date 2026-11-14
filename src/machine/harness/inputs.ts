@@ -92,7 +92,15 @@ export function mountSpecs(model: Model, bbox: (hash: string) => [V3, V3] | unde
         const sh = op.shape;
         if ((sh.t === "cyl" || sh.t === "hole") && sh.dir && Math.abs(sh.dir[2]) > 0.99 && Math.abs(sh.dir[0]) < 1e-6 && Math.abs(sh.dir[1]) < 1e-6) holes.push({ x: sh.at[0], y: sh.at[1], d: sh.d });
       }
-    } else body = bbox(p.hash);
+    } else {
+      body = bbox(p.hash);
+      // a body that is not a plain box (a flange on a barrel, a housing with a baffle) still has its holes along Z
+      for (const op of p.recipe.ops) {
+        if (op.op !== "cut") continue;
+        const sh = op.shape;
+        if ((sh.t === "cyl" || sh.t === "hole") && sh.dir && Math.abs(sh.dir[2]) > 0.99 && Math.abs(sh.dir[0]) < 1e-6 && Math.abs(sh.dir[1]) < 1e-6) holes.push({ x: sh.at[0], y: sh.at[1], d: sh.d });
+      }
+    }
     if (!body) continue;
     const thin = body[1][2] - body[0][2] <= 3.2;
     out.push({ comp, partId: id, label: p.label, m: xformMatrix(p.xf), body, board: thin, holes, held });
@@ -108,6 +116,17 @@ export function screwSpecs(model: Model): ScrewSpec[] {
     const length = Number(/×\s*([\d.]+)/.exec(p.bom?.description ?? "")?.[1] ?? /×\s*([\d.]+)/.exec(p.label)?.[1] ?? 10);
     const d = Number(/M(\d+(?:[._]\d+)?)/.exec(p.fastener.size)?.[1]?.replace("_", ".") ?? 3);
     out.push({ id: p.id, seat: applyXforms([0, 0, 0], p.xf), axis: applyXformsToDir([0, 0, 1], p.xf), length, d });
+  }
+  // a male-female standoff's stud holds the board it passes through like a screw: it runs down from the standoff's
+  // bottom face (a PC/104 stack, each standoff's stud through a board into the standoff under it)
+  for (const p of model.parts) {
+    if (p.hidden || p.libKind !== "standoff") continue;
+    const desc = p.bom?.description ?? "";
+    const stud = /\(([\d.]+) mm stud\)/.exec(desc);
+    if (!stud) continue;
+    const d = Number(/M(\d+(?:[._]\d+)?)/.exec(desc)?.[1]?.replace("_", ".") ?? 3);
+    const up = applyXformsToDir([0, 0, 1], p.xf);
+    out.push({ id: p.id, seat: applyXforms([0, 0, 0], p.xf), axis: [-up[0], -up[1], -up[2]], length: Number(stud[1]), d });
   }
   return out;
 }
