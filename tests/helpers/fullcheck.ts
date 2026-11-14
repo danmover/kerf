@@ -28,6 +28,8 @@ export interface FullCheck {
   kernel: ReturnType<KernelCore["checks"]>;
   /** the cable routes and wiring findings, when the wiring checks ran */
   wiring?: ReturnType<typeof runWiring>;
+  /** each made part's manufacturing-process result, by part id */
+  process: Record<string, ProcessResult>;
   ms: number;
 }
 
