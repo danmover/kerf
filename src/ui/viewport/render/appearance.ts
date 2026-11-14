@@ -120,8 +120,8 @@ const TWEAKS: Record<string, (l: Look, finish: string) => Partial<Look>> = {
   AlSi10Mg: (l, f) => (f === "bead-blasted" ? { roughness: 0.58, detailAmp: 0.004 } : {}),
   "Carbon fiber": (l, f) =>
     f === "gloss"
-      ? { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 3, roughVar: 0.18, tintAmt: 0.45 }
-      : { roughness: 0.55, detail: Detail.Weave, detailAmp: 0.012, detailScale: 3, roughVar: 0.12, tintAmt: 0.4 },
+      ? { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 2, roughVar: 0.18, tintAmt: 0.45 }
+      : { roughness: 0.55, detail: Detail.Weave, detailAmp: 0.012, detailScale: 2, roughVar: 0.12, tintAmt: 0.4 },
   Silicone: () => ({ roughness: 0.82, sheen: 0.5, sheenRoughness: 0.7, detail: Detail.Grain, detailAmp: 0.002, detailScale: 0.06, roughVar: 0.05 }),
   Neoprene: () => ({ roughness: 0.7, sheen: 0.35, sheenRoughness: 0.6, detail: Detail.Grain, detailAmp: 0.0015, detailScale: 0.05, roughVar: 0.06 }),
   FR4: (l, f) => (f === "matte" ? { roughness: 0.72 } : {}),
@@ -147,7 +147,7 @@ export function appearanceFor(material: string, finish: string | undefined, colo
   let l: Look = table[f] ?? OTHER[f] ?? PLASTIC[f] ?? METAL[f] ?? look({});
   const tweak = TWEAKS[material];
   if (tweak) l = { ...l, ...tweak(l, f) };
-  const tint2 = l.tint2 ?? (l.detail === Detail.Plywood ? companion(color, 0.5) : l.detail === Detail.Wood ? companion(color, 0.62) : l.detail === Detail.Weave ? companion(color, 1.9) : companion(color, 0.7));
+  const tint2 = l.tint2 ?? (l.detail === Detail.Plywood ? companion(color, 0.5) : l.detail === Detail.Wood ? companion(color, 0.62) : l.detail === Detail.Weave ? companion(color, 1.3) : companion(color, 0.7));
   const out: Appearance = {
     ...l,
     key,

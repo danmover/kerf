@@ -20,7 +20,6 @@ const ZP: V3 = [0, 0, 1];
 const ZN: V3 = [0, 0, -1];
 const XP: V3 = [1, 0, 0];
 const YP: V3 = [0, 1, 0];
-const STEEL = "#b9bfc7";
 const num = (d: Record<string, number>, k: string, def: number) => (typeof d[k] === "number" ? d[k] : def);
 const box = (w: number, d: number, h: number, at: V3, r = 0): ShapeRecipe => ({ t: "box", w, d, h, at, r });
 const cyl = (d: number, h: number, at: V3, dir: V3 = ZP): ShapeRecipe => ({ t: "cyl", d, h, at, dir });
@@ -44,23 +43,23 @@ function airfoil(c: number, t: number, camber: number, n = 8): V2[] {
 }
 
 /**
- * One span of a blade at azimuth a (degrees) from r0 to r1, its mid-chord on height z: chord c0 pitched b0 degrees
- * at r0, c1 at b1 at r1, the leading edge leading in +azimuth and up (+Z), so turning that way it pushes air down.
- * `sweep` moves the r1 section back along the chord (mm) for the swept tip of a freestyle prop.
+ * One blade at azimuth a (degrees), its mid-chord on height z, lofted through stations [r, chord, pitch angle in
+ * degrees, thickness to chord]: the leading edge leads in +azimuth and up (+Z), so turning that way it pushes air
+ * down. One smooth skin through every station builds far faster than a union of twisted spans (about 11 s a prop).
  */
-function bladeSpan(a: number, r0: number, r1: number, z: number, c0: number, c1: number, b0: number, b1: number, t: number, camber: number): ShapeRecipe {
+function bladeLoft(a: number, z: number, stations: [number, number, number, number][], camber: number): ShapeRecipe {
   const ar = (a * Math.PI) / 180;
-  const b = (b0 * Math.PI) / 180;
   const er: V3 = [Math.cos(ar), Math.sin(ar), 0];
   const et: V3 = [-Math.sin(ar), Math.cos(ar), 0];
-  const u: V3 = [et[0] * Math.cos(b), et[1] * Math.cos(b), Math.sin(b)];
   return {
-    t: "extrude",
-    p: { t: "poly", pts: airfoil(c0, t, camber), r: 0 },
-    h: r1 - r0,
-    f: { o: [er[0] * r0, er[1] * r0, z], u, n: er },
-    twist: b1 - b0,
-    scale: c1 / c0,
+    t: "loft",
+    secs: stations.map(([r, c, bdeg, t]) => {
+      const b = (bdeg * Math.PI) / 180;
+      const u: V3 = [et[0] * Math.cos(b), et[1] * Math.cos(b), Math.sin(b)];
+      return { p: { t: "poly", pts: airfoil(c, t, camber), r: 0 }, f: { o: [er[0] * r, er[1] * r, z], u, n: er } };
+    }),
+    ruled: false,
+    matched: true,
   };
 }
 
@@ -122,18 +121,38 @@ export function fpvMotorGeometry(p: CatalogPart): GeomResult {
   const windings: PartRecipe = one({ t: "union", shapes: Array.from({ length: slots }, (_, i) => coil(i)) });
   // bell: the can and its top, with the vent windows round the hub and the boss the prop seats on
   const zb = zt + 0.8;
+  // the vents are sector windows between straight spokes, from the hub boss out to a solid outer ring
+  const r1 = pd / 2 + 2.9;
+  const r2 = belld / 2 - 1.9;
+  const span = 360 / vents - 13;
+  const sector = (k: number): ShapeRecipe => {
+    const a0 = (360 * k) / vents + 90 / vents - span / 2;
+    const arc = (r: number, n: number) => Array.from({ length: n + 1 }, (_, i) => {
+      const a = ((a0 + (span * i) / n) * Math.PI) / 180;
+      return [r * Math.cos(a), r * Math.sin(a)] as [number, number];
+    });
+    return { t: "prism", pts: [...arc(r2, 8), ...arc(r1, 4).reverse()], h: capT + 0.2, at: [0, 0, zt - capT - 0.1], dir: ZP, rot: 0 };
+  };
   const bell: PartRecipe = one({ t: "tube", od: belld, id: belld - 2 * wall, h: bellh - capT, at: [0, 0, z1], dir: ZP }, [
     { op: "add", shape: cyl(belld, capT, [0, 0, zt - capT]) },
-    ...ring(vents, belld * 0.29, 90 / vents).map(([x, y]) => ({ op: "cut" as const, shape: cyl(belld * 0.2, capT + 0.2, [x, y, zt - capT - 0.1]) })),
+    { op: "chamfer", r: 0.7, edges: "top" },
+    ...Array.from({ length: vents }, (_, k) => ({ op: "cut" as const, shape: sector(k) })),
+    // a machined groove round the can a third of the way down, and the lip at its open rim
+    { op: "cut", shape: { t: "tube", od: belld + 1, id: belld - 0.5, h: 0.6, at: [0, 0, zt - bellh * 0.36], dir: ZP } },
+    { op: "cut", shape: { t: "tube", od: belld + 1, id: belld - 0.7, h: 1.6, at: [0, 0, z1 - 0.01], dir: ZP } },
     { op: "add", shape: cyl(pd + 4.2, zb - zt + 0.01, [0, 0, zt - 0.01]) },
-    { op: "chamfer", r: 0.6, edges: "top" },
   ]);
   // magnets: the ring of arc magnets inside the can
   const magnets: PartRecipe = one({ t: "tube", od: belld - 2 * wall + 0.01, id: belld - 2 * wall - 2.4, h: sh + 1.2, at: [0, 0, zs - 0.6], dir: ZP }, [
     ...Array.from({ length: poles }, (_, i) => ({ op: "cut" as const, shape: rotZ(box(4, 0.45, sh + 1.6, [belld / 2 - wall - 1.2, 0, zs - 0.8]), (360 * i) / poles) })),
   ]);
   // prop shaft (M5, its thread left off) and the screw under the base that holds the bell on in place of a C-clip
-  const shaft: PartRecipe = one(cyl(pd, pl + 0.01, [0, 0, zb - 0.01]), [{ op: "chamfer", r: 0.4, edges: "top" }]);
+  // the shaft is threaded M5 above the prop's seat: drawn at the thread's root there, so a prop nut's bore sits on it
+  const minor = pd * 0.826;
+  const shaft: PartRecipe = one(cyl(pd, 5.5 + 0.01, [0, 0, zb - 0.01]), [
+    { op: "add", shape: cyl(minor, pl - 5.5, [0, 0, zb + 5.5]) },
+    { op: "chamfer", r: 0.3, edges: "top" },
+  ]);
   const lock: PartRecipe = one(cyl(4.4, 0.8, [0, 0, 0.25]), [{ op: "cut", shape: { t: "prism", pts: ring(6, 1.15, 30), h: 0.6, at: [0, 0, 0.2], dir: ZP, rot: 0 } }]);
   // the three phase leads leave the base's side at -Y, one beside the other
   const leads: PartRecipe = one({ t: "union", shapes: [-1, 0, 1].map((k) => cyl(1.9, 3.2, [k * 2.05, -bd / 2 + 1.2, bh * 0.45], [0, -1, 0])) });
@@ -147,7 +166,7 @@ export function fpvMotorGeometry(p: CatalogPart): GeomResult {
       solid("windings", `${p.name} windings`, windings, "#b8692f", "Copper", false, "polished"),
       solid("bell", `${p.name} bell`, bell, g.color2 ?? "#8d939b", "Aluminum 7075", true, "anodized"),
       solid("magnets", `${p.name} magnets`, magnets, "#3a3d42", "Steel", true, "machined"),
-      solid("shaft", `${p.name} prop shaft`, shaft, STEEL, "Steel", true, "polished"),
+      solid("shaft", `${p.name} prop shaft`, shaft, "#8a9098", "Steel", true, "machined"),
       solid("lock", `${p.name} shaft screw`, lock, "#30343a", "Steel", true, "black-oxide"),
       solid("leads", `${p.name} lead exits`, leads, "#15171a", "Silicone"),
     ],
@@ -195,14 +214,9 @@ export function propGeometry(p: CatalogPart): GeomResult {
     [R, cmax * 0.18],
   ];
   const zMid = hubH * 0.52;
-  const blade = (a: number): ShapeRecipe => ({
-    t: "union",
-    shapes: st.slice(0, -1).map(([r0, c0], i) => {
-      const [r1, c1] = st[i + 1];
-      // the root span is pitched no steeper than 45°, as moulded props are, which keeps it clear of the bell
-      return bladeSpan(a, r0, r1, zMid, c0, c1, Math.min(45, beta(r0)), Math.min(45, beta(r1)), i === 0 ? tc * 1.6 : tc, 0.05);
-    }),
-  });
+  // the root is pitched no steeper than 45°, as moulded props are, which keeps it clear of the bell, and thicker
+  const stations = st.map(([r, c], i) => [r, c, Math.min(45, beta(r)), i === 0 ? tc * 1.6 : tc] as [number, number, number, number]);
+  const blade = (a: number): ShapeRecipe => bladeLoft(a, zMid, stations, 0.05);
   const blades: ShapeRecipe = { t: "union", shapes: Array.from({ length: nb }, (_, i) => blade((360 * i) / nb + 90)) };
   const hand: ShapeRecipe = ccw ? blades : { t: "xform", shape: blades, xf: [{ op: "mirror", origin: Z0, normal: XP }] };
   const hub: PartRecipe = one(cyl(hubD, hubH, Z0), [
@@ -316,7 +330,7 @@ export function fpvVtxGeometry(p: CatalogPart): GeomResult {
   return {
     placement: "free",
     solids: [
-      solid("", p.name, shell, g.color ?? "#2a2c31", "PC", false, "matte"),
+      solid("", p.name, shell, g.color ?? "#2a2c31", "Aluminum 6061", false, "bead-blasted"),
       solid("sink", `${p.name} heatsink`, sink, g.color2 ?? "#3d4047", "Aluminum 6061", false, "anodized"),
       solid("ufl", `${p.name} antenna sockets`, ufl, "#d0b46a", "Brass", false, "polished"),
       solid("button", `${p.name} button and LED`, button, "#e9eef4", "Silicone"),
