@@ -190,6 +190,12 @@ export type GeomClass =
   | "servo"
   // serial bus servo: a flat case with an output horn and an idler horn on one axis (geometryBusServo.ts)
   | "bus_servo"
+  // legged-robot parts (geometryLegged.ts): an AK-series actuator, a depth camera, a Jetson kit, an ISO relay, a flanged HTD pulley
+  | "qdd"
+  | "depth_camera"
+  | "jetson_devkit"
+  | "auto_relay"
+  | "htd_pulley"
   | "actuator"
   | "box"
   | "extrusion"
@@ -458,6 +464,8 @@ export interface NetDef {
   width?: number;
   /** fill the board's free copper with this net (true), or never pour it (false) */
   pour?: boolean;
+  /** wire the pins one to the next in the order given (a CAN or RS-485 bus), not as a star from the first */
+  chain?: boolean;
   span: Span;
 }
 

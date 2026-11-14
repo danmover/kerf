@@ -14,6 +14,7 @@ import { FLAVOR_NAME, type PrinterFlavor, PRINTER_FLAVORS, boardFlavors, flavorO
 import { rrfConfig } from "./rrf";
 import { tunerSketch } from "./tuner";
 import { VANE_WORDS, vaneFirmware } from "./vanes";
+import { QUAD_WORDS, quadrupedFirmware } from "./quadruped";
 import type { FwContext } from "./common";
 
 export type { GenFile } from "./common";
@@ -33,7 +34,7 @@ export interface FirmwareOutput {
 
 const ARDUINO_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32|blackpill_)/;
 /** boards a sketch of your own runs on (the firmware simulator has each one); the Trinket has no serial port for Kerf's console code */
-const OWN_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32|blackpill_|trinket_)/;
+const OWN_BOARDS = /^(arduino_|esp32|rpi_pico|feather_esp32|blackpill_|trinket_|teensy_)/;
 
 export function generateFirmware(m: MachineData, designName: string): FirmwareOutput[] {
   return m.firmware.map((fw) => {
@@ -89,6 +90,11 @@ function generatedFor(m: MachineData, fw: FirmwareDef, designName: string): Firm
   if (MAGLEV_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && ARDUINO_BOARDS.test(ctx.boardPart.id) && /esp32/i.test(String(ctx.boardPart.specs.mcu ?? ""))) {
     const r = maglevFirmware(ctx);
     return { name: fw.name, board: ctx.board.name, target: r.files.length ? "arduino" : "none", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
+  }
+  // a four-legged robot on CAN actuators, on a Teensy 4.x
+  if (QUAD_WORDS.test(String(fw.settings.behaviour ?? fw.settings.behavior ?? "")) && /^teensy_4/.test(ctx.boardPart.id)) {
+    const r = quadrupedFirmware(ctx);
+    return { name: fw.name, board: ctx.board.name, target: "arduino", summary: r.summary, files: r.files, warnings: r.warnings, pinTable: r.pinTable };
   }
   // smart servos on a bus adapter: the board is a bridge between a computer and the servo buses
   if (ARDUINO_BOARDS.test(ctx.boardPart.id) && hasServoBus(ctx)) {

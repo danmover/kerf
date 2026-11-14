@@ -106,6 +106,13 @@ export function plugBody(p: MeshBuilder, m: MeshBuilder, f: Frame, look: PlugLoo
       p.cyl(f, 0, 0, 19, 23, 2.6, BLACK, 14, "z", 2.1);
       return;
     }
+    case "usb_a": {
+      // the steel tongue shell in the socket, the moulded grip with its strain relief
+      m.box(f, -6, 6, -2.25, 2.25, -12, 0.2, TIN);
+      p.box(f, -8, 8, -4.2, 4.2, 0, 24, BLACK);
+      p.cyl(f, 0, 0, 24, 28, 2.8, BLACK, 14, "z", 2.3);
+      return;
+    }
     case "usb_micro": {
       m.box(f, -3.5, 3.5, -0.9, 0.9, -5, 0.2, TIN);
       p.box(f, -5.3, 5.3, -3, 3, 0, 14.5, BLACK);

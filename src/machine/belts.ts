@@ -60,7 +60,8 @@ export function beltSpec(p: CatalogPart): BeltSpec {
     minTeeth: n("min_teeth", 12),
     core: String(s.core ?? "glass fibre"),
     closed,
-    stock: closed ? GT2_LOOPS : undefined,
+    // a loop's own stock lengths when its catalog entry lists them ("350,375,…"), else the common GT2 loops
+    stock: closed ? (typeof s.stock === "string" ? s.stock.split(",").map(Number).filter((x) => x > 0) : GT2_LOOPS) : undefined,
   };
 }
 

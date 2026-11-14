@@ -874,7 +874,31 @@ function insideCorners(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFindin
   const along = (d: V3) => !ir.dirs || ir.dirs.some((x) => Math.abs(d[0] * x[0] + d[1] * x[1] + d[2] * x[2]) > 0.98);
   const perp = (n: V3) => !ir.dirs || ir.dirs.some((x) => Math.abs(n[0] * x[0] + n[1] * x[1] + n[2] * x[2]) < 0.1);
   // sharp concave edges
-  const sharp = c.sharpEdges().filter((e) => e.concave && e.angle > 30 && along(e.dir) && (!ir.dirs || (perp(e.n1) && perp(e.n2))));
+  // the rim round a cylinder (a blind hole's flat floor, a boss's foot) is a curve: where it runs along a side tool's
+  // axis it only touches it, so it is not a corner that tool leaves round
+  const rim = (e: SharpEdge) =>
+    [e.f1, e.f2].some((i) => {
+      const f = c.m.faces[i];
+      return f?.type === "CYLINDRE" && !!f.axis && Math.abs(f.axis.d[0] * e.dir[0] + f.axis.d[1] * e.dir[1] + f.axis.d[2] * e.dir[2]) < 0.5;
+    });
+  // a pocket's floor faces one of the setups: that setup's flat end mill cuts the edge round the floor's foot sharp,
+  // however another setup's axis lies along it
+  const dot3 = (a: V3, b: V3) => a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+  const seen = new Map<V3, Set<number>>();
+  const reached = (d: V3) => {
+    let got = seen.get(d);
+    if (!got) {
+      const mask = c.clear(d);
+      got = new Set<number>();
+      for (let k = 0; k < c.samples.length; k++) if (mask[k]) got.add(c.m.faceOf[c.samples[k]]);
+      seen.set(d, got);
+    }
+    return got;
+  };
+  const floor = (e: SharpEdge) =>
+    !!ir.dirs &&
+    ir.dirs.some((d) => Math.abs(dot3(e.dir, d)) < 0.1 && ((dot3(e.n1, d) > 0.98 && reached(d).has(e.f1)) || (dot3(e.n2, d) > 0.98 && reached(d).has(e.f2))));
+  const sharp = c.sharpEdges().filter((e) => e.concave && e.angle > 30 && along(e.dir) && (!ir.dirs || (perp(e.n1) && perp(e.n2) && !rim(e) && !floor(e))));
   // fillets tighter than the minimum
   const tight = new Set<number>();
   let tightest = Infinity;

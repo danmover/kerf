@@ -15,6 +15,7 @@ import { printBytes } from "./libPrint";
 import { liquidCrystalClass, liquidCrystalI2cClass } from "./libLcd";
 import { accelStepperClass, multiStepperClass, stepperScoped } from "./libStepper";
 import { fileClass, fsClass, newSdState, sdObject, spiObject, spiSettingsClass, spiSettingsFn, type SdState } from "./libSpi";
+import { CAN_CLASSES, CAN_TEMPLATED } from "./libCan";
 import { FASTLED_CLASSES, FASTLED_FUNCS, FASTLED_OBJECTS, FASTLED_SCOPED, FASTLED_STRUCTS, FASTLED_TEMPLATED, newFastLedState, type FastLedState } from "./libFastLed";
 
 export { argCount, burn, decay, def, dict, fnEv, numEv, ptrEv, sumCost, typeOf, type LibClass, type LibFn, type LibMethod } from "./libBase";
@@ -1503,20 +1504,21 @@ export const LIB_CLASSES: Record<string, LibClass> = dict({
   AccelStepper: accelStepperClass,
   MultiStepper: multiStepperClass,
   ...FASTLED_CLASSES,
+  ...CAN_CLASSES,
 });
 
 /** names in a library class's scope (AccelStepper::DRIVER, CRGB::Red) */
 export const LIB_SCOPED: Record<string, LibFn> = dict({ ...stepperScoped, ...FASTLED_SCOPED });
 /** the C++ libraries add to structs their headers declare (FastLED's CRGB, CHSV and CRGBPalette16) */
 export const LIB_STRUCTS = FASTLED_STRUCTS;
-/** library methods that take template arguments (FastLED.addLeds<WS2812B, 6, GRB>) */
-export const TEMPLATED = FASTLED_TEMPLATED;
+/** library methods and classes that take template arguments (FastLED.addLeds<WS2812B, 6, GRB>, FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>) */
+export const TEMPLATED = new Set([...FASTLED_TEMPLATED, ...CAN_TEMPLATED]);
 /** Library class names the parser accepts as types. */
 export const CLASS_NAMES = new Set(Object.keys(LIB_CLASSES));
 
-export function newClassInstance(name: string, ctx: Ctx): unknown {
+export function newClassInstance(name: string, ctx: Ctx, targs?: number[]): unknown {
   const make = LIB_CLASSES[name]?.make;
-  if (make) return make(ctx);
+  if (make) return make(ctx, targs);
   if (name === "Servo") return { kind: "Servo", pin: -1, min: 544, max: 2400, us: 1500 } satisfies ServoObj;
   if (name === "Adafruit_NeoPixel") return newPixels();
   return {};

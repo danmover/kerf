@@ -4,7 +4,7 @@
 import { ARM, AVR, RISCV, XTENSA, type Abi } from "./ctypes";
 
 /** the core family: which Arduino.h a sketch sees and how the HAL behaves */
-export type Arch = "avr" | "esp32" | "rp2040" | "stm32";
+export type Arch = "avr" | "esp32" | "rp2040" | "stm32" | "imxrt";
 
 export interface Board {
   /** catalog part ids this profile covers */
@@ -81,6 +81,8 @@ export interface Board {
   adcHwBits?: number;
   /** names the board's core does not have, and the error a sketch that uses one gets */
   missing?: Record<string, string>;
+  /** CAN ports (CAN1, CAN2, ...): the pins each one's controller drives its transceiver from */
+  can?: { tx: number; rx: number }[];
 }
 
 const atmega328p = (name: string, parts: string[], board: string, analog: number[], analogOnly: number[]): Board => ({
@@ -568,7 +570,58 @@ export const TRINKET_5V: Board = {
   arch: "avr",
 };
 
-export const BOARDS: Board[] = [NANO, UNO, FEATHER_ESP32_V2, MEGA, ESP32_DEVKITC, XIAO_ESP32S3, XIAO_ESP32C3, PICO, BLACKPILL_F411, TRINKET_5V];
+// PJRC Teensy 4.1 (NXP i.MX RT1062, Cortex-M7 at 600 MHz) on Teensyduino: its pinout card and cores/teensy4. Pins
+// 0 to 41; A0 to A17 are pins 14 to 27 and 38 to 41; every pin takes interrupts; PWM on 0 to 15, 18, 19, 22 to 25,
+// 28, 29, 33, 36 and 37 (4.482 kHz by default). Serial is the chip's own USB port. CAN1 is CTX1/CRX1 on pins 22/23,
+// CAN2 CTX2/CRX2 on 1/0, CAN3 (CAN FD) CTX3/CRX3 on 31/30. Wire is pins 18 (SDA) and 19 (SCL).
+const TEENSY_IO = range(0, 41);
+const TEENSY_PWM = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 18, 19, 22, 23, 24, 25, 28, 29, 33, 36, 37];
+export const TEENSY_41: Board = {
+  parts: ["teensy_41"],
+  name: "Teensy 4.1",
+  mcu: "i.MX RT1062",
+  fcpu: 600_000_000,
+  abi: ARM,
+  ramBytes: 1024 * 1024,
+  flashBytes: 8_126_464,
+  eepromBytes: 4284,
+  digitalPins: 41,
+  analog: [14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 38, 39, 40, 41],
+  analogOnly: [],
+  interrupts: each(TEENSY_IO, (p) => p),
+  pwm: Object.fromEntries(TEENSY_PWM.map((p) => [p, 4482])),
+  pwmTimer: {},
+  ledBuiltin: 13,
+  sda: 18,
+  scl: 19,
+  spi: { ss: 10, mosi: 11, miso: 12, sck: 13 },
+  uarts: [
+    { rx: 0, tx: 1 },
+    { rx: 7, tx: 8 },
+    { rx: 15, tx: 14 },
+    { rx: 16, tx: 17 },
+    { rx: 21, tx: 20 },
+    { rx: 25, tx: 24 },
+    { rx: 28, tx: 29 },
+    { rx: 34, tx: 35 },
+  ],
+  can: [
+    { tx: 22, rx: 23 },
+    { tx: 1, rx: 0 },
+    { tx: 31, rx: 30 },
+  ],
+  adcBits: 10,
+  adcHwBits: 12,
+  adcRefV: 3.3,
+  logicV: 3.3,
+  serialTx: 64,
+  serialRx: 64,
+  usbSerial: true,
+  defines: { ARDUINO: "10819", TEENSYDUINO: "159", ARDUINO_TEENSY41: "1", __IMXRT1062__: "1", F_CPU: "600000000", __KERF_SIM__: "1" },
+  arch: "imxrt",
+};
+
+export const BOARDS: Board[] = [NANO, UNO, FEATHER_ESP32_V2, MEGA, ESP32_DEVKITC, XIAO_ESP32S3, XIAO_ESP32C3, PICO, BLACKPILL_F411, TRINKET_5V, TEENSY_41];
 
 /** A pin's name as the board's pinout prints it: D13 and A0 on an AVR, GPIO13, GP13, PA5, #2. */
 export function pinLabel(b: Board, pin: number): string {
