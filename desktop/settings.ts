@@ -10,7 +10,7 @@ export type GraphicsBackend = "auto" | "d3d11" | "vulkan" | "gl";
 
 export interface DesktopSettings {
   graphics: GraphicsBackend;
-  /** Kerf's tools for the person's own Claude Code (desktop/mcp.ts): off until they turn it on in Settings → Claude */
+  /** Kerf's tools for the person's own Claude Code (desktop/mcp.ts): off until they turn it on in Settings → AI */
   claudeCode: {
     enabled: boolean;
     port: number;

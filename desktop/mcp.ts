@@ -57,7 +57,7 @@ export interface McpBackend {
   version: string;
 }
 
-/** What Kerf saw of a connection attempt, for the status line in Settings → Claude. */
+/** What Kerf saw of a connection attempt, for the status line in Settings → AI → Claude Code. */
 export type McpSeen =
   | { kind: "connected"; client: string }
   /** no-token: nothing after "Bearer" (or no Authorization header); wrong-token: an old or mistyped token */
@@ -91,9 +91,9 @@ function sameToken(sent: string, token: string) {
 
 const REFUSED = {
   "no-token":
-    "Kerf got no token. Copy the connect command from Kerf's Settings → Claude → Claude Code and run it as it is: it gives Claude Code the whole header, Authorization: Bearer and the token.",
+    "Kerf got no token. The easy fix: press Connect Claude Code in Kerf's Settings → AI → Claude Code, which sets Claude Code up without a token to copy. Or copy the HTTP connect command from Set up by hand there and run it as it is: it gives the whole header, Authorization: Bearer and the token.",
   "wrong-token":
-    "Kerf turned down this token: it is old or mistyped. Copy the connect command again from Kerf's Settings → Claude → Claude Code, which has the current token.",
+    "Kerf turned down this token: it is old or mistyped. Press Connect Claude Code in Kerf's Settings → AI → Claude Code, which keeps up with new tokens by itself, or copy the HTTP connect command again from Set up by hand there.",
 };
 
 /** The name and version a client gave in its initialize, e.g. "claude-code 2.1.323". */

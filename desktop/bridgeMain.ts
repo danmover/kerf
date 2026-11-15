@@ -17,7 +17,7 @@ const dataDir = arg("--kerf-data");
 const appDir = arg("--kerf-app");
 
 if (!dataDir) {
-  process.stderr.write("kerf-bridge: no --kerf-data folder. Press Connect Claude Code in Kerf's Settings → Claude to set this up again.\n");
+  process.stderr.write("kerf-bridge: no --kerf-data folder. Press Connect Claude Code in Kerf's Settings → AI to set this up again.\n");
   process.exit(2);
 }
 

@@ -4,7 +4,7 @@
 // never reads or touches Claude Code's sign-in.
 
 import { execFile } from "node:child_process";
-import { existsSync, readFileSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync } from "node:fs";
 import { delimiter, join } from "node:path";
 
 /** Claude Code's command line, as found on this computer. */
@@ -41,6 +41,35 @@ export interface Ran {
 
 const NAME = "kerf";
 
+/**
+ * The copies of Claude Code that the Claude desktop app keeps for itself, in
+ * <base>/claude-code/<version>/<build>/, newest first. On a PC where Claude
+ * Code came with the desktop app this is the only one, and it isn't on PATH.
+ */
+export function bundledClaudes(base: string, exe: string): string[] {
+  const root = join(base, "claude-code");
+  const num = (v: string) => v.split(".").map((n) => Number.parseInt(n, 10) || 0);
+  const newer = (a: string, b: string) => {
+    const [x, y] = [num(a), num(b)];
+    for (let i = 0; i < Math.max(x.length, y.length); i++) if ((x[i] ?? 0) !== (y[i] ?? 0)) return (y[i] ?? 0) - (x[i] ?? 0);
+    return 0;
+  };
+  try {
+    return readdirSync(root)
+      .filter((v) => /^\d+(\.\d+)*$/.test(v))
+      .sort(newer)
+      .flatMap((v) => {
+        try {
+          return readdirSync(join(root, v)).map((b) => join(root, v, b, exe));
+        } catch {
+          return [];
+        }
+      });
+  } catch {
+    return [];
+  }
+}
+
 /** Where Claude Code's installers put `claude`, after the folders on PATH. */
 export function claudeCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string): string[] {
   const path = (env.PATH ?? env.Path ?? "").split(platform === "win32" ? ";" : delimiter).filter(Boolean);
@@ -51,6 +80,8 @@ export function claudeCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessE
     out.push(join(profile, ".local", "bin", "claude.exe"));
     if (env.APPDATA) out.push(join(env.APPDATA, "npm", "claude.cmd"));
     if (env.LOCALAPPDATA) out.push(join(env.LOCALAPPDATA, "Microsoft", "WinGet", "Links", "claude.exe"));
+    // the one that comes with the Claude desktop app (not %LOCALAPPDATA%\AnthropicClaude, which is the app itself)
+    if (env.APPDATA) out.push(...bundledClaudes(join(env.APPDATA, "Claude"), "claude.exe"));
   } else {
     for (const d of path) out.push(join(d, "claude"));
     out.push(
@@ -63,6 +94,7 @@ export function claudeCandidates(platform: NodeJS.Platform, env: NodeJS.ProcessE
       join(home, ".volta", "bin", "claude"),
       "/home/linuxbrew/.linuxbrew/bin/claude",
     );
+    if (platform === "darwin") out.push(...bundledClaudes(join(home, "Library", "Application Support", "Claude"), "claude"));
   }
   return [...new Set(out)];
 }

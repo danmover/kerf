@@ -122,7 +122,7 @@ export function post(target: { socketPath: string } | { host: string; port: numb
 const rpcError = (id: Rpc["id"], code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 const toolError = (id: Rpc["id"], text: string) => ({ jsonrpc: "2.0", id, result: { isError: true, content: [{ type: "text", text }] } });
 
-const OFF = "Kerf's tools for Claude Code are turned off. Ask the person to press Connect Claude Code in Kerf's Settings → Claude, then call this again.";
+const OFF = "Kerf's tools for Claude Code are turned off. Ask the person to press Connect Claude Code in Kerf's Settings → AI, then call this again.";
 const NO_ANSWER = "Kerf didn't open in time. Ask the person to open Kerf (and a project in it), then call this again.";
 const DROPPED = "Kerf closed or reloaded while it was running this. If it's open again, call this again.";
 

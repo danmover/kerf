@@ -10,7 +10,7 @@ import { join } from "node:path";
 import { createRequire } from "node:module";
 import { CLIENT_HEADER, KERF_HEADER, pipePath, startMcp, type McpBackend, type McpSeen, type RunningMcp } from "../desktop/mcp";
 import { post, runBridge, TOOLS_CACHE } from "../desktop/bridge";
-import { claudeCandidates, cmdArg, describe as describeEntry, isConnected, isOurs, kerfEntries, parseEntry, register, type ClaudeCli } from "../desktop/claudeCli";
+import { bundledClaudes, claudeCandidates, cmdArg, describe as describeEntry, isConnected, isOurs, kerfEntries, parseEntry, register, type ClaudeCli } from "../desktop/claudeCli";
 
 const TOKEN = "k".repeat(43);
 let dirs: string[] = [];
@@ -269,6 +269,19 @@ describe("Setting up Claude Code from Kerf", () => {
     const mac = claudeCandidates("darwin", { PATH: "/usr/bin:/bin" }, "/Users/dan");
     expect(mac[0]).toBe("/usr/bin/claude");
     for (const p of ["/Users/dan/.local/bin/claude", "/opt/homebrew/bin/claude", "/Users/dan/.claude/local/claude"]) expect(mac).toContain(p);
+  });
+
+  it("finds the Claude Code that comes with the Claude desktop app, newest first", () => {
+    const base = mkdtempSync(join(tmpdir(), "kerf-claude-app-"));
+    dirs.push(base);
+    for (const v of ["2.1.309", "2.1.317", "2.1.99"]) mkdirSync(join(base, "claude-code", v, "a33aa5518497"), { recursive: true });
+    mkdirSync(join(base, "claude-code", "tmp"));
+    expect(bundledClaudes(base, "claude.exe")).toEqual(["2.1.317", "2.1.309", "2.1.99"].map((v) => join(base, "claude-code", v, "a33aa5518497", "claude.exe")));
+    expect(bundledClaudes(join(base, "nowhere"), "claude.exe")).toEqual([]);
+    const appdata = mkdtempSync(join(tmpdir(), "kerf-appdata-"));
+    dirs.push(appdata);
+    mkdirSync(join(appdata, "Claude", "claude-code", "2.1.317", "x"), { recursive: true });
+    expect(claudeCandidates("win32", { Path: "", APPDATA: appdata }, "C:\\Users\\dan").at(-1)).toBe(join(appdata, "Claude", "claude-code", "2.1.317", "x", "claude.exe"));
   });
 
   it("reads claude mcp get", () => {
