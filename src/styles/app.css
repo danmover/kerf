@@ -1121,6 +1121,25 @@ a:hover {
   color: var(--accent-2);
   flex: none;
 }
+/* what the view is waiting on while the model stays on screen (a kernel restart, a graphics card reset) */
+.vp-notice {
+  position: absolute;
+  top: 64px;
+  left: 50%;
+  z-index: 5;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  max-width: calc(100% - 32px);
+  padding: 6px 12px 6px 10px;
+  border-radius: 20px;
+  background: rgb(var(--bg-1-rgb) / 0.86);
+  border: 1px solid var(--line-2);
+  backdrop-filter: blur(10px);
+  font-size: 12px;
+  color: var(--text-2);
+  pointer-events: none;
+}
 .vp-photo.paused svg {
   color: var(--text-3);
 }

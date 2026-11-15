@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { KernelClient, STALL_MS } from "../src/kernel/client";
+import { CRASH_WINDOW_MS, CRASHES_ALLOWED, KernelClient, STALL_MS } from "../src/kernel/client";
 import type { BuildItem, ChecksRequest, FromWorker, ToWorker } from "../src/kernel/protocol";
 
 /**
@@ -158,5 +158,45 @@ describe("kernel watchdog", () => {
     expect(third.errors.map((e) => e[0])).toEqual(["trap1"]);
     expect(third.parts).toEqual(["ok"]);
     expect(k.workers.length).toBe(3);
+  });
+
+  it("recovers from crashes spread over a long session, and gives up only on crashes close together", async () => {
+    const k = setup();
+    const crash = () => (k.workers.at(-1)!.onerror as (ev: { preventDefault(): void; message: string }) => void)({ preventDefault: () => undefined, message: "worker died" });
+    await k.client.ready();
+    expect(k.client.started).toBe(true);
+    // more crashes than allowed, but each a while after the last: every one gets a fresh worker
+    for (let i = 0; i < CRASHES_ALLOWED + 3; i++) {
+      // (the stand-in worker is ready as soon as it starts)
+      crash();
+      await k.client.ready();
+      await vi.advanceTimersByTimeAsync(CRASH_WINDOW_MS / CRASHES_ALLOWED + 1000);
+    }
+    expect(k.client.status).toBe("ready");
+    expect(k.client.restarts).toBe(CRASHES_ALLOWED + 3);
+    const ok = k.build(["a"]);
+    await ok.job.done;
+    expect(ok.parts).toEqual(["a"]);
+
+    // the same number one after another: it stops and says so
+    for (let i = 0; i <= CRASHES_ALLOWED; i++) crash();
+    expect(k.client.status).toBe("error");
+    expect(k.client.error).toMatch(/keeps failing \(worker died\)/);
+    await expect(k.client.ready()).rejects.toThrow(/keeps failing/);
+    const refused = k.build(["b"]);
+    expect((await refused.job.done).cancelled).toBe(true);
+
+    // starting it again from the error card works without reloading the page, and the design is rebuilt
+    const resets = k.resets();
+    k.client.recover();
+    await k.client.ready();
+    expect(k.resets()).toBe(resets + 1);
+    const again = k.build(["b"]);
+    await again.job.done;
+    expect(again.parts).toEqual(["b"]);
+    // and it has its full allowance of crashes again
+    crash();
+    await k.client.ready();
+    expect(k.client.status).toBe("ready");
   });
 });
