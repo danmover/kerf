@@ -5,15 +5,49 @@
 // them exactly as it does for Kerf's chat.
 //
 // Streamable HTTP, stateless: every POST carries one JSON-RPC message and gets
-// a JSON reply. Only this computer can connect (127.0.0.1), and only with the
-// bearer token shown in Settings → Claude.
+// a JSON reply. Only this computer can connect, and only with the bearer token
+// kept in Kerf's settings. Kerf listens in two places:
+// - a local pipe (a named pipe on Windows, a socket file elsewhere), which is
+//   what Kerf's own stdio bridge (desktop/bridge.ts) uses. "Connect Claude
+//   Code" registers that bridge, so Claude Code never makes an HTTP connection
+//   at all: no port, no proxy, no token to paste, nothing for an antivirus
+//   web filter to rewrite.
+// - 127.0.0.1:<port>, for anything set up by hand with a URL and the token.
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from "node:http";
-import { randomBytes, timingSafeEqual } from "node:crypto";
+import { connect } from "node:net";
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto";
+import { existsSync, unlinkSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join, resolve, win32 } from "node:path";
 
 export const DEFAULT_PORT = 47615;
 const PROTOCOL_VERSIONS = ["2025-11-25", "2025-06-18", "2025-03-26", "2024-11-05"];
 const MAX_BODY = 20 * 1024 * 1024;
+
+/** What Claude Code is told when it connects, by the server or by the bridge while Kerf is closed. */
+export const MCP_INSTRUCTIONS =
+  "Kerf is the mechanical CAD app open on this computer. These tools read and change the design open in its window, and the person watches every change there live. Before you work on a design, call kerf_instructions once and follow it: it is Kerf's design guide and the reference for its design language. Start each task with get_design.";
+
+/** Every reply carries this header with the running Kerf's id, so a self-check can tell Kerf's answer from another program's. */
+export const KERF_HEADER = "x-kerf";
+/** Kerf's bridge names the client it serves ("claude-code 2.1.325") on every message, for the status in Settings: it may have answered initialize itself while Kerf was closed. */
+export const CLIENT_HEADER = "x-kerf-client";
+
+/**
+ * Where Kerf's local pipe is for a given data folder: a named pipe on Windows,
+ * a socket file elsewhere. Both ends work it out from the same folder, so the
+ * bridge finds the running Kerf without a port.
+ */
+export function pipePath(dataDir: string, platform: NodeJS.Platform = process.platform) {
+  // the same folder written differently (relative, or in another case on Windows) is the same pipe
+  const dir = platform === "win32" ? win32.resolve(dataDir).toLowerCase() : resolve(dataDir);
+  const id = createHash("sha256").update(dir).digest("hex").slice(0, 16);
+  if (platform === "win32") return `\\\\.\\pipe\\kerf-mcp-${id}`;
+  // a socket path has to stay under about 104 bytes on macOS
+  const inData = join(dir, "mcp.sock");
+  return Buffer.byteLength(inData) < 100 ? inData : join(tmpdir(), `kerf-mcp-${id}.sock`);
+}
 
 /** What the page answers for the server. */
 export interface McpBackend {
@@ -32,6 +66,11 @@ export type McpSeen =
 export interface RunningMcp {
   port: number;
   url: string;
+  /** the local pipe Kerf's bridge connects to, or null when it couldn't be opened (see pipeError) */
+  pipe: string | null;
+  pipeError: string;
+  /** the id in every reply's x-kerf header */
+  instance: string;
   close(): Promise<void>;
 }
 
@@ -58,10 +97,25 @@ const REFUSED = {
 };
 
 /** The name and version a client gave in its initialize, e.g. "claude-code 2.1.323". */
-function clientOf(msg: Rpc) {
+export function clientOf(msg: Pick<Rpc, "params">) {
   const c = msg.params?.clientInfo as { name?: unknown; title?: unknown; version?: unknown } | undefined;
   const name = typeof c?.name === "string" ? c.name : typeof c?.title === "string" ? c.title : "A program";
   return `${name}${typeof c?.version === "string" ? ` ${c.version}` : ""}`.slice(0, 80);
+}
+
+/** The answer to initialize: the version the client asked for when Kerf speaks it, else Kerf's newest. */
+export function initializeResult(msg: { id?: Rpc["id"]; params?: Record<string, unknown> }, instructions: string, version: string) {
+  const asked = String(msg.params?.protocolVersion ?? "");
+  return {
+    jsonrpc: "2.0",
+    id: msg.id,
+    result: {
+      protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
+      capabilities: { tools: { listChanged: false } },
+      serverInfo: { name: "kerf", title: "Kerf", version },
+      instructions,
+    },
+  };
 }
 
 function send(res: ServerResponse, status: number, body?: unknown) {
@@ -100,19 +154,8 @@ export async function handleRpc(msg: Rpc, backend: McpBackend, signal: AbortSign
   }
   if (isNote) return null;
   switch (msg.method) {
-    case "initialize": {
-      const asked = String(msg.params?.protocolVersion ?? "");
-      return {
-        jsonrpc: "2.0",
-        id: msg.id,
-        result: {
-          protocolVersion: PROTOCOL_VERSIONS.includes(asked) ? asked : PROTOCOL_VERSIONS[0],
-          capabilities: { tools: { listChanged: false } },
-          serverInfo: { name: "kerf", title: "Kerf", version: backend.version },
-          instructions: backend.instructions,
-        },
-      };
-    }
+    case "initialize":
+      return initializeResult(msg, backend.instructions, backend.version);
     case "ping":
       return { jsonrpc: "2.0", id: msg.id, result: {} };
     case "tools/list":
@@ -136,10 +179,19 @@ export async function handleRpc(msg: Rpc, backend: McpBackend, signal: AbortSign
   }
 }
 
-/** Start listening on 127.0.0.1, from `port` upward when it is taken. */
-export function startMcp(opts: { port: number; token: string; backend: McpBackend; onSeen?: (s: McpSeen) => void }): Promise<RunningMcp> {
+/** Ports Kerf tries before letting the system pick one. */
+const PORT_TRIES = 10;
+
+/**
+ * Start listening on 127.0.0.1, from `port` upward when it is taken or reserved
+ * (Windows keeps whole port ranges for Hyper-V and WSL), and on `pipe` when one
+ * is given. A pipe that won't open is reported, not fatal: the URL still works.
+ */
+export async function startMcp(opts: { port: number; token: string; backend: McpBackend; onSeen?: (s: McpSeen) => void; pipe?: string }): Promise<RunningMcp> {
   const cancels = new Map<string, AbortController>();
-  const server: Server = createServer(async (req, res) => {
+  const instance = randomBytes(8).toString("hex");
+  const handle = async (req: IncomingMessage, res: ServerResponse) => {
+    res.setHeader(KERF_HEADER, instance);
     const url = new URL(req.url ?? "/", "http://127.0.0.1");
     // a web page can't reach this: it needs the token, and pages always send an Origin
     if (url.pathname !== "/mcp") return send(res, 404);
@@ -151,7 +203,6 @@ export function startMcp(opts: { port: number; token: string; backend: McpBacken
       if (req.method === "POST") opts.onSeen?.({ kind: "refused", why });
       return send(res, 401, rpcError(null, -32001, REFUSED[why]));
     }
-    if (req.method === "GET" || req.method === "DELETE") return send(res, 405);
     if (req.method !== "POST") return send(res, 405);
     let msg: Rpc;
     try {
@@ -160,7 +211,9 @@ export function startMcp(opts: { port: number; token: string; backend: McpBacken
       return send(res, 400, rpcError(null, -32700, "Parse error"));
     }
     if (Array.isArray(msg)) return send(res, 400, rpcError(null, -32600, "Kerf takes one message per request"));
+    const via = req.headers[CLIENT_HEADER];
     if (msg?.method === "initialize") opts.onSeen?.({ kind: "connected", client: clientOf(msg) });
+    else if (typeof via === "string" && via && msg?.method !== "ping") opts.onSeen?.({ kind: "connected", client: via.slice(0, 80) });
     const ac = new AbortController();
     res.on("close", () => {
       if (!res.writableEnded) ac.abort();
@@ -168,34 +221,82 @@ export function startMcp(opts: { port: number; token: string; backend: McpBacken
     const reply = await handleRpc(msg, opts.backend, ac.signal, cancels);
     if (reply === null) return send(res, 202);
     send(res, 200, reply);
-  });
-  // tool calls such as a stress analysis can take minutes
-  server.requestTimeout = 0;
-  server.headersTimeout = 60_000;
+  };
+  const make = () => {
+    const server: Server = createServer((req, res) => void handle(req, res));
+    // tool calls such as a stress analysis can take minutes
+    server.requestTimeout = 0;
+    server.headersTimeout = 60_000;
+    return server;
+  };
+
+  const tcp = make();
+  const port = await listenTcp(tcp, opts.port);
+  let pipeServer: Server | null = null;
+  let pipeError = "";
+  if (opts.pipe) {
+    pipeServer = make();
+    try {
+      await listenPipe(pipeServer, opts.pipe);
+    } catch (e) {
+      pipeServer = null;
+      pipeError = (e as Error).message;
+    }
+  }
+  const stop = (server: Server) =>
+    new Promise<void>((r) => {
+      server.closeAllConnections();
+      server.close(() => r());
+    });
+  return {
+    port,
+    url: `http://127.0.0.1:${port}/mcp`,
+    pipe: pipeServer ? opts.pipe! : null,
+    pipeError,
+    instance,
+    close: async () => {
+      for (const c of cancels.values()) c.abort();
+      await Promise.all([stop(tcp), pipeServer && stop(pipeServer)]);
+    },
+  };
+}
+
+/** Listen from `first` upward; after PORT_TRIES taken or reserved ports, on any free one. */
+function listenTcp(server: Server, first: number): Promise<number> {
   return new Promise((resolve, reject) => {
-    let port = opts.port;
+    let port = first;
     const tryListen = () => {
       server.once("error", (e: NodeJS.ErrnoException) => {
-        if (e.code === "EADDRINUSE" && port < opts.port + 10) {
-          port++;
-          tryListen();
-        } else reject(e);
+        if (e.code !== "EADDRINUSE" && e.code !== "EACCES") return reject(e);
+        if (port === 0) return reject(e);
+        port = port < first + PORT_TRIES ? port + 1 : 0;
+        tryListen();
       });
       server.listen(port, "127.0.0.1", () => {
         server.removeAllListeners("error");
-        port = (server.address() as { port: number }).port;
-        resolve({
-          port,
-          url: `http://127.0.0.1:${port}/mcp`,
-          close: () =>
-            new Promise<void>((r) => {
-              for (const c of cancels.values()) c.abort();
-              server.closeAllConnections();
-              server.close(() => r());
-            }),
-        });
+        resolve((server.address() as { port: number }).port);
       });
     };
     tryListen();
+  });
+}
+
+/** Listen on a named pipe or socket file. A socket file left by a Kerf that crashed is cleared first; a live one is left alone. */
+async function listenPipe(server: Server, path: string) {
+  if (!path.startsWith("\\\\") && existsSync(path)) {
+    const live = await new Promise<boolean>((r) => {
+      const s = connect(path);
+      s.once("connect", () => (s.destroy(), r(true)));
+      s.once("error", () => r(false));
+    });
+    if (live) throw new Error("Another Kerf is already listening on its pipe.");
+    unlinkSync(path);
+  }
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(path, () => {
+      server.removeAllListeners("error");
+      resolve();
+    });
   });
 }
