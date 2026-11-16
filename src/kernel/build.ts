@@ -10,6 +10,8 @@ import { buildKnurl, buildThread } from "./threads";
 import { describeSel, Topo, type FeatureTools } from "./topology";
 import { buildMould } from "./mould";
 import { smoothFaceted } from "./meshSmooth";
+import { threadValues } from "./threadFaces";
+import type { ThreadMark } from "./threadMarks";
 import { deleteFaces, moveFaces, pushPull, replaceFaces, targetPlane } from "./direct";
 import { fullRound, unevenChamfer, variableFillet } from "./rounds";
 
@@ -94,7 +96,7 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     }
     case "hole": {
       if (r.thread) {
-        let tool = buildThread(r.thread, r.depth, r.at, r.dir, true, r.lead ?? 0, detail);
+        let tool = buildThread(r.thread, r.depth, r.at, r.dir, true, r.lead ?? 0, detail && realThreads);
         if (r.cbore) tool = tool.fuse(R.makeCylinder(r.cbore[0] / 2, r.cbore[1] + 0.05, vadd(r.at, vscale(r.dir, -0.05)), r.dir));
         return tool;
       }
@@ -184,7 +186,7 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
     case "revolve2":
       return revolveProfile2(r.p, r.f, r.angle);
     case "thread": {
-      const t = buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail, r.fastD);
+      const t = buildThread(r.spec, r.length, r.at, r.dir, r.internal, r.lead, detail && realThreads, r.fastD);
       if (!r.bore) return t;
       return t.cut(R.makeCylinder(r.bore / 2, r.length + 0.2, vadd(r.at, vscale(r.dir, -0.1)), r.dir));
     }
@@ -216,7 +218,7 @@ export function buildShape(r: ShapeRecipe, detail = false): Shape3D {
  */
 const shared = new Map<string, Shape3D>();
 function sharedPart(hash: string, part: PartRecipe, detail: boolean): Shape3D {
-  const key = `${hash}|${detail ? "d" : "f"}`;
+  const key = `${hash}|${detail ? (realThreads ? "d" : "v") : "f"}`;
   let s = shared.get(key);
   if (!s) {
     s = buildPart(part, { detail });
@@ -369,12 +371,36 @@ export interface PartBuild {
   features: Map<string, FeatureTools>;
 }
 
-export function buildPart(p: PartRecipe, opts: { detail?: boolean } = {}): Shape3D {
+/**
+ * Whether a detailed build models threads for real. The 3D view's display build is a detailed build (knurls, belt
+ * teeth, cosmetic steps) with threads left as the plain cylinders fast builds use: it draws them in the part shader
+ * instead (see threadMarks.ts). Set for the length of one top-level buildPartFull; parts built inside it inherit it.
+ */
+let realThreads = true;
+
+export interface BuildOptions {
+  detail?: boolean;
+  /** with detail: model the real threads (true unless given); false for a display build */
+  threads?: boolean;
+}
+
+export function buildPart(p: PartRecipe, opts: BuildOptions = {}): Shape3D {
   return buildPartFull(p, opts).shape;
 }
 
 /** Build a part step by step, keeping named feature tools for edge and face selection. */
-export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): PartBuild {
+export function buildPartFull(p: PartRecipe, opts: BuildOptions = {}): PartBuild {
+  if (opts.threads === undefined || opts.threads === realThreads) return buildPartSteps(p, opts);
+  const before = realThreads;
+  realThreads = opts.threads;
+  try {
+    return buildPartSteps(p, opts);
+  } finally {
+    realThreads = before;
+  }
+}
+
+function buildPartSteps(p: PartRecipe, opts: BuildOptions): PartBuild {
   const detail = !!opts.detail;
   if (!p.base) throw new BuildError("Part has no body");
   const features = new Map<string, FeatureTools>();
@@ -389,7 +415,7 @@ export function buildPartFull(p: PartRecipe, opts: { detail?: boolean } = {}): P
   if (p.baseName) recordTool(features, p.baseName, "body", shape);
   let topo: Topo | null = null;
   const topoNow = () => (topo && topo.shape === shape ? topo : (topo?.dispose(), (topo = new Topo(shape, features))));
-  const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && !runsUntil(op.shape) && (kind === "add" || !(detail && threadEnvelope(op.shape)));
+  const batchable = (op: PartOp | undefined, kind: string): op is BoolOp => !!op && op.op === kind && "shape" in op && !op.cosmetic && !runsUntil(op.shape) && (kind === "add" || !(detail && realThreads && threadEnvelope(op.shape)));
   let skip = 0;
   p.ops.forEach((op, i) => {
     if (skip) return void skip--;
@@ -531,7 +557,7 @@ function applyOp(shape: Shape3D, op: PartOp, detail: boolean, features: Map<stri
       if (op.name) recordTool(features, op.name, op.op, tool);
       if (op.op === "add") return shape.fuse(tool);
       if (op.op === "cut") {
-        const env = detail ? threadEnvelope(op.shape) : null;
+        const env = detail && realThreads ? threadEnvelope(op.shape) : null;
         return env ? cutWithin(shape, tool, env) : shape.cut(tool);
       }
       return shape.intersect(tool) as Shape3D;
@@ -808,7 +834,15 @@ export interface MeshData {
   edgeGroups?: Int32Array;
   /** per-vertex RGB, only for imported bodies whose faces have their own colours */
   colors?: Uint8Array;
+  /** per-vertex thread values (THREAD_STRIDE each) where a plain cylinder stands in for a thread: see threadMarks.ts */
+  thread?: Float32Array;
 }
+
+/**
+ * preview: coarse, fast. display: what the 3D view shows once refined, exact tolerance with threads drawn rather than
+ * built. final: exact tolerance with every detail (threads included), for export and close-ups.
+ */
+export type MeshQuality = "preview" | "display" | "final";
 
 type RawMesh = ReturnType<Shape3D["mesh"]>;
 
@@ -845,7 +879,7 @@ function meshMiss(m: RawMesh, volume: number, tolerance: number): number {
  * small face's triangles across far more than the face (a sliver beside a spline face, at one particular deflection),
  * which leaves an STL that is not the part, so it meshes finer until the volume agrees.
  */
-export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColors?: string[] | null, volume?: number, faceted = false): MeshData {
+export function meshShape(shape: Shape3D, quality: MeshQuality, faceColors?: string[] | null, volume?: number, faceted = false, threads?: ThreadMark[]): MeshData {
   const base = quality === "preview" ? { tolerance: 0.25, angularTolerance: 25 } : { tolerance: 0.03, angularTolerance: 10 };
   let opts = base;
   let m = shape.mesh(opts);
@@ -874,6 +908,10 @@ export function meshShape(shape: Shape3D, quality: "preview" | "final", faceColo
     edgeGroups: new Int32Array(e.edgeGroups.flatMap((g) => [g.start, g.count, g.edgeId])),
   };
   if (faceColors?.length) out.colors = vertexColors(shape, m, faceColors);
+  if (threads?.length && !faceted) {
+    const t = threadValues(shape, m, threads);
+    if (t) out.thread = t;
+  }
   return faceted ? smoothFaceted(out) : out;
 }
 

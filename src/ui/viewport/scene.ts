@@ -11,6 +11,7 @@ import { motionPose } from "../../core/kinematics";
 import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explode";
 import { ChainLinks } from "./chainLinks";
 import type { MeshEntry } from "../../core/engine";
+import { closeEnough, pickMesh, threadPitch } from "./threadLod";
 import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
 import { xformMatrix } from "../../kernel/recipe";
@@ -297,6 +298,12 @@ export class SceneController {
   private ghosts: Ghost[] = [];
   private geos = new Map<string, GeoEntry>();
   private seenHashByPart = new Map<string, string>();
+  /** the meshes the parts were last set from, for switching a part between its drawn and real threads */
+  private lastMeshes: Map<string, MeshEntry> | null = null;
+  /** parts the camera is close enough to that their real threads are shown */
+  private closeUps = new Set<string>();
+  /** when to look again at which parts are close (ms), once the camera has stopped; 0 when not due */
+  private lodDue = 0;
   private grid: THREE.Mesh;
   private gridMat: THREE.ShaderMaterial;
   private ground: THREE.Mesh;
@@ -901,16 +908,18 @@ export class SceneController {
   // ---------- parts ----------
 
   setParts(parts: EvalPart[], meshes: Map<string, MeshEntry>) {
+    this.lastMeshes = meshes;
     const want = new Set<string>();
     const now = performance.now();
+    // a part's real threads may have just arrived while the camera is close to it
+    if (!this.lodDue) this.lodDue = now + 200;
     const motion = !this.display.reduceMotion;
     let fresh = 0;
     for (const part of parts) {
-      const entry = meshes.get(part.hash);
-      const data = entry?.final ?? entry?.preview;
-      if (!data) continue;
+      const pick = pickMesh(meshes.get(part.hash), this.realThreads(part.id));
+      if (!pick) continue;
+      const { data, quality } = pick;
       want.add(part.id);
-      const quality = entry?.final ? "final" : "preview";
       const geoKey = `${part.hash}:${quality}`;
       let obj = this.parts.get(part.id);
       const prevHash = this.seenHashByPart.get(part.id);
@@ -969,6 +978,8 @@ export class SceneController {
       mesh.setIndex(new THREE.BufferAttribute(data.indices, 1));
       // imported bodies whose faces carry their own colours
       if (data.colors) mesh.setAttribute("color", new THREE.BufferAttribute(data.colors, 3, true));
+      // threads the part shader draws on their stand-in cylinders
+      if (data.thread) mesh.setAttribute("aThread", new THREE.BufferAttribute(data.thread, 4));
       mesh.computeBoundingBox();
       mesh.computeBoundingSphere();
       const edges = new THREE.BufferGeometry();
@@ -1025,6 +1036,7 @@ export class SceneController {
     const center = new THREE.Vector3();
     g.mesh.boundingBox!.getCenter(center);
     u.uNoiseScale.value = 7 / Math.max(g.mesh.boundingSphere!.radius * 2, 1);
+    u.uThreads.value = g.mesh.getAttribute("aThread") ? 1 : 0;
     return {
       id: part.id,
       part,
@@ -1062,6 +1074,52 @@ export class SceneController {
     obj.edges.geometry = g.edges;
     g.mesh.boundingBox!.getCenter(obj.center);
     obj.u.uNoiseScale.value = 7 / Math.max(g.mesh.boundingSphere!.radius * 2, 1);
+    obj.u.uThreads.value = g.mesh.getAttribute("aThread") ? 1 : 0;
+  }
+
+  /** Real threads for photoreal (the path tracer draws geometry, not the shader's threads), films and close-ups. */
+  private realThreads(id: string): boolean {
+    return this.photoLookOn || this.filming || this.closeUps.has(id);
+  }
+
+  /** Show each part's drawn or real threads as realThreads() now says. True when any part changed. */
+  private repickMeshes(only?: Iterable<PartObj>): boolean {
+    if (!this.lastMeshes) return false;
+    let changed = false;
+    for (const obj of only ?? this.parts.values()) {
+      if (obj.removing) continue;
+      const pick = pickMesh(this.lastMeshes.get(obj.hash), this.realThreads(obj.id));
+      if (!pick) continue;
+      const key = `${obj.hash}:${pick.quality}`;
+      if (key === obj.geoKey) continue;
+      this.swapGeometry(obj, key, pick.data);
+      changed = true;
+    }
+    if (changed) this.changed = true;
+    return changed;
+  }
+
+  /** Once the camera stops: the parts it is close enough to for their threads' ridges to show get the real ones. */
+  private updateCloseUps() {
+    if (!this.lastMeshes) return;
+    const h = this.container.clientHeight || 1;
+    const c = new THREE.Vector3();
+    const flipped: PartObj[] = [];
+    for (const obj of this.parts.values()) {
+      const entry = this.lastMeshes.get(obj.hash);
+      const was = this.closeUps.has(obj.id);
+      const pitch = entry?.final ? threadPitch(entry.display) : 0;
+      let close = false;
+      if (pitch && !obj.removing && obj.group.visible) {
+        c.copy(obj.center).applyMatrix4(obj.group.matrixWorld);
+        close = closeEnough(pitch, c.distanceTo(this.camera.position), this.camera.fov, h, was);
+      }
+      if (close === was) continue;
+      if (close) this.closeUps.add(obj.id);
+      else this.closeUps.delete(obj.id);
+      flipped.push(obj);
+    }
+    if (flipped.length) this.repickMeshes(flipped);
   }
 
   /**
@@ -1128,6 +1186,7 @@ export class SceneController {
     u.uNoiseScale.value = obj.u.uNoiseScale.value;
     u.uDetail.value.copy(obj.u.uDetail.value);
     u.uPly.value.copy(obj.u.uPly.value);
+    u.uThreads.value = obj.u.uThreads.value;
     mat.clippingPlanes = obj.mat.clippingPlanes;
     const mesh = new THREE.Mesh(g.mesh, mat);
     mesh.castShadow = true;
@@ -2131,10 +2190,16 @@ export class SceneController {
       for (const o of this.parts.values()) this.applyMaterial(o);
       this.grid.visible = this.display.grid && !look;
       this.changed = true;
+      this.repickMeshes();
     }
     if (this.pipe.cameraMoved(this.camera)) {
       if (import.meta.env.DEV) this.debugReason += " camera";
       this.changed = true;
+      this.lodDue = now + 200;
+    }
+    if (this.lodDue && now >= this.lodDue) {
+      this.lodDue = 0;
+      this.updateCloseUps();
     }
     let restarted = false;
     if (this.changed) {
@@ -2657,6 +2722,8 @@ export class SceneController {
   beginFilm(opts: { width: number; height: number; look?: string; fine?: boolean }): FilmView {
     if (this.filming) throw new Error("A film is already being made");
     this.filming = true;
+    // films show the real threads
+    this.repickMeshes();
     const saved = {
       photoLookOn: this.photoLookOn,
       grid: this.grid.visible,
@@ -2967,6 +3034,7 @@ export class SceneController {
         }
         this.photoLookOn = saved.photoLookOn;
         this.filming = false;
+        this.repickMeshes();
         this.layoutStage();
         this.syncOverlays();
         this.setDisplay(saved.display);

@@ -167,11 +167,13 @@ async function run(msg: ToWorker) {
               faceGroups: mesh.faceGroups?.slice(),
               edgeGroups: mesh.edgeGroups?.slice(),
               colors: mesh.colors?.slice(),
+              thread: mesh.thread?.slice(),
             };
             const transfer: Transferable[] = [copy.positions.buffer, copy.normals.buffer, copy.indices.buffer, copy.edges.buffer];
             if (copy.faceGroups) transfer.push(copy.faceGroups.buffer);
             if (copy.edgeGroups) transfer.push(copy.edgeGroups.buffer);
             if (copy.colors) transfer.push(copy.colors.buffer);
+            if (copy.thread) transfer.push(copy.thread.buffer);
             post(
               { type: "part", jobId: msg.jobId, hash: item.hash, quality: msg.quality, mesh: copy, volume: entry.volume, bbox: entry.bbox, ms: performance.now() - t, warnings: entry.warnings.length ? entry.warnings : undefined },
               transfer,

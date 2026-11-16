@@ -1,7 +1,7 @@
 // UI-side handle on the geometry kernel worker: job ids, promises, and
 // recovery when the worker dies (for example after OpenCASCADE runs out of memory).
 
-import type { MeshData } from "./build";
+import type { MeshData, MeshQuality } from "./build";
 import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, FromWorker, InspectRequest, InspectResult, ToWorker } from "./protocol";
 import type { PartInspection } from "./inspect";
 import type { FaceCatalogue } from "../core/mates";
@@ -15,7 +15,7 @@ export type KernelStatus = "loading" | "ready" | "error";
 
 export interface PartResult {
   hash: string;
-  quality: "preview" | "final";
+  quality: MeshQuality;
   mesh: MeshData;
   volume: number;
   bbox: [V3, V3];
@@ -31,6 +31,8 @@ export interface PartResult {
  */
 export const STALL_MS = {
   preview: 60_000,
+  /** a display mesh is a fast build (usually cached) or a detailed one without threads */
+  display: 120_000,
   final: 180_000,
   checks: 120_000,
   inspect: 60_000,
@@ -43,11 +45,11 @@ export const STALL_MS = {
   import: 180_000,
 } as const;
 
-type ValueKind = Exclude<keyof typeof STALL_MS, "preview" | "final">;
+type ValueKind = Exclude<keyof typeof STALL_MS, MeshQuality>;
 
 interface BuildJob {
   kind: "build";
-  quality: "preview" | "final";
+  quality: MeshQuality;
   /** parts the worker has not reported yet, in the order it builds them */
   pending: string[];
   limit: number;
@@ -74,7 +76,7 @@ function fingerprint(s: string) {
   return `${s.length}:${(h >>> 0).toString(36)}`;
 }
 
-const buildKey = (quality: "preview" | "final", hash: string) => `${quality}:${hash}`;
+const buildKey = (quality: MeshQuality, hash: string) => `${quality}:${hash}`;
 
 /**
  * Crashes (a worker that died, or traps one after another) this close together mean the kernel can't run here, and
@@ -217,7 +219,7 @@ export class KernelClient {
   }
 
   /** Whether a part's build stalled or crashed the worker (it is refused from now on). */
-  isPoisoned(hash: string, quality: "preview" | "final") {
+  isPoisoned(hash: string, quality: MeshQuality) {
     return this.poisoned.has(buildKey(quality, hash));
   }
 
@@ -369,7 +371,7 @@ export class KernelClient {
     this.arm(true);
   }
 
-  build(items: BuildItem[], quality: "preview" | "final", onPart: BuildJob["onPart"], onError: BuildJob["onError"]) {
+  build(items: BuildItem[], quality: MeshQuality, onPart: BuildJob["onPart"], onError: BuildJob["onError"]) {
     const jobId = this.nextId++;
     let job!: BuildJob;
     const done = new Promise<{ ms: number; built: number; cached: number; cancelled: boolean }>((resolve) => {
