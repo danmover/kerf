@@ -99,6 +99,7 @@ export const PLUG_BACK: Record<PlugKind, number> = {
   ring: 13,
   usb_c: 22,
   usb_micro: 17,
+  usb_a: 28,
   xt60: 16,
   lead: 3,
   solder: 1.2,
@@ -121,6 +122,7 @@ export const SPOT_WIRES: Record<PlugKind, number> = {
   ring: 2,
   usb_c: 1,
   usb_micro: 1,
+  usb_a: 1,
   xt60: 1,
   lead: 1,
   solder: 2,
@@ -312,6 +314,8 @@ export function plugBox(spec: PlugSpec, wires: { d: number }[]): [V3, V3] | null
       return [[-6, -3.3, 0], [6, 3.3, 23]];
     case "usb_micro":
       return [[-5.3, -3, 0], [5.3, 3, 18]];
+    case "usb_a":
+      return [[-8, -4.2, 0], [8, 4.2, 28]];
     case "xt60":
       return [[-7.8, -4, 0], [7.8, 4, 16]];
     case "spade":
@@ -337,6 +341,7 @@ export const PULL: Record<PlugKind, number> = {
   ring: 0,
   usb_c: 6.5,
   usb_micro: 5,
+  usb_a: 12,
   xt60: 8,
   lead: 0,
   solder: 0,

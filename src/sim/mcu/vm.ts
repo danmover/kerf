@@ -90,6 +90,14 @@ export interface Hal {
   eepromWrite(addr: number, v: number): void;
 
   servoPulse(pin: number, us: number | null): void;
+
+  /** CAN ports (FlexCAN_T4 on the Teensy 4.x), numbered from 1: open one with its receive queue and transmit mailboxes */
+  canBegin?(port: number, baud: number, rxSize: number, txMailboxes: number): void;
+  canBaud?(port: number, baud: number): void;
+  /** queue a frame for the wire: false when every transmit mailbox is still waiting */
+  canWrite?(port: number, f: { id: number; len: number; buf: number[] }): boolean;
+  /** the oldest frame received by now, with its arrival time in bus bit times (the library's timestamp), or null */
+  canRead?(port: number): { id: number; len: number; buf: number[]; ts: number } | null;
   /** Adafruit_NeoPixel show(): a frame of 0xWWRRGGBB colours sent down a data pin, with the library's NEO_* type */
   pixels?(pin: number, colours: number[], type: number): void;
   /** pulseIn(): microseconds the pin stayed at state, 0 on timeout (polled when absent) */

@@ -6,6 +6,7 @@
 import type { Board } from "./board";
 import { AVR_INTERRUPT_H, AVR_IO_H } from "./registers";
 import { fastLedHeader } from "./libFastLed";
+import { FLEXCAN_H } from "./libCan";
 
 export function systemHeaders(b: Board): Record<string, string> {
   // A0.. are pin numbers (the Trinket's are 6.., which only analogRead() takes); an An the board lacks is left out
@@ -320,6 +321,7 @@ typedef int sdcard_type_t;
     "BluetoothSerial.h": empty,
     "Preferences.h": empty,
     "FastLED.h": fastLedHeader(),
+    "FlexCAN_T4.h": FLEXCAN_H,
     "Adafruit_NeoPixel.h": `#pragma once
 #define NEO_RGB ((0 << 6) | (0 << 4) | (1 << 2) | (2))
 #define NEO_RBG ((0 << 6) | (0 << 4) | (2 << 2) | (1))

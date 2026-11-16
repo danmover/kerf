@@ -11,6 +11,7 @@ import { generateFirmware } from "../../machine/firmware";
 import { boardForPart, CError, Halt, loadFirmware, type DebugResult, type DebugSpec } from "../mcu";
 import { Plant, fieldResults } from "./plant";
 import { BusServo } from "./busServo";
+import { AkMotor } from "./akMotor";
 import { SimHal, type SerialLine, type SimFault } from "./hal";
 import { SignalRecorder, type SignalSpec, type SignalTrace } from "./probes";
 import type { DisplayFrame } from "./devices";
@@ -379,6 +380,20 @@ function runVariant(opts: RunOptions, variant: VariantName, seed: number, files:
     if (!(s.s instanceof BusServo)) continue;
     results[`${s.comp}.angle`] = s.s.angle;
     results[`${s.comp}.peak_temp`] = s.s.peakTemp;
+  }
+  // CAN actuators: where each ended up (rad from its zero), the most torque it gave and the hottest it got; the buses' frames
+  for (const s of plant.servos) {
+    if (!(s.s instanceof AkMotor)) continue;
+    results[`${s.comp}.position`] = (s.s.pos * 180) / Math.PI;
+    results[`${s.comp}.peak_temp`] = s.s.peakTemp;
+    results[`${s.comp}.frames`] = s.s.frames;
+  }
+  if (plant.canBuses.length) {
+    results.can_frames = plant.canBuses.reduce((n, b) => n + b.sent, 0);
+    results.can_unanswered = plant.canBuses.reduce((n, b) => n + b.unanswered, 0);
+    results.can_lost = hal.canLost();
+    const t = Math.max(1e-6, hal.cyc / hal.fcpu);
+    results.can_load = Math.max(...plant.canBuses.map((b) => b.busy / t));
   }
   if (plant.buses.length) {
     results.bus_packets = plant.buses.reduce((n, b) => n + b.packets, 0);

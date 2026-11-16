@@ -9,7 +9,8 @@
 import type { Actuator, DCMotor, EscFan, Servo } from "../engine/devices";
 import { JetForces } from "../mech/forces";
 import { FieldForces, TunnelAir } from "../mech/magnetics";
-import { ActuatorDrive, MotorDrive, ServoDrive } from "../mech/drives";
+import { ActuatorDrive, MotorDrive, QddDrive, ServoDrive } from "../mech/drives";
+import { AkMotor } from "../engine/akMotor";
 import { FRAME, type MechModel } from "../mech/model";
 import { add, cross, qconj, qrot, sub, type Body, type V3 } from "../mech/solver";
 import { MECH_FACTORS, MechSystem } from "../mech/system";
@@ -41,7 +42,7 @@ interface Trace {
 
 interface Attached {
   kind: "motor" | "servo" | "actuator";
-  drive: MotorDrive | ServoDrive | ActuatorDrive;
+  drive: MotorDrive | ServoDrive | ActuatorDrive | QddDrive;
   sign: number;
   /** servo angle (deg) or actuator stroke (mm) at the design pose */
   zero: number;
@@ -140,6 +141,13 @@ export class MechWorld implements World {
         addAxisInertia(j.B, j.aB, m.j);
         this.sys.addMotor(d.comp, md);
         this.devs.set(d.comp, { kind: "motor", drive: md, sign: d.sign, zero: 0 });
+      } else if (d.kind === "servo" && x.dev instanceof AkMotor) {
+        // a CAN actuator: its impedance law, its rotor seen through its 10:1 gearbox, its back-drive drag
+        const ak = x.dev;
+        const qd = new QddDrive(d.comp, j, d.sign, ak.tPeakNm, ak.dragNm * f.friction);
+        addAxisInertia(j.B, j.aB, ak.rotorJ);
+        this.sys.solver.add(qd);
+        this.devs.set(d.comp, { kind: "servo", drive: qd, sign: d.sign, zero: d.zero });
       } else if (d.kind === "servo") {
         const s = x.dev as Servo;
         const sd = new ServoDrive(d.comp, j, d.sign, s.tStall, s.speed * D2R);
@@ -183,6 +191,17 @@ export class MechWorld implements World {
         const md = a.drive as MotorDrive;
         md.v = d.v;
         md.ilim = d.ilim;
+      } else if (a.drive instanceof QddDrive) {
+        const cmd = (d.dev as AkMotor).command();
+        const qd = a.drive;
+        qd.enabled = !!cmd && d.powered;
+        if (cmd) {
+          qd.pDes = cmd.p;
+          qd.vDes = cmd.v;
+          qd.kp = cmd.kp;
+          qd.kd = cmd.kd;
+          qd.tFf = cmd.t;
+        }
       } else if (a.kind === "servo") {
         const sd = a.drive as ServoDrive;
         const want = (d.dev as Servo).wanted(d.us);

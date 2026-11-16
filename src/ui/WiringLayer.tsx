@@ -373,6 +373,6 @@ function WireCard({ wire, run, flex, issues, onClose }: { wire: HarnessWire; run
 function plugText(e: PlugEnd, n: number): string {
   const ways = e.spec.ways ?? n;
   const name = PLUG_NAME[e.spec.kind];
-  if (["lead", "solder", "lug", "barrel", "xt60", "usb_c", "usb_micro"].includes(e.spec.kind)) return name;
+  if (["lead", "solder", "lug", "barrel", "xt60", "usb_c", "usb_micro", "usb_a"].includes(e.spec.kind)) return name;
   return ways > 1 ? `${name}, ${ways}-way` : name;
 }
