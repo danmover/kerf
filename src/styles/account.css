@@ -387,3 +387,116 @@ button.link:hover {
 .key-where .setting + .setting {
   margin-top: 4px;
 }
+
+/* ---------- the desktop sign-in (ui/DesktopAccess.tsx) ---------- */
+.da-avatar {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 34px;
+  height: 34px;
+  border-radius: 50%;
+  background: linear-gradient(160deg, var(--accent-hi), var(--accent-lo));
+  color: var(--on-accent);
+  font-weight: 600;
+  font-size: 14px;
+  box-shadow: 0 0 0 1px rgb(var(--accent-rgb) / 0.3), 0 4px 14px -4px var(--accent-glow);
+}
+.da-avatar.sm {
+  width: 26px;
+  height: 26px;
+  font-size: 12px;
+  margin-top: 1px;
+}
+.da-add {
+  display: grid;
+  grid-template-columns: 1fr 1.25fr 1.25fr auto;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+.da-add .input {
+  min-width: 0;
+}
+.da-made {
+  margin-bottom: 12px;
+  padding: 12px 14px;
+  border: 1px solid rgb(var(--pass-rgb) / 0.4);
+  border-radius: var(--radius);
+  background: var(--pass-soft);
+}
+.da-made .t {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+  color: var(--pass-ink);
+}
+.da-made .d {
+  margin: 2px 0 8px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.da-made pre {
+  margin: 0 0 10px;
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius-sm);
+  background: var(--bg-1);
+  color: var(--text);
+  font-size: 12px;
+  white-space: pre-wrap;
+  user-select: text;
+}
+.da-error {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin-bottom: 10px;
+  padding: 8px 10px;
+  border: 1px solid rgb(var(--fail-rgb) / 0.4);
+  border-radius: var(--radius-sm);
+  background: var(--fail-soft);
+  color: var(--fail-ink);
+  font-size: 12.5px;
+}
+.da-people {
+  border-top: 1px solid var(--line);
+}
+.da-person {
+  display: flex;
+  gap: 10px;
+  align-items: flex-start;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+.da-person.off {
+  opacity: 0.65;
+}
+.da-person .t {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  font-weight: 500;
+}
+.da-person .d {
+  margin-top: 2px;
+  font-size: 12px;
+  color: var(--text-3);
+}
+.da-note {
+  color: var(--text-3);
+  font-weight: 400;
+  font-size: 12px;
+}
+.da-actions {
+  flex: none;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.da-actions select.input {
+  height: 28px;
+  padding: 0 6px;
+  font-size: 12px;
+}

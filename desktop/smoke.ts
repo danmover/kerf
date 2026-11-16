@@ -16,6 +16,11 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 declare const __KERF_TERMS__: string;
 
 export function runSmokeTest(win: BrowserWindow) {
+  // the smoke test skips the sign-in, so it can never be more than a test: it always ends
+  setTimeout(() => {
+    console.log("KERF_SMOKE " + JSON.stringify({ ok: false, error: "the smoke test took more than 10 minutes" }));
+    app.exit(1);
+  }, 10 * 60_000).unref();
   const wc = win.webContents;
   const errors: string[] = [];
   wc.on("console-message", (e) => {

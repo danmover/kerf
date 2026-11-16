@@ -12,6 +12,8 @@ import { useProject } from "../app/project";
 import { forgetApiKey, getApiKey, keyHint, validateKeyFormat } from "../persist/vault";
 import { Modal, Toggle, timeAgo, useTick } from "./common";
 import { Icon } from "./icons";
+import { desktop } from "../app/desktop";
+import { DesktopAccess } from "./DesktopAccess";
 import "../styles/account.css";
 
 // ---------- small pieces ----------
@@ -593,6 +595,17 @@ function AccountKeyForm({ onDone }: { onDone: () => void }) {
 // ---------- the Account settings tab ----------
 
 export function AccountSettings() {
+  // the desktop app's own sign-in comes first; a Kerf server account (none on the desktop yet) only shows without it
+  if (desktop()?.access)
+    return (
+      <DesktopAccess>
+        <ServerAccount />
+      </DesktopAccess>
+    );
+  return <ServerAccount />;
+}
+
+function ServerAccount() {
   const status = useAccount((s) => s.status);
   if (status === "checking")
     return (

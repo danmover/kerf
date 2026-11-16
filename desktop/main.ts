@@ -4,8 +4,11 @@
 // Kerf always gets the fast graphics card, its work doesn't slow down behind
 // other windows, and the graphics backend can be switched in Settings. It can
 // also offer Kerf's design tools to the person's own Claude Code (desktop/mcp.ts).
+// Before the window opens, the person signs in (desktop/access/): only the
+// accounts Kerf's owner makes can use it, each on one computer, and each
+// account's projects live in its own storage.
 
-import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session, shell, type IpcMainInvokeEvent, type WebContents } from "electron";
+import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session, shell, type IpcMainInvokeEvent, type Session, type WebContents } from "electron";
 import { mkdtempSync, writeFileSync } from "node:fs";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
@@ -15,6 +18,8 @@ import { runSmokeTest } from "./smoke.js";
 import { DEFAULT_PORT, MCP_INSTRUCTIONS, newToken, pipePath, startMcp, type RunningMcp } from "./mcp.js";
 import { Down, TOOLS_CACHE, post } from "./bridge.js";
 import { describe, findClaude, getEntry, isConnected, isOurs as isOurEntry, kerfEntries, register, unregister, type BridgeSpec, type ClaudeCli, type Step } from "./claudeCli.js";
+import { Gate } from "./access/gate.js";
+import type { OwnerOp } from "./access/controller.js";
 
 const SMOKE = process.argv.includes("--smoke-test");
 // the smoke test starts from an empty profile and never touches real projects
@@ -47,16 +52,20 @@ const resetFrom = process.argv.find((a) => a.startsWith("--kerf-graphics-reset="
 if (!SMOKE && !app.requestSingleInstanceLock()) app.quit();
 
 let win: BrowserWindow | null = null;
+/** the sign-in, made once the app is ready; the smoke test runs without one */
+let gate: Gate | null = null;
 
 app.on("second-instance", () => {
-  if (!win) return;
+  if (!win) return gate?.focus();
   if (win.isMinimized()) win.restore();
   win.focus();
 });
 
 // ---------- the window ----------
 
-function createWindow() {
+/** Kerf's window, with the signed-in account's storage. Resolves once it is on screen. */
+function createWindow(ses: Session = session.defaultSession): Promise<void> {
+  prepareSession(ses);
   const saved = SMOKE ? null : loadWindowState(userData);
   const onScreen = saved && saved.x !== undefined && saved.y !== undefined && screen.getAllDisplays().some((d) => {
     const a = d.workArea;
@@ -75,6 +84,7 @@ function createWindow() {
     autoHideMenuBar: true,
     icon: process.platform === "linux" ? join(app.getAppPath(), "icon.png") : undefined,
     webPreferences: {
+      session: ses,
       preload: join(app.getAppPath(), "preload.cjs"),
       contextIsolation: true,
       sandbox: true,
@@ -87,10 +97,16 @@ function createWindow() {
   });
   if (process.platform !== "darwin") win.setMenu(null);
   const w = win;
-  w.once("ready-to-show", () => {
-    if (SMOKE) return w.showInactive();
-    if (saved?.maximized ?? true) w.maximize();
-    w.show();
+  const shown = new Promise<void>((resolve) => {
+    w.once("ready-to-show", () => {
+      if (SMOKE) w.showInactive();
+      else {
+        if (saved?.maximized ?? true) w.maximize();
+        w.show();
+      }
+      resolve();
+    });
+    w.once("closed", () => resolve());
   });
   w.on("close", () => {
     if (SMOKE) return;
@@ -98,7 +114,7 @@ function createWindow() {
     saveWindowState(userData, { x: b.x, y: b.y, width: b.width, height: b.height, maximized: w.isMaximized() });
   });
   w.on("closed", () => {
-    win = null;
+    if (win === w) win = null;
     pageGone();
   });
   w.webContents.on("did-start-loading", pageGone);
@@ -119,6 +135,14 @@ function createWindow() {
   });
   void w.loadURL(`${ORIGIN}/`);
   if (SMOKE) runSmokeTest(w);
+  return shown;
+}
+
+/** Signed out: Kerf's window closes and the sign-in window takes its place. */
+function closeWindow() {
+  const w = win;
+  win = null;
+  w?.close();
 }
 
 /** With no menu bar on Windows and Linux, the browser shortcuts people expect are handled here. */
@@ -169,16 +193,26 @@ app.on("web-contents-created", (_e, wc) => {
   });
 });
 
-function lockDown() {
+const prepared = new WeakSet<Session>();
+
+/** Each account's storage serves Kerf from kerf://app with the same rules as the default one. */
+function prepareSession(ses: Session) {
+  if (prepared.has(ses)) return;
+  prepared.add(ses);
+  if (ses !== session.defaultSession) ses.protocol.handle(SCHEME, staticHandler(join(app.getAppPath(), "web")));
+  lockDown(ses);
+}
+
+function lockDown(ses: Session) {
   const allowed = new Set(["media", "clipboard-sanitized-write", "fullscreen", "pointerLock"]);
-  session.defaultSession.setPermissionRequestHandler((wc, permission, done, details) => {
+  ses.setPermissionRequestHandler((wc, permission, done) => {
     // the microphone for voice input, and the camera for an app's camera panel: Kerf's own page only
     if (permission === "media") return done(isOurs(wc.getURL()));
     done(allowed.has(permission) && isOurs(wc.getURL()));
   });
-  session.defaultSession.setPermissionCheckHandler((wc, permission) => !!wc && isOurs(wc.getURL()) && (allowed.has(permission) || permission === "media" || permission === "serial"));
+  ses.setPermissionCheckHandler((wc, permission) => !!wc && isOurs(wc.getURL()) && (allowed.has(permission) || permission === "media" || permission === "serial"));
   // a USB serial port for the Calibrate panel's bench test and the apps' USB link: the one the person picks
-  session.defaultSession.on("select-serial-port", (e, ports, wc, pick) => {
+  ses.on("select-serial-port", (e, ports, wc, pick) => {
     e.preventDefault();
     if (!isOurs(wc.getURL()) || !ports.length) return pick("");
     if (ports.length === 1) return pick(ports[0].portId);
@@ -193,6 +227,13 @@ function lockDown() {
 
 function fromKerf(e: IpcMainInvokeEvent) {
   if (!e.senderFrame || !isOurs(e.senderFrame.url)) throw new Error("not Kerf");
+}
+
+/** Account requests come only from Kerf's own window, while someone is signed in. */
+function fromSignedIn(e: IpcMainInvokeEvent) {
+  fromKerf(e);
+  if (!gate || !win || e.sender !== win.webContents || !gate.controller.session) throw new Error("not signed in");
+  return gate;
 }
 
 function bridge() {
@@ -219,6 +260,7 @@ function bridge() {
     if (SMOKE || running === "auto") return { relaunching: false };
     settings.graphics = "auto";
     saveSettings(userData, settings);
+    gate?.controller.markResume();
     app.relaunch({ args: [...process.argv.slice(1).filter((a) => !a.startsWith("--kerf-graphics-reset=")), `--kerf-graphics-reset=${running}`] });
     app.quit();
     return { relaunching: true };
@@ -231,8 +273,25 @@ function bridge() {
   });
   ipcMain.handle("kerf:relaunch", (e) => {
     fromKerf(e);
+    gate?.controller.markResume();
     app.relaunch();
     app.quit();
+  });
+  // Settings → Account: who is signed in, signing out, and the owner's account tools
+  ipcMain.handle("kerf:access-info", (e) => {
+    fromKerf(e);
+    return gate?.controller.info() ?? null;
+  });
+  ipcMain.handle("kerf:access-sign-out", (e) => {
+    fromSignedIn(e).signOut();
+  });
+  ipcMain.handle("kerf:access-stay", (e, on: boolean) => {
+    const g = fromSignedIn(e);
+    g.controller.setStay(on === true);
+    return g.controller.info();
+  });
+  ipcMain.handle("kerf:access-owner", (e, op: OwnerOp) => {
+    return fromSignedIn(e).controller.owner(op);
   });
   ipcMain.handle("kerf:claude-code-info", (e) => {
     fromKerf(e);
@@ -546,12 +605,20 @@ app.whenReady().then(() => {
   if (process.platform === "win32") app.setAppUserModelId("app.kerf.desktop");
   if (process.platform !== "darwin") Menu.setApplicationMenu(null);
   protocol.handle(SCHEME, staticHandler(join(app.getAppPath(), "web")));
-  lockDown();
   bridge();
-  createWindow();
+  if (SMOKE) void createWindow();
+  else {
+    const partition = (p: string) => (p ? session.fromPartition(p) : session.defaultSession);
+    gate = new Gate(userData, (s) => createWindow(partition(s.account.partition)), closeWindow);
+    void gate.start();
+  }
   if (settings.claudeCode.enabled && !SMOKE) void startClaudeCode().then(keepRegistrationCurrent);
   app.on("activate", () => {
-    if (!BrowserWindow.getAllWindows().length) createWindow();
+    if (BrowserWindow.getAllWindows().length) return;
+    const s = gate?.controller.session;
+    if (!gate) void createWindow();
+    else if (s) void createWindow(s.account.partition ? session.fromPartition(s.account.partition) : session.defaultSession);
+    else gate.show();
   });
 });
 

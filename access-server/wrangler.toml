@@ -1,0 +1,18 @@
+# Kerf's sign-in server on Cloudflare Workers (free plan). Set up once from
+# the owner's PC; see README.md. database_id is filled in by `wrangler d1 create`.
+name = "kerf-access"
+main = "src/worker.ts"
+compatibility_date = "2025-09-01"
+workers_dev = true
+preview_urls = false
+
+[vars]
+# the owner key's public half: the same key desktop/access/config.ts trusts
+OWNER_PUBLIC_KEY = "MCowBQYDK2VwAyEAEwAIKeEqYaWDynCdwA7npUc7qlv1b9GndwDIUOR7smM="
+# how long Kerf can start without reaching this server after a sign-in
+TICKET_DAYS = "14"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "kerf-access"
+database_id = "84c36cac-00be-4199-ad8b-f8448f8dd671"
