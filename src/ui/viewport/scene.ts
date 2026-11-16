@@ -20,6 +20,7 @@ import { buildShare } from "../../film/timeline";
 import { appearanceFor, Detail, type Appearance } from "./render/appearance";
 import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
+import { ContactShadow } from "./render/contactShadow";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
@@ -298,6 +299,13 @@ export class SceneController {
   private grid: THREE.Mesh;
   private gridMat: THREE.ShaderMaterial;
   private ground: THREE.Mesh;
+  /** soft darkening of the floor under the model, drawn again only when the model changes */
+  private contact: ContactShadow;
+  /** times the key light's shadow map was drawn, by any pass; the shadow map is reused while only the camera moves */
+  private shadowWrites = 0;
+  private shadowSeen = -1;
+  private shadowAt = new THREE.Vector3(NaN, NaN, NaN);
+  private shadowStale = true;
   private groundMat: THREE.ShadowMaterial;
   private key: THREE.DirectionalLight;
   private keyDir = new THREE.Vector3();
@@ -447,6 +455,15 @@ export class SceneController {
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.groundMat);
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
+    this.contact = new ContactShadow(this.renderer);
+    this.scene.add(this.contact.mesh);
+    // count every drawing of the key light's shadow map, whoever draws it, so the live view knows when its own is still there
+    const shadow = this.key.shadow;
+    const updateMatrices = shadow.updateMatrices.bind(shadow);
+    shadow.updateMatrices = (light: THREE.Light) => {
+      this.shadowWrites++;
+      updateMatrices(light);
+    };
 
     this.scene.add(this.root);
     this.overlay.add(this.interGroup);
@@ -590,6 +607,7 @@ export class SceneController {
       g.edges.dispose();
     }
     this.pipe.dispose();
+    this.contact.dispose();
     this.swatchPipe?.dispose();
     for (const m of [...this.retired, ...this.swatchMats.values()]) m.dispose();
     this.swatchStage?.ball.geometry.dispose();
@@ -651,6 +669,8 @@ export class SceneController {
     this.key.intensity = p.key.i;
     this.overlayKey.position.copy(this.keyDir);
     this.groundMat.opacity = p.shadow;
+    this.contact.setStrength(p.contact?.near ?? 0.85, p.contact?.pool ?? 0.5, p.floorLight);
+    this.shadowStale = true;
     const look = this.pipe.look;
     look.exposure = p.exposure;
     look.bloom = p.bloom;
@@ -669,6 +689,12 @@ export class SceneController {
     this.placeKey(0);
     this.swatchCache.clear();
     this.changed = true;
+  }
+
+  /** Before each accumulated sample: the key light where that sample has it, and the floor's contact shadow on the first sample when the model changed (or always, for a capture or film frame that posed the model its own way). */
+  private beforeSample(i: number, fresh = false) {
+    this.placeKey(i);
+    if (i === 0 && (fresh || this.contact.dirty)) this.contact.render(this.scene, L_OPAQUE, this.sectionAnim.on ? [this.sectionPlane] : []);
   }
 
   /** Position the key light for sample i: the centre for i = 0, then spread over the light's area. */
@@ -1641,6 +1667,10 @@ export class SceneController {
     this.key.shadow.normalBias = Math.max(0.02, r * 0.0025);
     this.placeKey(0);
     this.pipe.look.aoRadius = THREE.MathUtils.clamp(r * 0.06, 0.8, 60);
+    // contact shadow: surfaces up to a third of the model's size above the floor darken it, the closest the most
+    const reach = r * 0.3;
+    this.contact.layout(center, zFloor, Math.max(size.x, size.y) * 0.5 + reach * 1.2, reach, new THREE.Vector2(size.x * 0.5, size.y * 0.5));
+    this.shadowStale = true;
     this.camera.near = Math.max(0.1, r / 400);
     this.camera.far = r * 60;
     this.camera.updateProjectionMatrix();
@@ -2058,7 +2088,13 @@ export class SceneController {
     const dt = Math.min(0.05, frameMs / 1000);
     this.last = now;
     const controlsMoved = this.controls.update();
-    const moving = this.animate(now, dt) || controlsMoved;
+    const animating = this.animate(now, dt);
+    const moving = animating || controlsMoved;
+    // anything but the camera changed the scene: the contact shadow and the key light's shadow map are drawn again
+    if (this.changed || animating) {
+      this.contact.dirty = true;
+      this.shadowStale = true;
+    }
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
     this.camera.updateMatrixWorld();
@@ -2118,7 +2154,17 @@ export class SceneController {
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
     let rastered = false;
     if (this.pipe.samples < rasterMax) {
-      this.pipe.renderSample(this.scene, this.camera, (i) => this.placeKey(i));
+      const r = this.renderer;
+      this.pipe.renderSample(this.scene, this.camera, (i) => {
+        this.beforeSample(i);
+        // while only the camera moves, every frame is sample 0 with the key light in the same place: its shadow map is still good
+        const k = this.key;
+        r.shadowMap.autoUpdate = this.shadowStale || this.shadowSeen !== this.shadowWrites || !k.shadow.map || !k.position.equals(this.shadowAt);
+      });
+      r.shadowMap.autoUpdate = true;
+      this.shadowAt.copy(this.key.position);
+      this.shadowSeen = this.shadowWrites;
+      this.shadowStale = false;
       this.needComposite = true;
       rastered = true;
     }
@@ -2491,7 +2537,7 @@ export class SceneController {
       }
       this.frameMatricesOnly();
       const n = opts.samples ?? Math.max(16, Math.min(96, this.pipe.maxSamples));
-      for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.placeKey(k));
+      for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.beforeSample(k, true));
       pipe.composite(out, { time: 0 });
       this.renderer.setRenderTarget(out);
       if (showOverlays) this.overlayDepth();
@@ -2852,7 +2898,7 @@ export class SceneController {
         for (let i = 0; i < n; i++) {
           // with a shutter, each sample is a moment a little later: what moves smears
           pose(to ? mix(shot, to, n > 1 ? i / (n - 1) : 0) : shot);
-          pipe.renderSample(this.scene, cam, (k) => this.placeKey(k));
+          pipe.renderSample(this.scene, cam, (k) => this.beforeSample(k, i === 0));
         }
         if (to) pose(shot);
         pipe.composite(out, { time: shot.clock });
