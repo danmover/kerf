@@ -8,13 +8,13 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import * as THREE from "three";
 import { create } from "zustand";
-import { meshes, useDesign } from "../../core/engine";
+import { meshes, pickByPoint, useDesign } from "../../core/engine";
 import type { EvalPart } from "../../core/model";
 import { commitSource, endComparison } from "../../app/project";
 import { kernel } from "../../kernel/client";
 import type { EntityInfo, PickMeasure, PickRef } from "../../kernel/drawing";
 import type { MeshData } from "../../kernel/build";
-import { hasDetail, xformMatrix, type V3 } from "../../kernel/recipe";
+import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { drawingFor, openDrawings, useDrawings } from "../../drawing/engine";
 import { addBlockLine, ensureBlock } from "../../drawing/source";
 import { fmtNum } from "../../lang/values";
@@ -418,10 +418,12 @@ function toNdc(h: MeasureHost, x: number, y: number) {
 export function meshData(part: EvalPart, mesh: THREE.Mesh): MeshData | undefined {
   const e = meshes.get(part.hash);
   if (!e) return undefined;
+  // the one the view shows: its geometry holds that mesh's own arrays
+  const pos = mesh.geometry.getAttribute("position")?.array;
+  for (const m of [e.display, e.final, e.preview]) if (m && m.positions === pos) return m;
   const n = mesh.geometry.index?.count;
-  if (e.final && e.final.indices.length === n) return e.final;
-  if (e.preview && e.preview.indices.length === n) return e.preview;
-  return e.final ?? e.preview;
+  for (const m of [e.display, e.final, e.preview]) if (m && m.indices.length === n) return m;
+  return e.display ?? e.final ?? e.preview;
 }
 
 /** What is under the cursor: a corner or an edge within a few pixels, else the face; `only` keeps to one kind (the selection filter). */
@@ -607,9 +609,10 @@ function placement(part: EvalPart) {
 export function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
   if (!part) return null;
   const p = s.local.clone().applyMatrix4(placement(part));
-  // a detailed mesh comes from the detail worker, whose face and edge ids mean nothing to the main kernel that
-  // measures: send only the point, so the kernel takes the sub-shape nearest it
-  const detailed = hasDetail(part.recipe) && meshes.get(part.hash)?.final === s.data;
+  // a mesh the detail worker made (refined and detailed meshes), or one kept from an earlier session, has face and edge
+  // ids that mean nothing to the main kernel that measures: send only the point, so the kernel takes the sub-shape
+  // nearest it
+  const detailed = pickByPoint(s.data);
   return { hash: part.hash, xf: part.xf, kind: s.kind, id: detailed ? undefined : s.id, point: [p.x, p.y, p.z] };
 }
 

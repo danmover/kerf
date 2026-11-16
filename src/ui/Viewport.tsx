@@ -56,11 +56,20 @@ import { DecalDecorator } from "./viewport/parts/decals";
 import { useProject } from "../app/project";
 import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
+import { LayerBoundary } from "./ErrorBoundary";
+import { kernel } from "../kernel/client";
 import { ViewCube } from "./viewport/ViewCube";
 import { openViewportMenu } from "./viewport/contextMenus";
 
 /** Waits (ms) before each retry of a 3D view that failed to start. */
 const GL_RETRIES = [400, 1200, 3000];
+/**
+ * How long the browser gets to give the 3D view its drawing context back after the graphics card reset (Windows
+ * resets a card that stalls, and Chromium restarts its GPU process) before Kerf starts a new view in its place.
+ */
+const RESTORE_WAIT_MS = 5000;
+/** a 3D view started again this many times within a minute is not getting better: say so instead */
+const RESTARTS_PER_MINUTE = 3;
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -76,6 +85,7 @@ export function Viewport() {
   const interferences = useDesign((s) => s.interferences);
   const kernelStatus = useDesign((s) => s.kernelStatus);
   const kernelError = useDesign((s) => s.kernelError);
+  const kernelStarted = useDesign((s) => s.kernelStarted);
   const stage = useDesign((s) => s.stage);
   const view = useView();
   const settings = useSettings();
@@ -83,6 +93,13 @@ export function Viewport() {
   const [webglError, setWebglError] = useState("");
   // the 3D view's start-up attempt; a failed start is retried a few times before the error card
   const [glTry, setGlTry] = useState(0);
+  // a new 3D view in place of one that broke: its drawing context didn't come back, or its frames kept failing
+  const [glGen, setGlGen] = useState(0);
+  const restarts = useRef<number[]>([]);
+  // the camera of the view being replaced, so the new one looks from the same place
+  const lastCamera = useRef<{ pos: [number, number, number]; target: [number, number, number] } | null>(null);
+  // the graphics card reset and the view is waiting for its drawing context
+  const [glLost, setGlLost] = useState(false);
   const [scene, setScene] = useState<SceneController | null>(null);
   // a ring that fills while a finger is held on the model, to open the spot chat
   const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
@@ -122,6 +139,29 @@ export function Viewport() {
     }
     setWebglError("");
     ctl.current = c;
+    if (lastCamera.current) c.adoptCamera(lastCamera.current);
+    lastCamera.current = null;
+    // Start a new view in place of this one, unless it keeps breaking
+    const replace = (why: string) => {
+      const now = Date.now();
+      restarts.current = restarts.current.filter((t) => now - t < 60_000);
+      if (restarts.current.length >= RESTARTS_PER_MINUTE) {
+        console.error(`The 3D view keeps failing (${why}); not starting it again`);
+        setWebglError(`The 3D view kept failing: ${why}`);
+        return;
+      }
+      restarts.current.push(now);
+      console.warn(`Starting the 3D view again: ${why}`);
+      if (c.framed) lastCamera.current = c.cameraState();
+      setGlGen((g) => g + 1);
+    };
+    let lostTimer = 0;
+    c.onContextChange = (lost) => {
+      window.clearTimeout(lostTimer);
+      setGlLost(lost);
+      if (lost) lostTimer = window.setTimeout(() => replace("the graphics card reset and the view did not get its drawing context back"), RESTORE_WAIT_MS);
+    };
+    c.onBroken = (e) => replace(e.message || "its frames kept failing to draw");
     // circuit boards drawn in full: mask, copper, silkscreen and the parts on them
     const boards = new BoardDecorator(() => c.redecorate());
     boardDecor.current = boards;
@@ -186,6 +226,11 @@ export function Viewport() {
     });
     setScene(c);
     return () => {
+      // a view closed on purpose gives its context back: that is not a reset
+      c.onContextChange = () => undefined;
+      c.onBroken = () => undefined;
+      window.clearTimeout(lostTimer);
+      setGlLost(false);
       setScene(null);
       registerViewport(null);
       mfgOverlay.current?.destroy();
@@ -198,20 +243,21 @@ export function Viewport() {
       decor.current = null;
       ctl.current = null;
     };
-  }, [glTry]);
+  }, [glTry, glGen]);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme });
-  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, scene]);
 
   useEffect(() => {
     ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
-  }, [settings.mouseScheme, settings.wheelReverse, glTry]);
+  }, [settings.mouseScheme, settings.wheelReverse, scene]);
 
+  const building = stage === "building";
   useEffect(() => {
     boardDecor.current?.setModel(model);
-    if (model) ctl.current?.setParts(model.parts, meshes);
-  }, [model, meshVersion]);
+    if (model) ctl.current?.setParts(model.parts, meshes, { building });
+  }, [model, meshVersion, scene, building]);
 
   // the exploded view: which way each part comes off and in what order, worked out when first needed
   const [explodeSteps, setExplodeSteps] = useState(0);
@@ -221,7 +267,7 @@ export function Viewport() {
     if (!c) return;
     c.setExplodePlanner(model ? () => planExplode(model, { holds: findHolds(model, meshOf), mesh: meshOf }) : null);
     if (exploding) setExplodeSteps(c.explodePlan()?.stages ?? 0);
-  }, [model, meshVersion, exploding]);
+  }, [model, meshVersion, exploding, scene]);
 
   // what moving parts carry with them (their screws, nuts and the parts bolted on), measured once the meshes settle
   useEffect(() => {
@@ -231,12 +277,12 @@ export function Viewport() {
     }
     const t = window.setTimeout(() => ctl.current?.setHolds(findHolds(model, meshOf)), 400);
     return () => window.clearTimeout(t);
-  }, [model, meshVersion]);
+  }, [model, meshVersion, scene]);
 
   useEffect(() => {
     if (stage === "refining" || stage === "done") ctl.current?.settle();
     ctl.current?.setModelSettling(stage !== "idle" && stage !== "done");
-  }, [stage]);
+  }, [stage, scene]);
 
   // groups shown on their own: every other part hidden
   const soloIds = useMemo(() => (model ? soloHidden(model.parts, view.soloGroups) : []), [model, view.soloGroups]);
@@ -253,24 +299,24 @@ export function Viewport() {
       grid: settings.grid,
       reduceMotion: settings.reduceMotion,
     });
-  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, settings.reduceMotion, model, meshVersion]);
+  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, settings.reduceMotion, model, meshVersion, scene]);
 
-  useEffect(() => ctl.current?.setSection(view.section), [view.section, model]);
-  useEffect(() => ctl.current?.setExplode(view.explode), [view.explode]);
-  useEffect(() => ctl.current?.setMotion(view.playing, view.speed), [view.playing, view.speed]);
-  useEffect(() => ctl.current?.setTurntable(view.turntable), [view.turntable]);
+  useEffect(() => ctl.current?.setSection(view.section), [view.section, model, scene]);
+  useEffect(() => ctl.current?.setExplode(view.explode), [view.explode, scene]);
+  useEffect(() => ctl.current?.setMotion(view.playing, view.speed), [view.playing, view.speed, scene]);
+  useEffect(() => ctl.current?.setTurntable(view.turntable), [view.turntable, scene]);
   useEffect(() => {
     if (view.assemblyRequest) ctl.current?.playAssembly();
   }, [view.assemblyRequest]);
-  useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck]);
+  useEffect(() => ctl.current?.setInterferences(interferences, view.focusCheck), [interferences, view.focusCheck, scene]);
   // after setParts above, so overlays attach to the current part groups
   useEffect(() => {
     // a route hovered in the make tab shows only that process's issues on its part
     if (model) mfgOverlay.current?.update(model.parts, processPreview ?? processResults, view.focusCheck, showProcessIssues || !!processPreview, settings.reduceMotion);
     ctl.current?.setProcessMarks(!!mfgOverlay.current?.size);
-  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, settings.reduceMotion]);
+  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, settings.reduceMotion, scene]);
   const gap = useGap(view.selected);
-  useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap]);
+  useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap, scene]);
   useEffect(() => {
     const r = view.cameraRequest;
     if (!r) return;
@@ -439,33 +485,71 @@ export function Viewport() {
       </AnimatePresence>
 
       {/* the "How it goes on" card sits where this line is; the status bar still shows the same counts */}
-      {!fitting && <Hud stage={stage} parts={visibleParts} />}
-      <MeasureTool host={measureHost} />
-      <PickLayer host={pickHost} />
-      <HandlesLayer host={pickHost} />
-      {scene && !inSketch && <DragLayer host={pickHost} scene={scene} />}
+      {/* each layer over the view fails on its own: the 3D view under it carries on (see LayerBoundary) */}
+      <LayerBoundary label="Build status" retry={model}>
+        {!fitting && <Hud stage={stage} parts={visibleParts} />}
+      </LayerBoundary>
+      <LayerBoundary label="Measuring" retry={model}>
+        <MeasureTool host={measureHost} />
+      </LayerBoundary>
+      <LayerBoundary label="Picking" retry={model}>
+        <PickLayer host={pickHost} />
+      </LayerBoundary>
+      <LayerBoundary label="Handles" retry={model}>
+        <HandlesLayer host={pickHost} />
+      </LayerBoundary>
+      <LayerBoundary label="Dragging" retry={model}>
+        {scene && !inSketch && <DragLayer host={pickHost} scene={scene} />}
+      </LayerBoundary>
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
+      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} />
 
-      {scene && !inSketch && <ResultsLayer scene={scene} />}
-      {scene && !inSketch && <AirflowLayer scene={scene} />}
-      {scene && !inSketch && <FlowLayer scene={scene} />}
-      {scene && !inSketch && <SimLayer scene={scene} />}
-      {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
-      {scene && !inSketch && canFit && <FitLayer scene={scene} />}
-      {scene && !inSketch && <PmiLayer scene={scene} />}
-      {scene && !inSketch && <CamLayer scene={scene} />}
-      {!inSketch && <SheetLayer />}
-      {!inSketch && <GroupsKey />}
+      <LayerBoundary label="Analysis results" retry={model}>
+        {scene && !inSketch && <ResultsLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Airflow" retry={model}>
+        {scene && !inSketch && <AirflowLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Flow" retry={model}>
+        {scene && !inSketch && <FlowLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Simulation" retry={model}>
+        {scene && !inSketch && <SimLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Wiring" retry={model}>
+        {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Fits" retry={model}>
+        {scene && !inSketch && canFit && <FitLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Dimensions" retry={model}>
+        {scene && !inSketch && <PmiLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Machining" retry={model}>
+        {scene && !inSketch && <CamLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Sheet metal" retry={model}>
+        {!inSketch && <SheetLayer />}
+      </LayerBoundary>
+      <LayerBoundary label="Groups" retry={model}>
+        {!inSketch && <GroupsKey />}
+      </LayerBoundary>
 
-      <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && !picking && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+      <LayerBoundary label="Selection" retry={model}>
+        <AnimatePresence>{selectedParts.length > 0 && !spotOpen && !sketching && !picking && <SelectionCard key="sel" ids={view.selected} gap={gap} />}</AnimatePresence>
+      </LayerBoundary>
 
-      {settings.advanced && !inSketch && <ModelTools host={mount} />}
+      <LayerBoundary label="Modelling tools" retry={model}>
+        {settings.advanced && !inSketch && <ModelTools host={mount} />}
+      </LayerBoundary>
       <FrameDialog />
       <SpotChat />
       <Markup />
       <MaterialCompareHost />
 
-      {scene && <SketchLayer ctl={scene} />}
+      <LayerBoundary label="Sketch" retry={model}>
+        {scene && <SketchLayer ctl={scene} />}
+      </LayerBoundary>
 
       {empty && !sketching && (
         <div className="vp-empty">
@@ -496,7 +580,8 @@ export function Viewport() {
       )}
 
       <AnimatePresence>
-        {(kernelStatus === "loading" || kernelStatus === "error" || webglError) && (
+        {/* a kernel that restarts after it ran leaves the model on screen (ViewNotice says so); only its first start covers the view */}
+        {((kernelStatus === "loading" && !kernelStarted) || kernelStatus === "error" || webglError) && (
           <motion.div className="vp-loading" initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0, transition: { duration: 0.4 } }}>
             {webglError ? (
               <div className="card" style={{ padding: 24, maxWidth: 420, textAlign: "center" }}>
@@ -523,17 +608,37 @@ export function Viewport() {
                     {webglError}
                   </div>
                 )}
+                <button
+                  className="btn sm"
+                  style={{ marginTop: 10 }}
+                  onClick={() => {
+                    restarts.current = [];
+                    setWebglError("");
+                    setGlTry(0);
+                    setGlGen((g) => g + 1);
+                  }}
+                >
+                  Try the 3D view again
+                </button>
               </div>
             ) : kernelStatus === "error" ? (
               <div className="card" style={{ padding: 24, maxWidth: 440, textAlign: "center" }}>
                 <div style={{ color: "var(--fail)", marginBottom: 8 }}>
                   <Icon.Alert size={26} />
                 </div>
-                <div style={{ fontWeight: 600 }}>The geometry kernel could not start</div>
+                <div style={{ fontWeight: 600 }}>{kernelStarted ? "The geometry kernel stopped" : "The geometry kernel could not start"}</div>
                 <div className="muted" style={{ marginTop: 6 }}>{kernelError}</div>
-                <button className="btn primary" style={{ marginTop: 14 }} onClick={() => location.reload()}>
-                  Reload Kerf
-                </button>
+                {kernelStarted && <div className="muted" style={{ marginTop: 6 }}>Your design is saved. Starting the kernel again builds the model afresh.</div>}
+                <div className="row" style={{ justifyContent: "center", marginTop: 14 }}>
+                  {kernelStarted && (
+                    <button className="btn primary" onClick={() => kernel.recover()}>
+                      <Icon.Refresh size={13} /> Start the kernel again
+                    </button>
+                  )}
+                  <button className={`btn ${kernelStarted ? "" : "primary"}`} onClick={() => location.reload()}>
+                    Reload Kerf
+                  </button>
+                </div>
               </div>
             ) : (
               <KernelBoot />
@@ -547,6 +652,24 @@ export function Viewport() {
 
 function Range({ value, onChange, label }: { value: number; onChange: (v: number) => void; label: string }) {
   return <input className="slider" type="range" min={0} max={1} step={0.001} value={value} aria-label={label} style={{ ["--p" as string]: `${value * 100}%` }} onChange={(e) => onChange(Number(e.target.value))} />;
+}
+
+/**
+ * What the 3D view is waiting on, while the model stays on screen: the graphics card reset and the view is getting
+ * its drawing context back, or the geometry kernel is restarting and building the parts again.
+ */
+function ViewNotice({ glLost, kernelRestarting }: { glLost: boolean; kernelRestarting: boolean }) {
+  const text = glLost ? "The graphics card reset. Bringing the 3D view back…" : kernelRestarting ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…" : "";
+  return (
+    <AnimatePresence>
+      {text && (
+        <motion.div key={text} className="vp-notice" role="status" style={{ x: "-50%" }} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+          <span className="spinner sm" />
+          {text}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
 }
 
 function KernelBoot() {

@@ -25,7 +25,7 @@ import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
-import { desktop, graphicsCard, isSoftwareRenderer, type ClaudeCodeInfo, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
+import { desktop, graphicsCard, isSoftwareRenderer, type ClaudeCodeInfo, type ClaudeCodeReport, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 import { MOUSE_SCHEMES, MOUSE_SCHEME_IDS, type MouseScheme } from "../app/mouse";
 
 const TABS: { id: SettingsTab; label: string; icon: React.ReactNode }[] = [
@@ -254,15 +254,15 @@ function ClaudeCodeStatus({ info }: { info: ClaudeCodeInfo }) {
           "fail",
           `A program was turned away ${timeAgo(bad.at)}`,
           bad.why === "no-token"
-            ? "It sent no token. Remove the old connection and run the connect command below exactly as copied."
-            : "Its token is old or mistyped. Remove the old connection and run the connect command below again.",
+            ? "It sent no token, so it was set up by hand without one. Press Connect Claude Code to replace it."
+            : "Its token is old or mistyped. Press Connect Claude Code to replace it, or copy the HTTP command under Set up by hand again.",
         ]
       : ok
         ? ["pass", `Connected ${timeAgo(ok.at)}`, `${ok.client} reached Kerf's tools.`]
-        : ["", "Not connected yet", "Nothing has connected since Kerf started. Follow the steps below, then check with claude mcp list."];
+        : ["", "Waiting for Claude Code", info.registered ? "Claude Code hasn't used Kerf since Kerf started. Start it in a terminal (below) and ask it to design something." : "Nothing has connected since Kerf started."];
   return (
     <div className="setting" aria-live="polite">
-      <span className={`dot ${dot}`} />
+      <span className={`dot ${dot}`} style={{ marginTop: 6 }} />
       <div className="grow">
         <div className="t">{t}</div>
         <div className="d">{d}</div>
@@ -271,11 +271,39 @@ function ClaudeCodeStatus({ info }: { info: ClaudeCodeInfo }) {
   );
 }
 
+/** What Connect did, or what Check found, one line per link. */
+function ClaudeCodeSteps({ report, onClose }: { report: ClaudeCodeReport; onClose: () => void }) {
+  return (
+    <div className="setting" style={{ display: "block" }} aria-live="polite">
+      <div className="row" style={{ gap: 8 }}>
+        <div className="t grow">{report.ok ? "Everything checks out" : "Something needs fixing"}</div>
+        <button className="btn ghost sm" onClick={onClose}>
+          Hide
+        </button>
+      </div>
+      {report.steps.map((s, i) => (
+        <div key={i} className="row" style={{ gap: 10, alignItems: "flex-start", marginTop: 8 }}>
+          <span className={`dot ${s.ok === true ? "pass" : s.ok === false ? "fail" : "warn"}`} style={{ marginTop: 6 }} />
+          <div className="grow" style={{ minWidth: 0 }}>
+            <div>{s.t}</div>
+            {s.d && (
+              <div className="d" style={{ overflowWrap: "anywhere" }}>
+                {s.d}
+              </div>
+            )}
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 /** The person's own Claude Code, on their Claude plan, working through Kerf's tools (desktop app only). */
 function ClaudeCodeSection() {
   const cc = desktop()?.claudeCode;
   const [info, setInfo] = useState<ClaudeCodeInfo | null>(null);
-  const [busy, setBusy] = useState(false);
+  const [report, setReport] = useState<ClaudeCodeReport | null>(null);
+  const [busy, setBusy] = useState<"" | "connect" | "check" | "other">("");
   useEffect(() => {
     void cc?.info().then(setInfo);
   }, [cc]);
@@ -286,16 +314,31 @@ function ClaudeCodeSection() {
     const t = setInterval(() => void cc.info().then((n) => setInfo((o) => (JSON.stringify(o) === JSON.stringify(n) ? o : n))), 3000);
     return () => clearInterval(t);
   }, [cc, running]);
-  const act = async (f: () => Promise<ClaudeCodeInfo>) => {
-    setBusy(true);
+  const act = async (kind: "other", f: () => Promise<ClaudeCodeInfo>) => {
+    setBusy(kind);
     try {
       setInfo(await f());
     } finally {
-      setBusy(false);
+      setBusy("");
+    }
+  };
+  const report_ = async (kind: "connect" | "check", f: () => Promise<ClaudeCodeReport>) => {
+    setBusy(kind);
+    setReport(null);
+    try {
+      const r = await f();
+      setInfo(r.info);
+      setReport(r);
+      if (kind === "connect" && r.ok) toast({ kind: "success", title: "Claude Code is connected to Kerf", detail: "Start Claude Code in a terminal and ask it to design something here." });
+    } catch (e) {
+      setReport({ ok: false, steps: [{ ok: false, t: "Kerf couldn't finish", d: (e as Error).message }], info: info! });
+    } finally {
+      setBusy("");
     }
   };
   const newToken = async () => {
-    if (await confirmDialog({ title: "Make a new token?", body: "Claude Code's saved connection to Kerf stops working until you remove it and run the new connect command.", confirm: "New token" })) await act(() => cc!.newToken());
+    if (await confirmDialog({ title: "Make a new token?", body: "Connections set up by hand with the HTTP command stop working until you run the new one. Kerf's own connection keeps working.", confirm: "New token" }))
+      await act("other", () => cc!.newToken());
   };
   if (!cc)
     return (
@@ -303,56 +346,92 @@ function ClaudeCodeSection() {
         <Row t="Use your Claude plan" d="In the Kerf desktop app, your own Claude Code can design in Kerf on your Claude Pro or Max plan, without an API key." />
       </Section>
     );
-  const add = info ? `claude mcp add --transport http --scope user kerf ${info.url} --header "Authorization: Bearer ${info.token}"` : "";
+  const on = !!info?.enabled;
+  const connected = on && !!info?.registered;
+  const http = info ? `claude mcp add --transport http --scope user kerf ${info.url} --header "Authorization: Bearer ${info.token}"` : "";
   return (
     <Section title="Claude Code">
       <Row
         t="Let Claude Code use Kerf"
-        d="Your own Claude Code, signed in with your Claude account, reads and changes the open design with Kerf's tools while you watch it here. It runs on your Claude plan's usage, not an API key. Only programs on this computer that have the token below can connect. Kerf's own chat panel still uses the API key above."
+        d="Your own Claude Code, signed in with your Claude account, reads and changes the open design with Kerf's tools while you watch it here. It runs on your Claude plan's usage, not an API key. Turning this on adds Kerf to Claude Code for you; turning it off takes it out again. Kerf's own chat panel still uses the API key above."
       >
-        <Toggle on={!!info?.enabled} onChange={(v) => void act(() => cc.setEnabled(v))} label="Let Claude Code use Kerf" />
+        <Toggle on={on} onChange={(v) => void (v ? report_("connect", () => cc.connect()) : act("other", () => cc.setEnabled(false)))} label="Let Claude Code use Kerf" />
       </Row>
-      {info?.enabled && info.error && (
+      {on && info?.error && (
         <div className="setting">
-          <span className="dot fail" />
+          <span className="dot fail" style={{ marginTop: 6 }} />
           <div className="grow">
             <div className="t">Kerf could not start its tools for Claude Code</div>
             <div className="d">{info.error}</div>
           </div>
-          <button className="btn sm" disabled={busy} onClick={() => void act(() => cc.setEnabled(true))}>
-            Try again
+        </div>
+      )}
+      {!connected && (
+        <div className="setting">
+          <div className="grow">
+            <div className="t">Connect Claude Code</div>
+            <div className="d">
+              {on
+                ? "Kerf's tools are on, but Kerf hasn't added itself to Claude Code. Connect does that, and replaces any connection set up by hand, which breaks when Kerf's port or token changes."
+                : "One click: Kerf finds Claude Code on this computer and adds itself, for every folder. There's nothing to copy into a terminal. Install Claude Code and sign in first (run claude once)."}
+            </div>
+          </div>
+          <button className="btn primary sm" disabled={!!busy} onClick={() => void report_("connect", () => cc.connect())}>
+            {busy === "connect" ? "Connecting…" : "Connect Claude Code"}
           </button>
         </div>
       )}
+      {busy === "connect" && (
+        <div className="setting">
+          <span className="dot pending" style={{ marginTop: 6 }} />
+          <div className="grow d">Finding Claude Code, adding Kerf to it and checking that it reaches Kerf. This takes a few seconds.</div>
+        </div>
+      )}
+      {report && <ClaudeCodeSteps report={report} onClose={() => setReport(null)} />}
       {info?.running && <ClaudeCodeStatus info={info} />}
-      {info?.running && (
+      {connected && info?.running && (
         <div className="setting" style={{ display: "block" }}>
-          <div className="t">Connect Claude Code (once)</div>
+          <div className="t">Design with Claude Code</div>
           <div className="d">
-            1. Install Claude Code and sign in by running <span className="mono">claude</span> once in a terminal.
-          </div>
-          <div className="d" style={{ marginTop: 10 }}>
-            2. If Claude Code was connected to Kerf before, remove that connection. It's safe to run if it never was:
-          </div>
-          <CopyLine text={REMOVE_KERF} label="Copy the remove command" />
-          <div className="d" style={{ marginTop: 10 }}>
-            3. Connect. This saves the connection for every folder. Run it exactly as copied: Claude Code talks to Kerf directly, so it needs no mcp-remote or other bridge.
-          </div>
-          <CopyLine text={add} label="Copy the connect command" />
-          <div className="d" style={{ marginTop: 10 }}>
-            4. Check with <span className="mono">claude mcp list</span>. It should say <span className="mono">kerf: … Connected</span>, and the status above turns green. If it still lists an old kerf, run <span className="mono">claude mcp remove kerf -s local</span> in the folder you're in.
-          </div>
-          <div className="d" style={{ marginTop: 10 }}>
-            To design, open a project here, start Claude Code with Kerf's tools allowed and ask it, for example "Design a wall bracket for a 30 mm tube in Kerf":
+            Open a project here, then start Claude Code in a terminal with Kerf's tools allowed and ask it, for example "Design a wall bracket for a 30 mm tube in Kerf". Kerf can be closed when you start: Claude Code opens it when it needs it.
           </div>
           <CopyLine text="claude --allowedTools mcp__kerf" label="Copy the start command" />
           <div className="row" style={{ gap: 8, marginTop: 10 }}>
-            <span className="d grow">Keep Kerf open while Claude Code works. Changes land in the version history like any other.</span>
-            <button className="btn ghost sm" disabled={busy} onClick={() => void newToken()}>
-              New token
+            <span className="d grow">Changes land in the version history like any other.</span>
+            <button className="btn ghost sm" disabled={!!busy} onClick={() => void report_("check", () => cc.check())}>
+              {busy === "check" ? "Checking…" : "Check connection"}
+            </button>
+            <button className="btn ghost sm" disabled={!!busy} onClick={() => void report_("connect", () => cc.connect())}>
+              Connect again
             </button>
           </div>
         </div>
+      )}
+      {on && info?.running && (
+        <details className="setting" style={{ display: "block" }}>
+          <summary className="t" style={{ cursor: "pointer" }}>
+            Set up by hand
+          </summary>
+          <div className="d" style={{ marginTop: 10 }}>
+            If Connect can't find Claude Code (it's installed somewhere unusual), this terminal command does the same. Run <span className="mono">{REMOVE_KERF}</span> first if Claude Code has an old kerf.
+          </div>
+          {info.bridgeCommand && <CopyLine text={info.bridgeCommand} label="Copy the connect command" />}
+          <div className="d" style={{ marginTop: 12 }}>
+            For other programs that talk MCP over HTTP: Kerf also answers on <span className="mono">{info.url}</span> with this token. A proxy, VPN or antivirus web filter can get in the way of this one, and it stops working when the token or port changes.
+          </div>
+          <CopyLine text={http} label="Copy the HTTP connect command" />
+          <div className="row" style={{ gap: 8, marginTop: 10 }}>
+            <span className="d grow">Only programs on this computer can connect.</span>
+            {!connected && (
+              <button className="btn ghost sm" disabled={!!busy} onClick={() => void report_("check", () => cc.check())}>
+                {busy === "check" ? "Checking…" : "Check connection"}
+              </button>
+            )}
+            <button className="btn ghost sm" disabled={!!busy} onClick={() => void newToken()}>
+              New token
+            </button>
+          </div>
+        </details>
       )}
     </Section>
   );
@@ -528,6 +607,9 @@ function AppSettings() {
         </Row>
         <Row t="Edge lines" d="Outlines the sharp edges of every part.">
           <Toggle on={s.edges} onChange={(v) => updateSettings({ edges: v })} label="Edge lines" />
+        </Row>
+        <Row t="Focus on the selection" d="Once the view is still, the parts in front of and behind what you selected soften a little, as a camera's focus would.">
+          <Toggle on={s.focusBlur} onChange={(v) => updateSettings({ focusBlur: v })} label="Focus on the selection" />
         </Row>
       </Section>
       <Section title="Mouse and keys">

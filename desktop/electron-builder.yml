@@ -8,6 +8,11 @@ directories:
   output: release
   buildResources: desktop/resources
 asar: true
+# Claude Code starts Kerf's bridge with Kerf's own executable as plain Node
+# (ELECTRON_RUN_AS_NODE, desktop/bridge.ts), so it sits outside the archive.
+# That also needs Electron's runAsNode fuse left on: don't turn it off in
+# electronFuses without moving the bridge to a separate Node.
+asarUnpack: [mcp-bridge.cjs]
 # the staged app has no dependencies: everything it runs is bundled, so no node_modules ship
 files:
   - "**/*"

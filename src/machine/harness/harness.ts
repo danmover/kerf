@@ -108,6 +108,7 @@ export const PLUG_BACK: Record<PlugKind, number> = {
   sh: 4.6,
   lever: 1.5,
   bare: 1.5,
+  ufl: 2.4,
 };
 
 /** How many wires one terminal of each kind takes: a crimp housing holds one, a twin ferrule, a screw or a solder joint two. */
@@ -129,6 +130,7 @@ export const SPOT_WIRES: Record<PlugKind, number> = {
   sh: 1,
   lever: 1,
   bare: 2,
+  ufl: 1,
 };
 
 /** Length of a splice's heat-shrink sleeve, mm. */
@@ -318,6 +320,8 @@ export function plugBox(spec: PlugSpec, wires: { d: number }[]): [V3, V3] | null
       return [[-5, -5, 0], [5, 5, 26]];
     case "sh":
       return [[-(span / 2 + 1.5), -1.45, 0], [span / 2 + 1.5, 1.45, 4.6]];
+    case "ufl":
+      return [[-1.3, -1.3, 0], [1.3, 1.3, 2.4]];
     default:
       return null;
   }
@@ -342,6 +346,7 @@ export const PULL: Record<PlugKind, number> = {
   sh: 3,
   lever: 0,
   bare: 0,
+  ufl: 1.2,
 };
 
 /**

@@ -14,7 +14,7 @@
 
 import * as THREE from "three";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
-import { halton } from "./studio";
+import { concentricDisc, halton } from "./studio";
 
 export type Quality = "draft" | "balanced" | "high";
 
@@ -361,8 +361,45 @@ function nearly(a: THREE.Matrix4, b: THREE.Matrix4) {
   return true;
 }
 
+// The unjittered view's depth (sample 0), packed into RGBA so any device can keep it: the selection outline and
+// analysis overlays test against it instead of drawing every opaque part again each frame.
+const DEPTH_PACK_FRAG = /* glsl */ `
+#include <packing>
+uniform sampler2D tDepth;
+varying vec2 vUv;
+void main() {
+  gl_FragColor = packDepthToRGBA(texture2D(tDepth, vUv).r);
+}`;
+
+// Kept depth back into the bound target's depth buffer (colour untouched), for overlays drawn over the image.
+const DEPTH_WRITE_FRAG = /* glsl */ `
+#include <packing>
+uniform sampler2D tDepth;
+varying vec2 vUv;
+void main() {
+  gl_FragColor = vec4(0.0);
+  gl_FragDepth = unpackRGBAToDepth(texture2D(tDepth, vUv));
+}`;
+
 function mat(frag: string, uniforms: Record<string, THREE.IUniform>, opts: Partial<THREE.ShaderMaterialParameters> = {}) {
   return new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: frag, uniforms, depthTest: false, depthWrite: false, ...opts });
+}
+
+/**
+ * Look through another point of a lens: move the eye by (ox, oy) across its own view, and skew the view back so the
+ * plane `focus` ahead stays where it was on screen. Nearer and farther points shift, so averaging samples taken across
+ * the lens blurs them while that plane stays sharp. The caller puts the camera's position and projection back.
+ */
+export function shiftLens(camera: THREE.PerspectiveCamera, ox: number, oy: number, focus: number) {
+  const m = camera.matrixWorld.elements;
+  camera.position.x += m[0] * ox + m[4] * oy;
+  camera.position.y += m[1] * ox + m[5] * oy;
+  camera.position.z += m[2] * ox + m[6] * oy;
+  camera.updateMatrixWorld();
+  const p = camera.projectionMatrix.elements;
+  p[8] -= (p[0] * ox) / focus;
+  p[9] -= (p[5] * oy) / focus;
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 }
 
 export class RenderPipeline {
@@ -372,12 +409,25 @@ export class RenderPipeline {
   pixelRatio = 1;
   samples = 0;
   maxSamples = SAMPLES.balanced;
+  /**
+   * Depth of field for the samples after the first: each looks from a point on a lens this wide (radius, world units)
+   * at the plane `focus` along the view, which stays sharp. Null: a pinhole, all sharp.
+   */
+  lens: { radius: number; focus: number } | null = null;
+  private savedPos = new THREE.Vector3();
   private sampleRT: THREE.WebGLRenderTarget;
   private aoRT: THREE.WebGLRenderTarget;
   private aoBlurRT: THREE.WebGLRenderTarget;
   private accum: [THREE.WebGLRenderTarget, THREE.WebGLRenderTarget];
   private cur = 0;
   readonly maskRT: THREE.WebGLRenderTarget;
+  /** sample 0's depth, packed (see DEPTH_PACK_FRAG); valid while viewDepthReady */
+  readonly viewDepthRT: THREE.WebGLRenderTarget;
+  /** the kept depth is this accumulation's: it is set by its first sample and cleared by a new size */
+  private viewDepthReady = false;
+  /** the camera (projection × view) the kept depth was drawn from */
+  private viewDepthPV = new THREE.Matrix4();
+  private tmpPV = new THREE.Matrix4();
   private bloomRTs: THREE.WebGLRenderTarget[] = [];
   private quad = new FullScreenQuad();
   private aoMat = mat(AO_FRAG, { tDepth: { value: null }, uProj: { value: new THREE.Matrix4() }, uProjInv: { value: new THREE.Matrix4() }, uRes: { value: new THREE.Vector2() }, uRadius: { value: 10 }, uSeed: { value: 0 } });
@@ -387,6 +437,8 @@ export class RenderPipeline {
   private downMat = mat(DOWN_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } });
   private upMat = mat(UP_FRAG, { tSrc: { value: null }, uTexel: { value: new THREE.Vector2() } }, { blending: THREE.AdditiveBlending, transparent: true });
   private copyMat = mat(COPY_FRAG, { tSrc: { value: null } });
+  private depthPackMat = mat(DEPTH_PACK_FRAG, { tDepth: { value: null } });
+  private depthWriteMat = mat(DEPTH_WRITE_FRAG, { tDepth: { value: null } }, { depthTest: true, depthWrite: true, depthFunc: THREE.AlwaysDepth, colorWrite: false });
   private denoiseMat = mat(DENOISE_FRAG, { tSrc: { value: null }, tDepth: { value: null }, uTexel: { value: new THREE.Vector2() }, uStep: { value: 1 }, uSigma: { value: 0.2 }, uNear: { value: 1 }, uFar: { value: 1000 } });
   private photoMixMat = mat(PHOTO_MIX_FRAG, { tAccum: { value: null }, tRaw: { value: null }, tClean: { value: null }, uMix: { value: 0 }, uClean: { value: 0 } });
   /** path traced image, denoise ping-pong and the blend that composite() shows */
@@ -450,6 +502,7 @@ export class RenderPipeline {
     const acc = { type: floatOk ? THREE.FloatType : THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter } as const;
     this.accum = [new THREE.WebGLRenderTarget(1, 1, acc), new THREE.WebGLRenderTarget(1, 1, acc)];
     this.maskRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: true, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter });
+    this.viewDepthRT = new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false, minFilter: THREE.NearestFilter, magFilter: THREE.NearestFilter });
     for (let i = 0; i < 5; i++) this.bloomRTs.push(new THREE.WebGLRenderTarget(1, 1, { type: THREE.HalfFloatType, depthBuffer: false, minFilter: THREE.LinearFilter, magFilter: THREE.LinearFilter }));
     this.black = new THREE.DataTexture(new Uint8Array([0, 0, 0, 0]), 1, 1);
     this.black.needsUpdate = true;
@@ -468,6 +521,8 @@ export class RenderPipeline {
     this.accum[0].setSize(w, h);
     this.accum[1].setSize(w, h);
     this.maskRT.setSize(w, h);
+    this.viewDepthRT.setSize(w, h);
+    this.viewDepthReady = false;
     for (const rt of this.photoRTs) rt.setSize(w, h);
     let bw = w;
     let bh = h;
@@ -514,6 +569,11 @@ export class RenderPipeline {
       const jy = (halton(i, 3) - 0.5) * 2;
       camera.projectionMatrix.elements[8] += jx / this.width;
       camera.projectionMatrix.elements[9] += jy / this.height;
+      if (this.lens) {
+        const [lx, ly] = concentricDisc(halton(i, 11), halton(i, 13));
+        this.savedPos.copy(camera.position);
+        shiftLens(camera, lx * this.lens.radius, ly * this.lens.radius, this.lens.focus);
+      }
       camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
     }
     const prevTarget = r.getRenderTarget();
@@ -521,6 +581,12 @@ export class RenderPipeline {
     r.setClearColor(0x000000, 0);
     r.clear(true, true, true);
     r.render(scene, camera);
+    if (i === 0) {
+      this.depthPackMat.uniforms.tDepth.value = this.sampleRT.depthTexture;
+      this.pass(this.depthPackMat, this.viewDepthRT);
+      this.viewDepthReady = true;
+      this.viewDepthPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    }
 
     const useAO = this.look.ao > 0.01;
     if (useAO) {
@@ -543,6 +609,10 @@ export class RenderPipeline {
     if (jitter) {
       camera.projectionMatrix.copy(this.savedProj);
       camera.projectionMatrixInverse.copy(this.savedProjInv);
+      if (this.lens) {
+        camera.position.copy(this.savedPos);
+        camera.updateMatrixWorld();
+      }
     }
 
     const prev = this.accum[this.cur];
@@ -562,6 +632,21 @@ export class RenderPipeline {
 
   get accumTexture() {
     return this.accum[this.cur].texture;
+  }
+
+  /** Whether the kept depth is this camera's view as it is now (an accumulation of it has begun). */
+  hasViewDepth(camera: THREE.Camera): boolean {
+    if (!this.viewDepthReady) return false;
+    this.tmpPV.multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+    return nearly(this.tmpPV, this.viewDepthPV);
+  }
+
+  /** Fill the depth buffer of `target` with the kept view depth of `camera` (no colour). False when there is none. */
+  writeViewDepth(target: THREE.WebGLRenderTarget | null, camera: THREE.Camera): boolean {
+    if (!this.hasViewDepth(camera)) return false;
+    this.depthWriteMat.uniforms.tDepth.value = this.viewDepthRT.texture;
+    this.pass(this.depthWriteMat, target);
+    return true;
   }
 
   private pass(m: THREE.ShaderMaterial, target: THREE.WebGLRenderTarget | null) {
@@ -686,8 +771,8 @@ export class RenderPipeline {
 
   dispose() {
     this.sampleRT.depthTexture?.dispose();
-    for (const rt of [this.sampleRT, this.aoRT, this.aoBlurRT, ...this.accum, this.maskRT, ...this.bloomRTs, ...this.photoRTs]) rt.dispose();
-    for (const m of [this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.compMat, this.denoiseMat, this.photoMixMat]) m.dispose();
+    for (const rt of [this.sampleRT, this.aoRT, this.aoBlurRT, ...this.accum, this.maskRT, this.viewDepthRT, ...this.bloomRTs, ...this.photoRTs]) rt.dispose();
+    for (const m of [this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.depthPackMat, this.depthWriteMat, this.compMat, this.denoiseMat, this.photoMixMat]) m.dispose();
     this.quad.dispose();
     this.black.dispose();
   }

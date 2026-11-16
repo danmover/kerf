@@ -78,8 +78,9 @@ export function machineChecks(m: MachineData): CheckItem[] {
   }
 
   const controllers = m.components.filter((c) => {
-    const k = catalogPart(c.catalogId)?.kind;
-    return k === "controller";
+    const part = catalogPart(c.catalogId);
+    // a controller that runs its maker's firmware (a flight controller on Betaflight) is set up, not programmed
+    return part?.kind === "controller" && !part.specs.stock_firmware;
   });
   if (controllers.length && !m.firmware.length) {
     out.push({ id: "fw:none", category: "electrical", status: "warn", title: "No firmware", detail: `Add a firmware block (firmware main { board: ${controllers[0].name}, behaviour: "..." }) so Kerf can generate code that matches the wiring.`, parts: controllers.map((c) => c.name), basis: "electrical rules" });
