@@ -8,7 +8,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import * as THREE from "three";
 import { create } from "zustand";
-import { madeByDetailWorker, meshes, useDesign } from "../../core/engine";
+import { meshes, pickByPoint, useDesign } from "../../core/engine";
 import type { EvalPart } from "../../core/model";
 import { commitSource, endComparison } from "../../app/project";
 import { kernel } from "../../kernel/client";
@@ -609,9 +609,10 @@ function placement(part: EvalPart) {
 export function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
   if (!part) return null;
   const p = s.local.clone().applyMatrix4(placement(part));
-  // a mesh the detail worker made (refined and detailed meshes) has face and edge ids that mean nothing to the main
-  // kernel that measures: send only the point, so the kernel takes the sub-shape nearest it
-  const detailed = madeByDetailWorker(s.data);
+  // a mesh the detail worker made (refined and detailed meshes), or one kept from an earlier session, has face and edge
+  // ids that mean nothing to the main kernel that measures: send only the point, so the kernel takes the sub-shape
+  // nearest it
+  const detailed = pickByPoint(s.data);
   return { hash: part.hash, xf: part.xf, kind: s.kind, id: detailed ? undefined : s.id, point: [p.x, p.y, p.z] };
 }
 
