@@ -16,9 +16,23 @@ mkdirSync(out, { recursive: true });
 const terms = /export const TERMS_VERSION = "([^"]+)"/.exec(readFileSync("src/app/settings.ts", "utf8"))?.[1];
 if (!terms) throw new Error("TERMS_VERSION not found in src/app/settings.ts");
 
-const common = { bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron"], legalComments: "linked", logLevel: "info", define: { __KERF_TERMS__: JSON.stringify(terms) } };
+// The sign-in server and the key it signs with are built in (desktop/access/config.ts). A local test
+// build can point at a test server (access-server/src/dev.ts) and trust its throwaway key instead.
+const accessServer = process.env.KERF_ACCESS_SERVER ?? "";
+const accessTestKey = process.env.KERF_ACCESS_TEST_PUBLIC_KEY ?? "";
+if (accessServer || accessTestKey) console.warn(`\nTEST BUILD: sign-in server ${accessServer || "(built-in)"}${accessTestKey ? ", trusting a test key" : ""}. Don't give this build to anyone.\n`);
+
+const define = { __KERF_TERMS__: JSON.stringify(terms), __KERF_ACCESS_SERVER__: JSON.stringify(accessServer), __KERF_ACCESS_TEST_KEY__: JSON.stringify(accessTestKey) };
+const common = { bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron"], legalComments: "linked", logLevel: "info", define };
 await build({ ...common, entryPoints: ["desktop/main.ts"], outfile: `${out}/main.cjs` });
 await build({ ...common, entryPoints: ["desktop/preload.ts"], outfile: `${out}/preload.cjs` });
+await build({ ...common, entryPoints: ["desktop/access/gate-preload.ts"], outfile: `${out}/gate-preload.cjs` });
+
+// the sign-in window's page, with Kerf's fonts
+cpSync("desktop/access/gate", `${out}/gate`, { recursive: true });
+mkdirSync(`${out}/gate/fonts`, { recursive: true });
+for (const f of ["ibm-plex-sans/files/ibm-plex-sans-latin-400-normal", "ibm-plex-sans/files/ibm-plex-sans-latin-500-normal", "ibm-plex-sans/files/ibm-plex-sans-latin-600-normal", "ibm-plex-mono/files/ibm-plex-mono-latin-500-normal"])
+  cpSync(`node_modules/@fontsource/${f}.woff2`, `${out}/gate/fonts/${f.split("/").pop()}.woff2`);
 
 cpSync("dist", `${out}/web`, { recursive: true });
 cpSync("desktop/resources/icon.png", `${out}/icon.png`);

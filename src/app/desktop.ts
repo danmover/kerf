@@ -38,6 +38,55 @@ export interface ClaudeCodeBridge {
   serve(page: { run(id: number, method: string, params: unknown): Promise<unknown>; cancel(id: number): void }): Promise<void>;
 }
 
+/** Who is signed in to the desktop app (desktop/access/), each account locked to one computer. */
+export interface AccessInfo {
+  user: string;
+  role: string;
+  /** this computer's code, XXXX-XXXX-XXXX-XXXX */
+  computer: string;
+  /** started on the saved sign-in because the sign-in server couldn't be reached */
+  offline: boolean;
+  /** when the saved sign-in runs out if the server stays out of reach */
+  until: number;
+  /** signed in as the owner on the PC with the owner key: can manage accounts */
+  owner: boolean;
+  stay: boolean;
+  /** other accounts that have signed in on this computer */
+  others: number;
+}
+
+/** An account, as the owner sees it. */
+export interface AccessUser {
+  user: string;
+  role: string;
+  /** the computers it is locked to: code, when it was locked, last sign-in, and what the app said it was */
+  computers: { c: string; at: number; seen: number; app?: string }[];
+  maxComputers: number;
+  blocked: boolean;
+  created: number;
+  lastSignIn: number | null;
+  note: string;
+}
+
+export type AccessOwnerOp =
+  | { op: "list" }
+  | { op: "create"; user: string; password?: string; maxComputers?: number; note?: string }
+  | { op: "password"; user: string; password?: string }
+  | { op: "reset"; user: string }
+  | { op: "block"; user: string; blocked: boolean }
+  | { op: "limit"; user: string; maxComputers: number }
+  | { op: "delete"; user: string };
+
+export type AccessOwnerResult = { ok: true; users?: AccessUser[]; user?: AccessUser; password?: string } | { ok: false; message: string };
+
+export interface AccessBridge {
+  /** null when nobody is signed in (the smoke test) */
+  info(): Promise<AccessInfo | null>;
+  signOut(): Promise<void>;
+  setStay(on: boolean): Promise<AccessInfo | null>;
+  owner(op: AccessOwnerOp): Promise<AccessOwnerResult>;
+}
+
 export interface DesktopBridge {
   info(): Promise<DesktopInfo>;
   setGraphics(b: GraphicsBackend): Promise<void>;
@@ -45,6 +94,8 @@ export interface DesktopBridge {
   /** tells the app this launch has no hardware WebGL 2; with a backend chosen in Settings it goes back to Auto and restarts */
   graphicsFailed?(): Promise<{ relaunching: boolean }>;
   claudeCode: ClaudeCodeBridge;
+  /** missing from desktop apps built before sign-in existed */
+  access?: AccessBridge;
 }
 
 export function desktop(): DesktopBridge | null {

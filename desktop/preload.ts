@@ -1,6 +1,6 @@
 // The only thing the desktop app adds to the page: window.kerfDesktop, for
-// Settings → Desktop and Settings → Claude's Claude Code connection. The page
-// itself has no access to Node or Electron.
+// Settings → Desktop, Settings → Account's sign-in and Settings → Claude's
+// Claude Code connection. The page itself has no access to Node or Electron.
 
 import { contextBridge, ipcRenderer } from "electron";
 
@@ -9,6 +9,13 @@ contextBridge.exposeInMainWorld("kerfDesktop", {
   setGraphics: (backend: string) => ipcRenderer.invoke("kerf:set-graphics", backend),
   relaunch: () => ipcRenderer.invoke("kerf:relaunch"),
   graphicsFailed: () => ipcRenderer.invoke("kerf:graphics-failed"),
+  /** who is signed in (desktop/access/), signing out, and the owner's account tools */
+  access: {
+    info: () => ipcRenderer.invoke("kerf:access-info"),
+    signOut: () => ipcRenderer.invoke("kerf:access-sign-out"),
+    setStay: (on: boolean) => ipcRenderer.invoke("kerf:access-stay", on),
+    owner: (op: unknown) => ipcRenderer.invoke("kerf:access-owner", op),
+  },
   claudeCode: {
     info: () => ipcRenderer.invoke("kerf:claude-code-info"),
     setEnabled: (on: boolean) => ipcRenderer.invoke("kerf:set-claude-code", on),
