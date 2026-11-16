@@ -638,7 +638,8 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
         if (j.k !== "pivot") fail(`${j.name}: a servo turns a pivot, not a ${j.k}`);
         const range = Number(cat!.specs.range_deg ?? 180);
         const zero = j.zero ?? range / 2;
-        drives.push({ kind: "servo", joint: j.name, comp: j.drive, sign: 1, zero });
+        // a CAN actuator reads its own angle and starts limp, so its joint may start away from the design pose
+        drives.push({ kind: "servo", joint: j.name, comp: j.drive, sign: 1, zero, ...(cat!.specs.bus === "cubemars_mit" ? { limpStart: true } : {}) });
         // the servo's own end stops
         if (!mj.limits) mj.limits = [-zero * D2R, (range - zero) * D2R];
       } else if (cat!.kind === "actuator") {
@@ -951,7 +952,10 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   }
   if (!Number.isFinite(zmin)) zmin = 0;
   const centre: V3 = [cx / Math.max(1, nb), cy / Math.max(1, nb), zmin];
-  let gravity: V3 = [0, 0, -G];
+  // the world's gravity: Earth's unless the bench says otherwise (sim.bench(gravity: ...), sim.orbit(...): none)
+  const g0 = scn.world.kind === "bench" ? (scn.world.bench.gravity ?? G) : G;
+  let gravity: V3 = [0, 0, -g0];
+  if (g0 !== G) notes.push(g0 === 0 ? "No gravity: the run is in free fall, as in orbit" : `Gravity ${+g0.toFixed(2)} m/s² (${+(g0 / G).toFixed(3)} of Earth's)`);
   let ground: MechGround | null = null;
   const fw = scn.world.kind === "floor" ? scn.world.floor : null;
   if (fw) {
@@ -965,7 +969,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       ground.down = unit(gravity);
       notes.push(`The floor slopes ${fw.slope}° rising along (${fw.uphill.map((x) => +x.toFixed(2)).join(", ")})`);
     }
-  } else if (scn.world.kind === "bench" && bodies.some((b) => !b.fixed && b.id !== FRAME)) {
+  } else if (scn.world.kind === "bench" && g0 > 0 && bodies.some((b) => !b.fixed && b.id !== FRAME)) {
     // the bench top under the machine: moving parts and loose boxes land on it
     ground = { floor: { p: SI(centre), n: [0, 0, 1] }, blocks: [], mu: 0.5, roll: 0.01, label: "bench top" };
   }
@@ -1151,7 +1155,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     const what = `sim.${mj.kind}(${mj.name}): start:`;
     if (mj.kind !== "pivot" && mj.kind !== "slider") fail(`${what} only a pivot or a slider has a start`);
     if (mj.limits && (mj.start < mj.limits[0] - 1e-9 || mj.start > mj.limits[1] + 1e-9)) fail(`${what} is outside its limits`);
-    if (drives.some((d) => d.joint === mj.name && (d.kind === "motor" || d.kind === "servo" || d.kind === "actuator" || d.kind === "turn"))) fail(`${what} its drive sets where it is, so leave start: out`);
+    if (drives.some((d) => d.joint === mj.name && (d.kind === "motor" || (d.kind === "servo" && !d.limpStart) || d.kind === "actuator" || d.kind === "turn"))) fail(`${what} its drive sets where it is, so leave start: out`);
     const tied = links.find((l) => Object.values(l).includes(mj.name));
     if (tied) fail(`${what} it is geared or coupled (${tied.name}), so it cannot start out of step with the design pose`);
     if (joints.some((o) => o !== mj && o.body === mj.body)) fail(`${what} ${mj.body} hangs on more than one joint (a closed chain), which only fits together in the design pose`);

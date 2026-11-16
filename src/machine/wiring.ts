@@ -85,6 +85,8 @@ interface Item {
   pins: NetPin[];
   /** for buses: the pin the star wiring starts from */
   hub?: NetPin;
+  /** for buses: wired one pin to the next in the order the net lists them (a CAN bus), not as a star */
+  chain?: boolean;
   /** for buses: pins wired straight to the battery or supply, and switch contacts that only sense (keys) */
   fed?: string[];
   sense?: string[];
@@ -210,7 +212,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
   const items: Item[] = [];
   const seenPairs = new Set<string>();
   let signals = 0;
-  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string; spots?: Map<string, string>; bought?: string; boughtMm?: number; own?: boolean; via?: [number, number, number][] }) => {
+  const add = (pins: NetPin[], o: { name?: string; color?: string; gauge?: number; insulation?: WireInsulation; label?: string; spots?: Map<string, string>; bought?: string; boughtMm?: number; own?: boolean; via?: [number, number, number][]; chain?: boolean }) => {
     const net = pins[0].pin.type === "port" ? undefined : nl.netOf.get(pins[0].key);
     const kind = classify(pins, net);
     const bus = pins.length > 2;
@@ -224,7 +226,7 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const gauge = o.gauge ?? suggestGauge(kind, pins, net?.pins ?? pins);
     const cable = kind === "cable" ? (CABLE_NAMES[pins.find((p) => p.pin.port)?.pin.port ?? ""] ?? "cable") : undefined;
     const name = o.name ?? net?.name ?? o.label ?? (cable ? `${instName(pins[0])}.${pins[0].pin.id}` : net ? netLabel(net) : `${instName(pins[0])}.${pins[0].pin.id}`);
-    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name), spots: o.spots?.size ? o.spots : undefined, bought: o.bought, boughtMm: o.boughtMm, own: o.own, via: bus ? undefined : o.via });
+    items.push({ id: items.length, name, kind, bus, pins, color, colorSuggested: o.color === undefined, gauge, gaugeSuggested: o.gauge === undefined && gauge !== undefined, insulation: o.insulation, label: o.label, cable, named: !!(o.name ?? net?.name), spots: o.spots?.size ? o.spots : undefined, bought: o.bought, boughtMm: o.boughtMm, own: o.own, via: bus ? undefined : o.via, chain: bus && o.chain ? true : undefined });
   };
   const spotsOf = (refs: PinRef[], pins: (NetPin | undefined)[]) => {
     const out = new Map<string, string>();
@@ -234,12 +236,41 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     });
     return out;
   };
+  // pins on a stack connector (PC/104) of boards stacked in one column: the connector joins each one to the pin in the
+  // same place on the next board, so they need one wire between them at most (to whatever is off the stack)
+  const stackKey = (p: NetPin) => {
+    if (!p.pin.stack || !p.mc.at) return undefined;
+    const z = p.mc.axes?.[2] ?? [0, 0, 1];
+    const [x, y, zz] = p.mc.at;
+    // the column: the boards' common axis and where it passes through the plane across it
+    const ax = Math.abs(z[0]) > 0.9 ? 0 : Math.abs(z[1]) > 0.9 ? 1 : Math.abs(z[2]) > 0.9 ? 2 : -1;
+    if (ax < 0) return undefined;
+    const across = [x, y, zz].filter((_, i) => i !== ax).map((v) => Math.round(v));
+    return `${p.pin.stack}|${ax}|${across.join(",")}|${p.pin.label ?? p.pin.id}`;
+  };
+  const throughStack = (pins: NetPin[]): NetPin[] => {
+    const keys = pins.map(stackKey);
+    const off = new Set(pins.filter((_, i) => !keys[i]).map((p) => p.comp));
+    const groups = new Map<string, NetPin[]>();
+    pins.forEach((p, i) => keys[i] && groups.set(keys[i]!, [...(groups.get(keys[i]!) ?? []), p]));
+    // a board in the column with another pin on the net (a side connector) reaches the column through its own copper
+    const bridged = new Set([...groups].filter(([, g]) => g.some((p) => off.has(p.comp))).map(([k]) => k));
+    const seenStack = new Set<string>();
+    return pins.filter((_, i) => {
+      const k = keys[i];
+      if (!k) return true;
+      if (bridged.has(k) || seenStack.has(k)) return false;
+      seenStack.add(k);
+      return true;
+    });
+  };
   for (const w of m.wires) {
     const a = resolve(w.a);
     const b = resolve(w.b);
     if (!a || !b || a.key === b.key) continue;
     // the two halves of a connector pair, or a fuse or switch, join inside the part: no wire to make
     if (a.comp === b.comp && a.index === b.index && a.pin.through === b.pin.id) continue;
+    if (throughStack([a, b]).length < 2) continue;
     add([a, b], { color: w.color, gauge: w.gauge, insulation: w.insulation, label: w.label, spots: spotsOf([w.a, w.b], [a, b]), bought: w.cable, boughtMm: w.length, own: w.own, via: w.via });
   }
   // a net joining pins on one circuit board is copper on that board, not a wire to make
@@ -250,7 +281,8 @@ function buildItems(m: MachineData, nl: Netlist): Item[] {
     const pins = all.filter((p): p is NetPin => !!p && !seen.has(p.key) && !!seen.add(p.key));
     const boards = new Set(pins.map((p) => boardOf.get(p.comp) ?? ""));
     if (boards.size === 1 && !boards.has("")) continue;
-    if (pins.length >= 2) add(pins, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation, spots: spotsOf(n.pins, all) });
+    const wired = throughStack(pins);
+    if (wired.length >= 2) add(wired, { name: n.name, color: n.color, gauge: n.gauge, insulation: n.insulation, spots: spotsOf(n.pins, all), chain: n.chain });
   }
   // pins with a wire of their own straight to a battery's or supply's terminal, and switch contacts that only sense
   // (an e-stop's spare contact tied to ground): neither is somewhere a trunk runs out to
@@ -353,6 +385,7 @@ interface NetHop {
  * comes back on its own wire, and the trunks are used only when they save a good part of the cable.
  */
 function netHops(it: Item, hub: NetPin, positions?: Map<string, V3[]>, bodies?: Map<string, string>): NetHop[] {
+  if (it.chain) return it.pins.slice(1).map((b, i) => ({ a: it.pins[i], b }));
   const others = it.pins.filter((p) => p !== hub);
   const star = others.map((b) => ({ a: hub, b }));
   if (!positions || others.length < 3 || (it.kind !== "ground" && it.kind !== "power") || (it.gauge !== undefined && it.gauge <= 18)) return star;
@@ -453,7 +486,7 @@ export function wireList(m: MachineData, positions?: Map<string, V3[]>, routed?:
       const { a, b } = h;
       const notes: string[] = [];
       if (it.cable) notes.push(`Use the ${it.cable} supplied with the part, or one of the same type.`);
-      if (it.bus && it.pins.length > 3 && !trunked && b === it.pins.find((p) => p !== hub)) notes.push(`${it.pins.length} pins on this net: a terminal block or lever connector near ${instName(a)} keeps it tidy.`);
+      if (it.bus && !it.chain && it.pins.length > 3 && !trunked && b === it.pins.find((p) => p !== hub)) notes.push(`${it.pins.length} pins on this net: a terminal block or lever connector near ${instName(a)} keeps it tidy.`);
       if (h.feeds && a === hub) notes.push(`Trunk to ${[...new Set(h.feeds.map(instName))].join(", ")}: it splits at ${instName(b)} into the branches to the others.`);
       const { gauge, note } = hopGauge(it, h);
       if (note) notes.push(note);

@@ -233,7 +233,10 @@ function powerChecks(c: Ctx) {
       item(c, `short:${n.id}`, "fail", `Short circuit on ${name}`, `${who(s)} (${fmtNum(s.pin.v ?? 0)} V) is connected straight to ground (${who(gnd[0])}).`, [s.comp, gnd[0].comp], span);
       continue;
     }
-    if (out.length > 1) {
+    // solar strings that each end in a blocking diode share a bus by design: the weaker string just stops feeding
+    if (out.length > 1 && out.every((p) => p.part.specs.blocking_diode === true)) {
+      item(c, `fight:${n.id}`, "pass", `Strings in parallel on ${name}`, `${out.map(who).join(" and ")} share it through their blocking diodes.`, out.map((p) => p.comp), span);
+    } else if (out.length > 1) {
       const vs = [...new Set(out.map((p) => p.pin.v))];
       item(c, `fight:${n.id}`, vs.length > 1 ? "fail" : "warn", `Two supplies on ${name}`, vs.length > 1 ? `${out.map((p) => `${who(p)} (${fmtNum(p.pin.v ?? 0)} V)`).join(" and ")} are tied together: they will fight.` : `${out.map(who).join(" and ")} are paralleled. Only do this if both are designed to share current.`, out.map((p) => p.comp), span);
     }
@@ -522,7 +525,10 @@ function protection(c: Ctx) {
     if (!pos) continue;
     const fused = pos.pins.some((p) => p.part.kind === "fuse");
     const switched = pos.pins.some((p) => p.part.kind === "switch" || p.part.kind === "connector");
-    if (!fused) item(c, `fuse:${b.name}`, "warn", `No fuse on ${b.name}`, `A LiPo can deliver over 100 A into a short. Put a fuse on the positive lead right at the battery.`, [b.name], b.span);
+    // a pack with its own protection board (space and e-bike packs) trips on a short by itself
+    const own = catalogPart(b.catalogId)?.specs.protection;
+    if (!fused && typeof own === "string" && own) item(c, `fuse:${b.name}`, "pass", `${b.name} protects itself`, `It has ${own}, so a short trips it before the wiring overheats.`, [b.name], b.span);
+    else if (!fused) item(c, `fuse:${b.name}`, "warn", `No fuse on ${b.name}`, `A LiPo can deliver over 100 A into a short. Put a fuse on the positive lead right at the battery.`, [b.name], b.span);
     if (!switched) item(c, `switch:${b.name}`, "info", `No power switch on ${b.name}`, "Add a switch, or a connector on the positive lead that works as a removable link, so the machine can be turned off quickly.", [b.name], b.span);
   }
   for (const p of c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "psu")) {
@@ -598,7 +604,9 @@ function loadModel(c: Ctx, motorCurrent?: (comp: string) => number | undefined, 
         const n = c.nl.netOf.get(q.key);
         if (!n) continue;
         const iout = load(n);
-        const switching = p.part.kind === "regulator" && !/linear/i.test(p.part.summary);
+        // a regulator part, or a board whose catalogue entry says its own regulators are switching (a flight
+        // controller's 5 V and 9 V BECs are bucks): the input carries the output power, not the output current
+        const switching = (p.part.kind === "regulator" && !/linear/i.test(p.part.summary)) || p.part.specs?.regulator === "switching";
         a += switching && vin ? (iout * (q.pin.v ?? vin)) / (vin * 0.85) : iout;
       }
       if (q.pin.type === "motor_out") {
@@ -837,12 +845,13 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
     n.pins.flatMap((p) => {
       if (p.pin.type !== "passive" || !p.pin.through) return [];
       const o = c.nl.netOf.get(key(p.comp, p.index, p.pin.through)) === n ? n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through) : undefined;
-      return o && p.key < o.key ? [{ a: p, b: o }] : [];
+      // once per pair: a lever nut's C, D and E go through to A, with no pin going back to them
+      return o && (p.key < o.key || o.pin.through !== p.pin.id) ? [{ a: p, b: o }] : [];
     });
-  // pins reached from `from` without crossing the skipped run or link
-  const reach = (n: Net, from: NetPin[], skip?: { a: NetPin; b: NetPin }) => {
+  // pins reached from `from` without crossing the skipped run or link (nor, with stop, the links through those parts)
+  const reach = (n: Net, from: NetPin[], skip?: { a: NetPin; b: NetPin }, stop?: Set<string>) => {
     const same = (e: { a: NetPin; b: NetPin }) => !!skip && e.a.key === skip.a.key && e.b.key === skip.b.key;
-    const edges = [...n.segs, ...links(n)].filter((e) => e !== skip && !same(e));
+    const edges = [...n.segs, ...links(n)].filter((e) => e !== skip && !same(e) && !(stop && e.a.comp === e.b.comp && stop.has(e.a.comp)));
     const seen = new Set(from.map((p) => p.key));
     const todo = [...from];
     while (todo.length) {
@@ -894,6 +903,7 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
   }
 
   // a fuse must blow before the thinnest wire after it overheats, and must not blow in normal use
+  const fuseNames = c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "fuse").map((x) => x.name);
   for (const f of c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "fuse")) {
     const part = catalogPart(f.catalogId)!;
     const rating = f.rating ?? Number(part.specs.rating_a ?? 0);
@@ -906,7 +916,8 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
       const fromSrc = reach(n, src, link);
       // the side the supply doesn't reach without going through the fuse is what it protects
       const out = pins.find((p) => !fromSrc.has(p.key)) ?? pins.find((p) => p.pin.id === "OUT") ?? pins[1];
-      const side = reach(n, [out], link);
+      // up to the next fuse down the line: that one protects the wires after it
+      const side = reach(n, [out], link, new Set(fuseNames.filter((x) => x !== f.name)));
       const after = n.segs.filter((sg) => side.has(sg.a.key) && side.has(sg.b.key) && sg.gauge !== undefined);
       const fname = `${f.name}${f.count > 1 ? `[${i}]` : ""}`;
       // a holder's contacts are rated too: a bigger blade than it takes lets them overheat before the fuse blows

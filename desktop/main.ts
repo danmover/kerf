@@ -9,13 +9,15 @@
 // account's projects live in its own storage.
 
 import { app, BrowserWindow, dialog, ipcMain, Menu, protocol, screen, session, shell, type IpcMainInvokeEvent, type Session, type WebContents } from "electron";
-import { mkdtempSync } from "node:fs";
-import { tmpdir } from "node:os";
+import { mkdtempSync, writeFileSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { HOST, ORIGIN, SCHEME, staticHandler } from "./serve.js";
 import { backendsFor, loadSettings, loadWindowState, saveSettings, saveWindowState, type GraphicsBackend } from "./settings.js";
 import { runSmokeTest } from "./smoke.js";
-import { newToken, startMcp, type RunningMcp } from "./mcp.js";
+import { DEFAULT_PORT, MCP_INSTRUCTIONS, newToken, pipePath, startMcp, type RunningMcp } from "./mcp.js";
+import { Down, TOOLS_CACHE, post } from "./bridge.js";
+import { describe, findClaude, getEntry, isConnected, isOurs as isOurEntry, kerfEntries, register, unregister, type BridgeSpec, type ClaudeCli, type Step } from "./claudeCli.js";
 import { Gate } from "./access/gate.js";
 import type { OwnerOp } from "./access/controller.js";
 
@@ -300,8 +302,23 @@ function bridge() {
     settings.claudeCode.enabled = enabled === true;
     await stopClaudeCode();
     if (settings.claudeCode.enabled) await startClaudeCode();
-    else saveSettings(userData, settings);
+    else {
+      // take Kerf back out of Claude Code, so its sessions don't list tools that only say "turned off"
+      if (settings.claudeCode.registered) {
+        const cli = await findClaude(homedir());
+        if (cli && (await unregister(cli, homedir()))) settings.claudeCode.registered = null;
+      }
+      saveSettings(userData, settings);
+    }
     return claudeCodeInfo();
+  });
+  ipcMain.handle("kerf:claude-code-connect", async (e) => {
+    fromKerf(e);
+    return connectClaudeCode();
+  });
+  ipcMain.handle("kerf:claude-code-check", async (e) => {
+    fromKerf(e);
+    return checkClaudeCode();
   });
   ipcMain.handle("kerf:claude-code-new-token", async (e) => {
     fromKerf(e);
@@ -316,6 +333,8 @@ function bridge() {
   ipcMain.handle("kerf:mcp-ready", (e) => {
     fromKerf(e);
     pageReady = true;
+    for (const w of readyWaiters) w();
+    readyWaiters = [];
   });
   ipcMain.handle("kerf:mcp-response", (e, r: { id: number; result?: unknown; error?: string }) => {
     fromKerf(e);
@@ -328,23 +347,41 @@ function bridge() {
 
 // ---------- Kerf's tools for the person's own Claude Code ----------
 
-const MCP_INSTRUCTIONS =
-  "Kerf is the mechanical CAD app open on this computer. These tools read and change the design open in its window, and the person watches every change there live. Before you work on a design, call kerf_instructions once and follow it: it is Kerf's design guide and the reference for its design language. Start each task with get_design.";
-
 let mcp: RunningMcp | null = null;
+/** the port Kerf wanted when it last started the server, to say so when another program had it */
+let portWanted = DEFAULT_PORT;
 let mcpError = "";
 /** the last time a program connected, and the last time one was turned away, for the status in Settings */
 let lastConnect: { at: number; client: string } | null = null;
 let lastRefused: { at: number; why: "no-token" | "wrong-token" } | null = null;
 let pageReady = false;
+let readyWaiters: (() => void)[] = [];
 let nextCall = 1;
 const calls = new Map<number, { resolve: (v: unknown) => void; reject: (e: Error) => void }>();
 
+/** Wait for the page to start answering: Claude Code may call the moment Kerf opens, or while it reloads. */
+function pageAnswering(signal: AbortSignal, ms = 90_000) {
+  if (pageReady) return Promise.resolve(true);
+  return new Promise<boolean>((resolve) => {
+    const done = (v: boolean) => {
+      clearTimeout(t);
+      signal.removeEventListener("abort", stop);
+      readyWaiters = readyWaiters.filter((w) => w !== ready);
+      resolve(v);
+    };
+    const ready = () => done(true);
+    const stop = () => done(false);
+    const t = setTimeout(stop, ms);
+    signal.addEventListener("abort", stop, { once: true });
+    readyWaiters.push(ready);
+  });
+}
+
 /** Run a tools/list or tools/call in the page, where the design and its tools live. */
-function askPage(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
+async function askPage(method: string, params: unknown, signal: AbortSignal): Promise<unknown> {
+  if (!(await pageAnswering(signal))) throw new Error(signal.aborted ? "Cancelled." : "Kerf is still starting. Try again in a few seconds.");
   const wc = win?.webContents;
-  if (!wc || wc.isDestroyed()) return Promise.reject(new Error("Kerf's window is closed. Ask the person to open Kerf."));
-  if (!pageReady) return Promise.reject(new Error("Kerf is still starting. Try again in a few seconds."));
+  if (!wc || wc.isDestroyed()) throw new Error("Kerf's window is closed. Ask the person to open Kerf.");
   const id = nextCall++;
   const onAbort = () => wc.isDestroyed() || wc.send("kerf:mcp-cancel", id);
   signal.addEventListener("abort", onAbort, { once: true });
@@ -364,15 +401,30 @@ function pageGone() {
   calls.clear();
 }
 
+/** The page's answer, with the tool list kept for the bridge to offer while Kerf is closed. */
+async function fromPage(method: "tools/list" | "tools/call", params: unknown, signal: AbortSignal) {
+  const r = await askPage(method, params, signal);
+  if (method === "tools/list") {
+    try {
+      writeFileSync(join(userData, TOOLS_CACHE), JSON.stringify({ version: app.getVersion(), tools: (r as { tools?: unknown })?.tools ?? [] }));
+    } catch {
+      /* the bridge waits for Kerf instead */
+    }
+  }
+  return r;
+}
+
 async function startClaudeCode() {
   const cc = settings.claudeCode;
   if (!cc.token) cc.token = newToken();
   mcpError = "";
+  portWanted = cc.port;
   try {
     mcp = await startMcp({
       port: cc.port,
       token: cc.token,
-      backend: { request: askPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() },
+      pipe: pipePath(userData),
+      backend: { request: fromPage, instructions: MCP_INSTRUCTIONS, version: app.getVersion() },
       onSeen: (s) => {
         if (s.kind === "connected") lastConnect = { at: Date.now(), client: s.client };
         else lastRefused = { at: Date.now(), why: s.why };
@@ -392,9 +444,159 @@ async function stopClaudeCode() {
   mcp = null;
 }
 
+/** How Claude Code starts Kerf's bridge: this Kerf's own executable, as Node, on the bridge script beside the app. */
+function bridgeSpec(): BridgeSpec {
+  // the bridge is unpacked from app.asar (electron-builder.yml), so a plain Node can load it
+  const dir = app.getAppPath().replace(/app\.asar$/, "app.asar.unpacked");
+  const args = [join(dir, "mcp-bridge.cjs"), "--kerf-data", userData];
+  // unpackaged (`electron .desktop/app`), Electron needs the app folder to open Kerf
+  if (!app.isPackaged) args.push("--kerf-app", app.getAppPath());
+  return { command: process.execPath, args, env: { ELECTRON_RUN_AS_NODE: "1" } };
+}
+
+/** The command that does what Connect does, for a terminal. Its quoting works in Command Prompt, PowerShell and macOS's shells. */
+function bridgeCommand(spec: BridgeSpec) {
+  const q = (a: string) => (/^[\w./:\\-]+$/.test(a) ? a : `"${a}"`);
+  return `claude mcp add --scope user kerf -e ELECTRON_RUN_AS_NODE=1 -- ${[spec.command, ...spec.args].map(q).join(" ")}`;
+}
+
 function claudeCodeInfo() {
   const cc = settings.claudeCode;
-  return { enabled: cc.enabled, running: !!mcp, url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`, token: cc.token, error: mcpError, lastConnect, lastRefused };
+  const spec = bridgeSpec();
+  return {
+    enabled: cc.enabled,
+    running: !!mcp,
+    url: mcp?.url ?? `http://127.0.0.1:${cc.port}/mcp`,
+    token: cc.token,
+    error: mcpError,
+    lastConnect,
+    lastRefused,
+    pipe: mcp?.pipe ?? "",
+    registered: !!cc.registered,
+    bridgeCommand: bridgeCommand(spec),
+  };
+}
+
+const NO_CLAUDE: Step = {
+  ok: false,
+  t: "Claude Code isn't installed on this computer",
+  d: "Install it from code.claude.com, run claude once in a terminal to sign in, then press Connect again. If it is installed somewhere unusual, use the command under Set up by hand.",
+};
+
+/** Where this Kerf is running from, when Claude Code couldn't start it from there later. */
+function placeWarning(): Step | null {
+  if (process.platform === "darwin" && process.execPath.startsWith("/Volumes/"))
+    return { ok: null, t: "Kerf is running from its disk image", d: "Drag Kerf into Applications and connect again from there, or Claude Code can't start Kerf after the disk image is ejected." };
+  if (process.env.APPIMAGE) return { ok: null, t: "Kerf is an AppImage", d: "Its files move each time it starts, so connect again after restarting Kerf if Claude Code loses it." };
+  return null;
+}
+
+/** Connect: turn Kerf's tools on, add Kerf's bridge to Claude Code in place of any old kerf, and check that Claude Code reaches it. */
+async function connectClaudeCode() {
+  const steps: Step[] = [];
+  const cc = settings.claudeCode;
+  if (!cc.enabled || !mcp) {
+    cc.enabled = true;
+    await stopClaudeCode();
+    await startClaudeCode();
+  }
+  if (!mcp) {
+    steps.push({ ok: false, t: "Kerf couldn't start its tools", d: mcpError });
+    return { ok: false, steps, info: claudeCodeInfo() };
+  }
+  if (!mcp.pipe) steps.push({ ok: null, t: "Kerf's pipe didn't open", d: `The bridge uses ${mcp.url} instead. (${mcp.pipeError})` });
+  const home = homedir();
+  const cli = await findClaude(home);
+  if (!cli) {
+    steps.push(NO_CLAUDE);
+    return { ok: false, steps, info: claudeCodeInfo() };
+  }
+  steps.push({ ok: true, t: `Found Claude Code ${cli.version}`, d: cli.path });
+  const spec = bridgeSpec();
+  const r = await register(cli, spec, home);
+  steps.push(...r.steps);
+  const where = placeWarning();
+  if (where) steps.push(where);
+  // what the add saved stays saved even when the check after it failed
+  if (r.steps.some((s) => s.t === "Added Kerf to Claude Code")) cc.registered = { command: spec.command, args: spec.args };
+  saveSettings(userData, settings);
+  return { ok: r.ok, steps, info: claudeCodeInfo() };
+}
+
+/** Ask Kerf's own server, over the pipe or the port, and make sure it is this Kerf that answers. */
+async function selfTest(target: { socketPath: string } | { host: string; port: number }): Promise<string> {
+  try {
+    const r = await post(target, settings.claudeCode.token, JSON.stringify({ jsonrpc: "2.0", id: "kerf-self-check", method: "ping" }), AbortSignal.timeout(5000));
+    if (r.kerf !== mcp?.instance) return "another program answered";
+    if (r.status !== 200 || JSON.parse(r.body)?.result === undefined) return `Kerf answered ${r.status}`;
+    return "";
+  } catch (e) {
+    return e instanceof Down ? "nothing is listening" : (e as Error).message;
+  }
+}
+
+/** Check: every link between Claude Code and Kerf, with what to do about the first one that's broken. */
+async function checkClaudeCode() {
+  const steps: Step[] = [];
+  const cc = settings.claudeCode;
+  const done = () => ({ ok: steps.every((s) => s.ok !== false), steps, info: claudeCodeInfo() });
+  if (!cc.enabled || !mcp) {
+    steps.push({ ok: false, t: cc.enabled ? "Kerf's tools for Claude Code aren't running" : "Claude Code is turned off in Kerf", d: mcpError || "Press Connect Claude Code." });
+    return done();
+  }
+  const viaPipe = mcp.pipe ? await selfTest({ socketPath: mcp.pipe }) : mcp.pipeError;
+  steps.push(viaPipe ? { ok: false, t: "Kerf's pipe doesn't answer", d: viaPipe } : { ok: true, t: "Kerf's pipe answers", d: mcp.pipe ?? "" });
+  const viaPort = await selfTest({ host: "127.0.0.1", port: mcp.port });
+  const moved = mcp.port !== portWanted ? ` Another program had port ${portWanted}, so Kerf moved to ${mcp.port}.` : "";
+  steps.push(viaPort ? { ok: null, t: `Port ${mcp.port} doesn't answer as Kerf`, d: `${viaPort}. Only connections set up by hand use it.${moved}` } : { ok: true, t: `Kerf answers on ${mcp.url}`, d: moved.trim() || undefined });
+  const home = homedir();
+  const cli = await findClaude(home);
+  if (!cli) {
+    steps.push(NO_CLAUDE);
+    return done();
+  }
+  steps.push({ ok: true, t: `Found Claude Code ${cli.version}`, d: cli.path });
+  const { user, folders } = kerfEntries(home, cli.env);
+  const spec = bridgeSpec();
+  if (!user) steps.push({ ok: false, t: "Claude Code doesn't have Kerf yet", d: "Press Connect Claude Code." });
+  else if (isOurEntry(user, spec) || /^(http|sse)$/i.test(user.type ?? "")) {
+    // only Kerf's own entries are started for the check; an old mcp-remote one could open a browser
+    const e = await getEntry(cli, home);
+    const ok = isConnected(e.status);
+    const http = !isOurEntry(user, spec);
+    const wrongPort = http && user.url && !user.url.includes(`:${mcp.port}/`) ? ` It points at ${user.url}, but Kerf is on ${mcp.url}.` : "";
+    const mangled = /InvalidHTTPResponse|chunked|unreadable/i.test(e.issue) ? " Something on this computer (a proxy, VPN or antivirus web filter) is changing Kerf's replies on their way to Claude Code." : "";
+    steps.push(
+      ok && !wrongPort
+        ? { ok: true, t: `Claude Code reaches Kerf${http ? " over HTTP" : ""}`, d: e.status }
+        : { ok: false, t: http ? "Claude Code's HTTP connection to Kerf fails" : "Claude Code can't start Kerf's bridge", d: `${e.issue || e.status || e.raw.slice(0, 300)}.${wrongPort}${mangled} Press Connect Claude Code${http ? " to switch to Kerf's bridge, which doesn't use HTTP" : ""}.` },
+    );
+    if (http && ok) steps.push({ ok: null, t: "Claude Code uses the HTTP connection set up by hand", d: "It breaks when Kerf's port or token changes. Connect Claude Code switches to Kerf's bridge, which keeps up by itself." });
+    const proxy = ["HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"].filter((k) => process.env[k] || process.env[k.toLowerCase()]);
+    const noProxy = `${process.env.NO_PROXY ?? ""},${process.env.no_proxy ?? ""}`;
+    if (http && proxy.length && !/127\.0\.0\.1|localhost|\*/.test(noProxy))
+      steps.push({ ok: null, t: `A proxy is set (${proxy.join(", ")})`, d: "Claude Code sends even 127.0.0.1 through it unless NO_PROXY lists 127.0.0.1. Kerf's bridge isn't affected." });
+  } else steps.push({ ok: false, t: "Claude Code's kerf isn't Kerf's own connection", d: `It is ${describe(user)}. Press Connect Claude Code to replace it.` });
+  if (folders.length)
+    steps.push({ ok: false, t: folders.length === 1 ? "A folder has an old Kerf connection of its own" : `${folders.length} folders have old Kerf connections of their own`, d: `${folders.length === 1 ? "It wins" : "They win"} over Kerf's connection when Claude Code starts in ${folders.join(", ")}. Connect Claude Code removes ${folders.length === 1 ? "it" : "them"}.` });
+  const where = placeWarning();
+  if (where) steps.push(where);
+  if (lastConnect) steps.push({ ok: true, t: `Last connection: ${lastConnect.client}`, d: new Date(lastConnect.at).toLocaleTimeString() });
+  return done();
+}
+
+/** A Kerf that moved (a new install folder, a Mac app dragged elsewhere) puts its Claude Code connection right by itself. */
+async function keepRegistrationCurrent() {
+  const cc = settings.claudeCode;
+  const spec = bridgeSpec();
+  if (!cc.enabled || !cc.registered || (cc.registered.command === spec.command && JSON.stringify(cc.registered.args) === JSON.stringify(spec.args))) return;
+  const cli: ClaudeCli | null = await findClaude(homedir());
+  if (!cli) return;
+  const r = await register(cli, spec, homedir());
+  if (r.steps.some((s) => s.t === "Added Kerf to Claude Code")) {
+    cc.registered = { command: spec.command, args: spec.args };
+    saveSettings(userData, settings);
+  }
 }
 
 // ---------- start ----------
@@ -410,7 +612,7 @@ app.whenReady().then(() => {
     gate = new Gate(userData, (s) => createWindow(partition(s.account.partition)), closeWindow);
     void gate.start();
   }
-  if (settings.claudeCode.enabled && !SMOKE) void startClaudeCode();
+  if (settings.claudeCode.enabled && !SMOKE) void startClaudeCode().then(keepRegistrationCurrent);
   app.on("activate", () => {
     if (BrowserWindow.getAllWindows().length) return;
     const s = gate?.controller.session;

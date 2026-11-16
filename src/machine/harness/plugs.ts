@@ -10,10 +10,12 @@
 // along the line of contacts. Parts without an entry get a plug placed from
 // their geometry class, so every design draws, just less exactly.
 
+import { SPACE_PLUGS } from "./spacePlugs";
 import type { V3 } from "../../kernel/recipe";
 import type { CatalogPart, PinDef } from "../types";
 import { pinSpots } from "../boards3d/pins";
 import { FIELD_PLUGS } from "./fieldPlugs";
+import { DRONE_PLUGS } from "./dronePlugs";
 
 export type PlugKind =
   /** JST XH 2.50 mm: printer board headers, stepper and fan leads */
@@ -30,6 +32,8 @@ export type PlugKind =
   | "ring"
   | "usb_c"
   | "usb_micro"
+  /** USB-A plug on a cable, into a computer's socket */
+  | "usb_a"
   /** XT60 battery connector */
   | "xt60"
   /** a lead that leaves the part itself (fans, heater cartridges, sensors) */
@@ -47,7 +51,9 @@ export type PlugKind =
   /** a stripped end in a lever connector (Wago 221) */
   | "lever"
   /** a stripped or tinned end clamped in a screw terminal, with no ferrule */
-  | "bare";
+  | "bare"
+  /** U.FL (IPEX MHF1) micro coax plug pressed onto its socket: antennas, a digital FPV camera's coax */
+  | "ufl";
 
 export interface PlugSpec {
   kind: PlugKind;
@@ -79,6 +85,7 @@ export const PITCH: Record<PlugKind, number> = {
   ring: 8,
   usb_c: 0,
   usb_micro: 0,
+  usb_a: 0,
   xt60: 7.2,
   lead: 1.6,
   solder: 4,
@@ -88,6 +95,7 @@ export const PITCH: Record<PlugKind, number> = {
   sh: 1.0,
   lever: 5.6,
   bare: 5.0,
+  ufl: 0,
 };
 
 /** Names shown when a plug is picked. */
@@ -100,15 +108,17 @@ export const PLUG_NAME: Record<PlugKind, string> = {
   ring: "ring terminal",
   usb_c: "USB-C",
   usb_micro: "micro-USB",
+  usb_a: "USB-A",
   xt60: "XT60",
   lead: "the part's own lead",
   solder: "soldered to the pad",
   lug: "soldered to the lug",
   barrel: "5.5 × 2.1 mm DC barrel plug",
   spade: "6.3 mm spade",
-  sh: "STEMMA QT plug (JST SH 1.0 mm)",
+  sh: "JST SH 1.0 mm plug (STEMMA QT, Qwiic)",
   lever: "stripped end in the lever connector",
   bare: "bare end in the screw terminal",
+  ufl: "U.FL coax plug",
 };
 
 const X: V3 = [1, 0, 0];
@@ -261,6 +271,8 @@ const NAU: PlugTable = { ...qtPlugs("QT1", [-12.65, 0.6, 3.1], NX, Y), ...qtPlug
 /** Plugs for catalog parts, by catalog id and pin (or spot) id. */
 export const PLUGS: Record<string, PlugTable> = {
   ...FIELD_PLUGS,
+  ...DRONE_PLUGS,
+  ...SPACE_PLUGS,
   esp32_devkitc: devkitcPins(),
   waveshare_st3215: BUS_SERVO,
   // Bus Servo Adapter (A) (42 × 33, top at 1.6): supply screw terminal on the -X edge, the UART header along the
@@ -523,6 +535,20 @@ export function plugFor(part: CatalogPart, pinId: string, peer?: CatalogPart, sp
   const i = part.pins.indexOf(pin);
   const n = part.pins.length;
   switch (part.geom.g) {
+    case "depth_camera":
+      // the USB-C socket in the +X end, half way back (geometryLegged.ts)
+      return { kind: "usb_c", at: [num(d, "w", 90) / 2, 0, num(d, "d", 25) / 2], out: X, row: Y, ways: 1 };
+    case "jetson_devkit": {
+      // the ports along the -Y edge (geometryLegged.ts): two stacks of two USB-A, and the DC jack
+      const top = 3.2 + num(d, "t", 1.6);
+      const y = -num(d, "d", 79) / 2 - 1.5;
+      const usb = /^USB(\d)$/.exec(pinId);
+      if (usb) {
+        const k = Number(usb[1]) - 1;
+        return { kind: "usb_a", at: [k < 2 ? -8.5 : 9.5, y, top + (k % 2 ? 4.9 : 12.6)], out: NY, row: X, ways: 1 };
+      }
+      return { kind: "barrel", at: [-40, y, top + 6.2], out: NY, row: X, ways: 1 };
+    }
     case "board": {
       // on the header pin or terminal contact drawn on the board, when it has them
       const spot = pinSpots(part).get(pinId);

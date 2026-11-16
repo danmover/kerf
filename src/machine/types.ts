@@ -30,6 +30,11 @@ export interface PinDef {
   id: string;
   /** label printed on the part, e.g. "5V", "B+" */
   label?: string;
+  /**
+   * The stack connector the pin is on ("pc104"): boards stacked on one another join it to the pin in the same place
+   * (the same label) on the next board through the connector, so a net between them needs no wire.
+   */
+  stack?: string;
   type: PinType;
   /** volts: logic level (io/out), supply voltage (pwr_out/pwr_rail), rating (motor) */
   v?: number;
@@ -175,7 +180,14 @@ export type CatalogKind =
   | "amplifier"
   | "display"
   | "knob"
-  | "circuit_board";
+  | "circuit_board"
+  // FPV quad parts (catalog/drone.ts)
+  | "propeller"
+  | "vtx"
+  | "camera"
+  | "antenna"
+  | "receiver"
+  | "buzzer";
 
 /** Geometry classes. Each generator in geometry.ts reads the numbers it documents. */
 export type GeomClass =
@@ -190,6 +202,12 @@ export type GeomClass =
   | "servo"
   // serial bus servo: a flat case with an output horn and an idler horn on one axis (geometryBusServo.ts)
   | "bus_servo"
+  // legged-robot parts (geometryLegged.ts): an AK-series actuator, a depth camera, a Jetson kit, an ISO relay, a flanged HTD pulley
+  | "qdd"
+  | "depth_camera"
+  | "jetson_devkit"
+  | "auto_relay"
+  | "htd_pulley"
   | "actuator"
   | "box"
   | "extrusion"
@@ -218,7 +236,30 @@ export type GeomClass =
   | "led"
   | "disc"
   // differential pressure sensor: a housing with two tube ports and a screw lug
-  | "dp_sensor";
+  | "dp_sensor"
+  // FPV quad parts (geometryDrone.ts): a 22xx motor drawn as built, a moulded prop, a digital video camera and air
+  // unit, antennas, a nano receiver, a GNSS board, a buzzer and a capacitor on its own legs
+  | "fpv_motor"
+  | "prop"
+  | "fpv_cam"
+  | "fpv_vtx"
+  | "fpv_antenna"
+  | "fpv_rx"
+  | "fpv_gps"
+  | "fpv_buzzer"
+  | "radial_cap"
+  // spacecraft hardware (geometrySpace.ts): solar panels cell by cell, a telescope, a star tracker, a deployable
+  // antenna, a patch antenna, an ADCS module, a battery board, microswitches, a sun sensor and a burn-wire hold-down
+  | "space_panel"
+  | "space_telescope"
+  | "space_tracker"
+  | "space_ants"
+  | "space_patch"
+  | "space_adcs"
+  | "space_bp4"
+  | "space_switch"
+  | "space_sun"
+  | "space_holddown";
 
 export interface BoardFeature {
   kind: "usb" | "jack" | "header" | "terminal" | "chip" | "heatsink" | "cap" | "socket" | "module";
@@ -242,6 +283,13 @@ export interface GeomSpec {
   /** mounting hole centres relative to the part's local origin (board centre, motor face centre) */
   holes?: [number, number][];
   hole_d?: number;
+  /** space_panel: the holes are countersunk for flat-head screws, to this diameter at the top face */
+  csink?: number;
+  /**
+   * how the wiring router sees the part: "exact" for one whose solids are mostly open (a telescope's hollow barrel,
+   * a module's corner spacers), so the cables can use the room round it; filled boxes otherwise
+   */
+  route?: "exact";
   features?: BoardFeature[];
   color?: string;
   /** colour of the secondary solid (heatsink, gearbox, wrap) */
@@ -458,6 +506,8 @@ export interface NetDef {
   width?: number;
   /** fill the board's free copper with this net (true), or never pour it (false) */
   pour?: boolean;
+  /** wire the pins one to the next in the order given (a CAN or RS-485 bus), not as a star from the first */
+  chain?: boolean;
   span: Span;
 }
 

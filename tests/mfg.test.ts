@@ -364,6 +364,21 @@ part rounded { process: mfg.cnc_mill(tool_d: 3) material: "Aluminum 6061" body b
     expect(find("rounded", "inside-corners")?.status).toBe("pass");
   });
 
+  it("does not count a blind hole's flat floor as an inside corner for the side setups", () => {
+    const { find } = check(`
+part plate { process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y, Z, -Z]) material: "Aluminum 6061" body box(8, 100, 60) cut cylinder(d: 3.3, h: 12, at: (0, 50, 30), dir: -Y) cut cylinder(d: 2.5, h: 8, at: (0, 20, 60), dir: -Z) }
+`);
+    expect(find("plate", "inside-corners")?.status).toBe("pass");
+  });
+
+  it("passes a pocket's floor edges, which the setup facing the floor cuts sharp, and still fails its walls' corners", () => {
+    // a 4 mm deep pocket in the +Y face of a 10 mm plate, its outline drawn in (x, z)
+    const part = (r: string) =>
+      `part plate { process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z]) material: "Aluminum 6061" body box(100, 10, 60) cut extrude(polygon([(-20, 15), (20, 15), (20, 45), (-20, 45)]${r}), 4.01, at: (0, 5.01, 0), dir: -Y) }`;
+    expect(check(part(", r: 4")).find("plate", "inside-corners")?.status).toBe("pass");
+    expect(check(part("")).find("plate", "inside-corners")?.status).toBe("fail");
+  });
+
   it("asks for another setup for a side hole, and passes once it has one", () => {
     const part = (setups: string) => `part blk { process: mfg.cnc_mill(setups: ${setups}) material: "Aluminum 6061" body box(60, 40, 20) cut cylinder(d: 6, h: 80, at: (-40, 0, 10), dir: X) }`;
     const r = check(part("[Z, -Z]")).find("blk", "reach")!;

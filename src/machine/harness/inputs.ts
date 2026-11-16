@@ -50,13 +50,16 @@ const isFastener = (p: EvalPart) => !!p.fastener || FASTENER_KINDS.has(p.libKind
 const BORED_KINDS = new Set(["bearing", "nut", "insert", "spur_gear", "spring", "band", "seal", "linear_bearing", "coupler", "pulley"]);
 
 /** The box a bought part is filled as, or undefined for a made part or one marked as its exact shape. */
-export const solidBox = (p: EvalPart, bbox: [V3, V3]) => (p.kind === "component" && !BORED_KINDS.has(p.libKind ?? "") ? bbox : undefined);
+export const solidBox = (p: EvalPart, bbox: [V3, V3], exact = false) => (p.kind === "component" && !BORED_KINDS.has(p.libKind ?? "") && !exact ? bbox : undefined);
 
 /** Every visible solid with a mesh, in the form the router and checks take. */
 export function solidsInput(model: Model, mesh: MeshLookup, mounts = mountParts(model)): { geos: SolidGeometry[]; placed: (SolidPlaced & { box?: [V3, V3] })[] } {
   const geoIndex = new Map<string, number>();
   const geos: SolidGeometry[] = [];
   const placed: (SolidPlaced & { box?: [V3, V3] })[] = [];
+  // the instances of catalog parts that ask to be routed round by their exact shape (every solid of the instance)
+  const exact = new Set<string>();
+  for (const p of model.parts) if (p.kind === "component" && p.bom?.catalogId && catalogPart(p.bom.catalogId)?.geom.route === "exact") exact.add(instanceOf(p));
   for (const p of model.parts) {
     if (p.hidden) continue;
     const m = mesh(p.hash);
@@ -69,7 +72,7 @@ export function solidsInput(model: Model, mesh: MeshLookup, mounts = mountParts(
     }
     const comp = instanceOf(p);
     const role: SolidRole = p.kind === "part" ? "made" : isFastener(p) ? "fastener" : mounts.has(comp) ? "mount" : "part";
-    placed.push({ geo: g, m: xformMatrix(p.xf), box: solidBox(p, m.bbox), id: p.id, comp, role, removable: p.removable });
+    placed.push({ geo: g, m: xformMatrix(p.xf), box: solidBox(p, m.bbox, exact.has(comp)), id: p.id, comp, role, removable: p.removable });
   }
   return { geos, placed };
 }
@@ -92,7 +95,15 @@ export function mountSpecs(model: Model, bbox: (hash: string) => [V3, V3] | unde
         const sh = op.shape;
         if ((sh.t === "cyl" || sh.t === "hole") && sh.dir && Math.abs(sh.dir[2]) > 0.99 && Math.abs(sh.dir[0]) < 1e-6 && Math.abs(sh.dir[1]) < 1e-6) holes.push({ x: sh.at[0], y: sh.at[1], d: sh.d });
       }
-    } else body = bbox(p.hash);
+    } else {
+      body = bbox(p.hash);
+      // a body that is not a plain box (a flange on a barrel, a housing with a baffle) still has its holes along Z
+      for (const op of p.recipe.ops) {
+        if (op.op !== "cut") continue;
+        const sh = op.shape;
+        if ((sh.t === "cyl" || sh.t === "hole") && sh.dir && Math.abs(sh.dir[2]) > 0.99 && Math.abs(sh.dir[0]) < 1e-6 && Math.abs(sh.dir[1]) < 1e-6) holes.push({ x: sh.at[0], y: sh.at[1], d: sh.d });
+      }
+    }
     if (!body) continue;
     const thin = body[1][2] - body[0][2] <= 3.2;
     out.push({ comp, partId: id, label: p.label, m: xformMatrix(p.xf), body, board: thin, holes, held });
@@ -108,6 +119,17 @@ export function screwSpecs(model: Model): ScrewSpec[] {
     const length = Number(/×\s*([\d.]+)/.exec(p.bom?.description ?? "")?.[1] ?? /×\s*([\d.]+)/.exec(p.label)?.[1] ?? 10);
     const d = Number(/M(\d+(?:[._]\d+)?)/.exec(p.fastener.size)?.[1]?.replace("_", ".") ?? 3);
     out.push({ id: p.id, seat: applyXforms([0, 0, 0], p.xf), axis: applyXformsToDir([0, 0, 1], p.xf), length, d });
+  }
+  // a male-female standoff's stud holds the board it passes through like a screw: it runs down from the standoff's
+  // bottom face (a PC/104 stack, each standoff's stud through a board into the standoff under it)
+  for (const p of model.parts) {
+    if (p.hidden || p.libKind !== "standoff") continue;
+    const desc = p.bom?.description ?? "";
+    const stud = /\(([\d.]+) mm stud\)/.exec(desc);
+    if (!stud) continue;
+    const d = Number(/M(\d+(?:[._]\d+)?)/.exec(desc)?.[1]?.replace("_", ".") ?? 3);
+    const up = applyXformsToDir([0, 0, 1], p.xf);
+    out.push({ id: p.id, seat: applyXforms([0, 0, 0], p.xf), axis: [-up[0], -up[1], -up[2]], length: Number(stud[1]), d });
   }
   return out;
 }

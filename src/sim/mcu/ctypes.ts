@@ -38,8 +38,8 @@ export type CType =
   | { k: "enum"; name: string; base: CType }
   | { k: "fn"; ret: CType; params: CType[]; variadic?: boolean }
   | { k: "ref"; to: CType }
-  /** objects of library classes (Servo); behaviour lives in the runtime */
-  | { k: "class"; name: string };
+  /** objects of library classes (Servo); behaviour lives in the runtime. targs: a class template's arguments (FlexCAN_T4<CAN1, RX_SIZE_256, TX_SIZE_16>) */
+  | { k: "class"; name: string; targs?: number[] };
 
 export const VOID: CType = { k: "void" };
 export const BOOL: CType = { k: "bool" };

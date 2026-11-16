@@ -106,6 +106,13 @@ export function plugBody(p: MeshBuilder, m: MeshBuilder, f: Frame, look: PlugLoo
       p.cyl(f, 0, 0, 19, 23, 2.6, BLACK, 14, "z", 2.1);
       return;
     }
+    case "usb_a": {
+      // the steel tongue shell in the socket, the moulded grip with its strain relief
+      m.box(f, -6, 6, -2.25, 2.25, -12, 0.2, TIN);
+      p.box(f, -8, 8, -4.2, 4.2, 0, 24, BLACK);
+      p.cyl(f, 0, 0, 24, 28, 2.8, BLACK, 14, "z", 2.3);
+      return;
+    }
     case "usb_micro": {
       m.box(f, -3.5, 3.5, -0.9, 0.9, -5, 0.2, TIN);
       p.box(f, -5.3, 5.3, -3, 3, 0, 14.5, BLACK);
@@ -163,6 +170,13 @@ export function plugBody(p: MeshBuilder, m: MeshBuilder, f: Frame, look: PlugLoo
       p.box(f, -w, w, -1.45, 1.45, 0, 4.6, "#2a2c31");
       p.box(f, -w + 0.5, w - 0.5, 1.45, 1.75, 0.6, 3.6, "#2a2c31");
       for (let i = 0; i < Math.max(spec.ways ?? n, n); i++) p.box(f, -span / 2 + i * pitch - 0.3, -span / 2 + i * pitch + 0.3, -0.45, 0.45, 4.6, 4.68, "#0f1012");
+      return;
+    }
+    case "ufl": {
+      // a U.FL plug: the gold cup pressed over the socket and the little moulded body the coax leaves sideways
+      m.cyl(f, 0, 0, -0.9, 0.2, 1.0, GOLD, 16);
+      p.box(f, -1.3, 1.3, -1.3, 1.3, 0.2, 1.4, "#e9e3d2");
+      m.box(f, -0.9, 0.9, -0.9, 0.9, 1.4, 2.4, TIN);
       return;
     }
     case "lever":

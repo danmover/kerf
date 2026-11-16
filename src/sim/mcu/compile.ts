@@ -266,7 +266,7 @@ class Compiler {
       case "fn":
         return null;
       case "class":
-        return newClassInstance(t.name, this.ctx);
+        return newClassInstance(t.name, this.ctx, t.targs);
       default:
         return 0;
     }

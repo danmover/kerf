@@ -10,7 +10,10 @@ import { footprintSolids } from "./catalog/footprints";
 import { THREADS, type ThreadSpec } from "../library/standards";
 import { EDF_STUB, edfLeadExit } from "./harness/plugs";
 import { busServoGeometry } from "./geometryBusServo";
+import { leggedGeometry } from "./geometryLegged";
 import { deskSupplyGeometry, endoscopeGeometry } from "./geometryBenchParts";
+import { fpvAntennaGeometry, fpvBuzzerGeometry, fpvCamGeometry, fpvGpsGeometry, fpvMotorGeometry, fpvRxGeometry, fpvVtxGeometry, propGeometry, radialCapGeometry } from "./geometryDrone";
+import { spaceGeometry } from "./geometrySpace";
 
 const Z0: V3 = [0, 0, 0];
 const ZP: V3 = [0, 0, 1];
@@ -269,6 +272,13 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
   const g = p.geom;
   const d = g.dims;
   switch (g.g) {
+    // legged-robot parts: actuators, depth camera, Jetson kit, relay, HTD pulley (geometryLegged.ts)
+    case "qdd":
+    case "depth_camera":
+    case "jetson_devkit":
+    case "auto_relay":
+    case "htd_pulley":
+      return leggedGeometry(p)!;
     // board: w (X), d (Y), t (thickness). `at` is the centre of the underside.
     // features sit on the top face; holes are through the board.
     case "board": {
@@ -785,6 +795,25 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       };
     }
 
+    // FPV quad parts drawn as the real products (geometryDrone.ts)
+    case "fpv_motor":
+      return fpvMotorGeometry(p);
+    case "prop":
+      return propGeometry(p);
+    case "fpv_cam":
+      return fpvCamGeometry(p);
+    case "fpv_vtx":
+      return fpvVtxGeometry(p);
+    case "fpv_antenna":
+      return fpvAntennaGeometry(p);
+    case "fpv_rx":
+      return fpvRxGeometry(p);
+    case "fpv_gps":
+      return fpvGpsGeometry(p);
+    case "fpv_buzzer":
+      return fpvBuzzerGeometry(p);
+    case "radial_cap":
+      return radialCapGeometry(p);
     // bus_servo: a serial bus servo with an output horn and an idler horn (geometryBusServo.ts)
     case "bus_servo":
       return busServoGeometry(p);
@@ -794,6 +823,19 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
       return deskSupplyGeometry(p);
     case "endoscope":
       return endoscopeGeometry(p);
+
+    // spacecraft hardware: solar panels, telescope, star tracker, antennas, ADCS, battery board, switches (geometrySpace.ts)
+    case "space_panel":
+    case "space_telescope":
+    case "space_tracker":
+    case "space_ants":
+    case "space_patch":
+    case "space_adcs":
+    case "space_bp4":
+    case "space_switch":
+    case "space_sun":
+    case "space_holddown":
+      return spaceGeometry(p)!;
 
     // box: batteries, power supplies, modules. w (X), d (Y), h (Z), r corner
     // radius; `at` is the centre of the bottom face. band: a wrap band height.

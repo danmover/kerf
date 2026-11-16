@@ -4,6 +4,7 @@
 
 import { create } from "zustand";
 import * as db from "../persist/db";
+import { clearKeptMeshes } from "../persist/geometryCache";
 import type { BranchRecord, ProjectRecord, ScriptRecord, VersionRecord } from "../persist/db";
 import { MAX_SCRIPTS, MAX_SCRIPT_CHARS, cleanScriptName, scriptNameProblem } from "../scripts/records";
 import { MAX_OWN_BLOCKS, MAX_OWN_CHARS, MAX_OWN_FILES, MAX_OWN_FILE_CHARS, OWN_FILE, type FirmwareCodeRecord } from "../machine/firmware/ownCode";
@@ -764,6 +765,7 @@ export async function saveThumbnail(dataUrl: string) {
 
 export async function clearAllData() {
   await db.clearEverything();
+  await clearKeptMeshes();
   forgetAllRuns();
   setImports([]);
   set({ projects: [], current: null, versions: [], undo: [], redo: [] });

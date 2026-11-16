@@ -10,6 +10,7 @@ import { MODELLED_VECTORS } from "../mcu/registers";
 import type { ProbeHooks } from "./probes";
 import { AvrChip, Esp32Timers, type ChipTimers, type ChipVector } from "./timers";
 import { SpiBus } from "./spi";
+import type { CanFrame, CanPeer } from "./akMotor";
 
 /** What the board needs from the electrical plant around it. */
 export interface PlantPort {
@@ -46,6 +47,24 @@ export interface SerialLine {
 export interface UartPeer {
   /** a byte from the chip, complete at t (seconds); when it ends a request, the answer and how long after t it starts (seconds) */
   byte(b: number, t: number): { after: number; bytes: number[] } | null;
+}
+
+/** one CAN port of the chip: its bus rate, when the wire is next free, frames waiting for it, frames received */
+interface CanPort {
+  baud: number;
+  tx: number;
+  rx: number;
+  peer?: CanPeer;
+  mailboxes: number;
+  rxSize: number;
+  /** cycle the wire is free from */
+  busyUntil: number;
+  /** cycles at which the frames in the transmit mailboxes leave them */
+  pending: number[];
+  rxQueue: { t: number; f: CanFrame }[];
+  /** frames the receive queue had no room for */
+  lost: number;
+  warned: boolean;
 }
 
 interface Uart {
@@ -182,6 +201,8 @@ export class SimHal implements Hal {
   /** Serial1, Serial2: each on its own pins, with whatever the design wires to them */
   private uarts = new Map<number, Uart>();
   private uartLinks: { tx: number; rx: number; peer: UartPeer }[] = [];
+  private canLinks: { tx: number; rx: number; peer: CanPeer }[] = [];
+  private cans = new Map<number, CanPort>();
   /** bytes sent on Serial1 and Serial2 */
   uartBytes = 0;
 
@@ -1150,6 +1171,81 @@ export class SimHal implements Hal {
   /** put something on a pair of UART pins (a servo bus adapter): it sees what the chip sends on tx and answers on rx */
   attachUart(tx: number, rx: number, peer: UartPeer) {
     this.uartLinks.push({ tx, rx, peer });
+  }
+
+  // ---------- CAN: a transceiver on a port's pins, and the actuators on its bus ----------
+
+  /** put a bus on a pair of CAN pins (a transceiver's TX and RX): it sees each frame the chip sends and answers */
+  attachCan(tx: number, rx: number, peer: CanPeer) {
+    this.canLinks.push({ tx, rx, peer });
+  }
+
+  canBegin(port: number, baud: number, rxSize: number, txMailboxes: number) {
+    const ports = this.board.can ?? [];
+    const d = ports[port - 1];
+    if (!d) {
+      this.fault(`CAN${port} does not exist on the ${this.board.name}${ports.length ? `: it has ${ports.map((_, i) => `CAN${i + 1}`).join(", ")}` : ": it has no CAN controller"}`, "firmware", 0);
+      return;
+    }
+    const link = this.canLinks.find((l) => l.tx === d.tx);
+    const peer = link && link.rx === d.rx ? link.peer : undefined;
+    this.cans.set(port, { baud: baud || 1_000_000, tx: d.tx, rx: d.rx, peer, mailboxes: Math.max(1, txMailboxes), rxSize: Math.max(2, rxSize), busyUntil: 0, pending: [], rxQueue: [], lost: 0, warned: false });
+  }
+
+  canBaud(port: number, baud: number) {
+    const c = this.cans.get(port);
+    if (c && baud > 0) c.baud = baud;
+  }
+
+  /** a frame's time on the wire in cycles: 125 bits for 8 data bytes with typical stuffing and the gap after it */
+  private canCycles(c: CanPort, len: number) {
+    return Math.round(((125 - 8 * (8 - len)) * this.fcpu) / c.baud);
+  }
+
+  canWrite(port: number, f: CanFrame): boolean {
+    const c = this.cans.get(port);
+    if (!c) {
+      this.fault(`CAN${port} is written before begin(): nothing goes out`, "firmware", 0);
+      return false;
+    }
+    while (c.pending.length && c.pending[0] <= this.cyc) c.pending.shift();
+    if (c.pending.length >= c.mailboxes) return false;
+    const end = Math.max(this.cyc, c.busyUntil) + this.canCycles(c, f.len);
+    if (!c.peer) {
+      // nobody on the wire acknowledges it: the controller sends it again and again, and the mailbox never empties
+      c.pending.push(Infinity);
+      if (!c.warned) {
+        c.warned = true;
+        this.fault(`CAN${port}: no transceiver and bus on its pins (${pinLabel(this.board, c.tx)} and ${pinLabel(this.board, c.rx)}), so no frame is ever acknowledged`, "firmware", 0);
+      }
+      return true;
+    }
+    c.busyUntil = end;
+    c.pending.push(end);
+    for (const a of c.peer.frame(f, end / this.fcpu)) {
+      // each answer waits for the wire
+      const s = Math.max(end + Math.round(a.after * this.fcpu), c.busyUntil);
+      const e = s + this.canCycles(c, a.frame.len);
+      c.busyUntil = e;
+      const waiting = c.rxQueue.length;
+      if (waiting >= c.rxSize) c.lost++;
+      else c.rxQueue.push({ t: e, f: a.frame });
+    }
+    return true;
+  }
+
+  canRead(port: number) {
+    const c = this.cans.get(port);
+    if (!c || !c.rxQueue.length || c.rxQueue[0].t > this.cyc) return null;
+    const { t, f } = c.rxQueue.shift()!;
+    return { ...f, ts: Math.round((t / this.fcpu) * c.baud) };
+  }
+
+  /** frames each CAN port's receive queue dropped */
+  canLost(): number {
+    let n = 0;
+    for (const c of this.cans.values()) n += c.lost;
+    return n;
   }
 
   private uartBegin(port: number, baud: number, rx: number, tx: number) {

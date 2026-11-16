@@ -45,3 +45,24 @@ export class ErrorBoundary extends Component<{ children: ReactNode; label: strin
     );
   }
 }
+
+/**
+ * For a layer drawn over the 3D view (results, wiring, a sketch's panels, a card). When it fails it is left out and
+ * logged, and the 3D view under it carries on: under the 3D view's own boundary, one failing layer took the whole
+ * view away. It tries again when `retry` changes (the next build of the design).
+ */
+export class LayerBoundary extends Component<{ children: ReactNode; label: string; retry?: unknown }, State> {
+  state: State = { error: null };
+  static getDerivedStateFromError(error: Error): State {
+    return { error };
+  }
+  componentDidCatch(error: Error) {
+    console.error(`[kerf] ${this.props.label} failed; the 3D view carries on without it`, error);
+  }
+  componentDidUpdate(prev: { retry?: unknown }) {
+    if (this.state.error && prev.retry !== this.props.retry) this.setState({ error: null });
+  }
+  render() {
+    return this.state.error ? null : this.props.children;
+  }
+}

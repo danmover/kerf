@@ -14,6 +14,8 @@ import type { Board } from "../mcu/board";
 import { ADAPTER, Actuator, BENCH_SUPPLY, Battery, Bno055, DCMotor, EscFan, Lsm6dsox, Mpu6050, Nau7802, Pca9685, Regulator, Servo, Ssd1306, Supply, USB_PORT, quadrature, type ImuNoise } from "./devices";
 import { BRIDGE_OHMS, CoilLoad, Ina3221, PwmFan, Sdp8xx, Tmag5273, stepCoilString, type ShuntTap } from "./fielddevs";
 import { BusServo, ServoBus } from "./busServo";
+import { AkBus, AkMotor } from "./akMotor";
+import { canBuses } from "../../machine/canBuses";
 import { servoBuses } from "../../machine/busServos";
 import { Steppers } from "./steppers";
 import { Sensing } from "./sensors";
@@ -268,6 +270,8 @@ export class Plant implements PlantPort, PlantView {
   servos: ServoSlot[] = [];
   /** smart-servo buses, one for each adapter */
   buses: ServoBus[] = [];
+  /** CAN buses of actuators, one per transceiver */
+  canBuses: AkBus[] = [];
   /** parts whose model reports all they draw, standby included: their supply pin's catalog draw is not added again */
   private selfDrawn = new Set<string>();
   leds: LedSlot[] = [];
@@ -312,6 +316,10 @@ export class Plant implements PlantPort, PlantView {
   t = 0;
   /** called after every step with the time at its end, seconds */
   afterStep?: (t: number) => void;
+  /** models that keep their own state across the run (the spacecraft boards): stepped, recorded and reported with the plant */
+  extras: { tick?(dt: number, t: number): void; channels?(out: Record<string, number>): void; results?(): Record<string, number | boolean | string> }[] = [];
+  /** run once every part is on its bus, before the first step */
+  finishers: (() => void)[] = [];
   private rng: () => number;
   private mcuPart?: CatalogPart;
 
@@ -412,6 +420,12 @@ export class Plant implements PlantPort, PlantView {
           // a smart servo takes packets on its bus, not a pulse on a pin
           const smart = part.specs.bus === "feetech_sts";
           if (smart) this.selfDrawn.add(mc.name);
+          // a CAN actuator (MIT mode) takes frames on its bus
+          if (part.specs.bus === "cubemars_mit") {
+            this.selfDrawn.add(mc.name);
+            this.servos.push({ comp: mc.name, s: new AkMotor(mc.name, part), pin: -1, sig: undefined, vcc: this.netOf(mc.name, "V_PLUS") });
+            break;
+          }
           this.servos.push({ comp: mc.name, s: smart ? new BusServo(mc.name, part) : new Servo(mc.name, part), pin: smart ? -1 : this.signalPin(mc.name, "SIG"), sig: this.netOf(mc.name, "SIG"), vcc: this.netOf(mc.name, "V_PLUS") });
           break;
         }
@@ -472,6 +486,22 @@ export class Plant implements PlantPort, PlantView {
       if (rx < 0) this.notes.push(`${b.adapter} cannot answer: wire its RX pin to a receive pin of the ${this.board.name}.`);
       this.buses.push(bus);
     }
+    // CAN actuators: each transceiver's bus on the controller's CAN port pins, numbered across the buses
+    for (const b of canBuses(machine)) {
+      const bus = new AkBus(b.transceiver, b.baud);
+      for (const m of b.motors) {
+        const dev = this.servos.find((x) => x.comp === m.comp)?.s;
+        if (!(dev instanceof AkMotor)) continue;
+        dev.id = m.id;
+        bus.motors.push(dev);
+      }
+      const tx = this.mcuPinFor(b.transceiver, "CAN_TX");
+      const rx = this.mcuPinFor(b.transceiver, "CAN_RX");
+      const port = (this.board.can ?? []).findIndex((c) => c.tx === tx && c.rx === rx);
+      if (port >= 0) hal.attachCan(tx, rx, bus);
+      else this.notes.push(`${b.transceiver} is not on a CAN port of the ${this.board.name}: wire its CAN_TX to a CTX pin and its CAN_RX to the CRX pin of the same port${this.board.can?.length ? ` (${this.board.can.map((c, i) => `CAN${i + 1}: pins ${c.tx} and ${c.rx}`).join(", ")})` : ""}.`);
+      this.canBuses.push(bus);
+    }
     this.fuseBranches();
     // the data line to each LED board: straight from a controller pin, or on from the board before it in a chain
     for (let pass = 0; pass < this.leds.length; pass++)
@@ -479,7 +509,7 @@ export class Plant implements PlantPort, PlantView {
         if (l.pin >= 0) continue;
         const din = this.netOf(l.comp, "DIN");
         if (!din) continue;
-        const pin = this.mcuPinOfNet.get(din.id);
+        const pin = this.mcuPinOfNet.get(din.id) ?? this.translatedPin(din);
         if (pin !== undefined) {
           l.pin = pin;
           continue;
@@ -547,6 +577,7 @@ export class Plant implements PlantPort, PlantView {
         this.assumptions.push(`Powered from a bench supply at ${bench.volts} V with its current limit at ${bench.amps} A, clipped on ${where}${bench.on && replaced.length ? `, with ${listOf(replaced)} left out` : ""}`);
       }
     }
+    for (const f of this.finishers.splice(0)) f();
     // a regulator's depth down a chain of regulators
     const depth = (g: RegSlot, n = 0): number => {
       const up = n < this.regs.length ? this.regs.find((u) => u !== g && u.vout && g.vin && u.vout.id === g.vin.id) : undefined;
@@ -1104,13 +1135,45 @@ export class Plant implements PlantPort, PlantView {
     if (supplied && !this.opened.has(comp)) {
       this.opened.add(comp);
       this.findDead();
+      this.dropRelays();
       undos.push(() => {
         this.opened.delete(comp);
         this.findDead();
+        this.dropRelays();
       });
     }
     if (!undos.length) return undefined;
     return () => undos.reverse().forEach((u) => u());
+  }
+
+  /**
+   * Relays (a switch with a coil: catalog spec coil_v) follow their coil: one whose coil the open contacts have cut
+   * off drops out and opens its contacts (an e-stop in a relay's coil cuts everything the relay feeds), and pulls
+   * in again when its coil is fed again.
+   */
+  private relaysDropped = new Set<string>();
+  private dropRelays() {
+    for (let pass = 0; pass < 4; pass++) {
+      let changed = false;
+      for (const mc of this.machine.components) {
+        const part = catalogPart(mc.catalogId);
+        if (part?.kind !== "switch" || part.specs.coil_v === undefined) continue;
+        const coil = part.pins.find((x) => x.type === "pwr_in");
+        const n = coil ? this.netOf(mc.name, coil.id) : undefined;
+        const off = !n || this.dead.has(`${n.id}|${mc.name}`);
+        if (off && !this.opened.has(mc.name)) {
+          this.opened.add(mc.name);
+          this.relaysDropped.add(mc.name);
+          changed = true;
+        } else if (!off && this.relaysDropped.has(mc.name)) {
+          this.opened.delete(mc.name);
+          this.relaysDropped.delete(mc.name);
+          changed = true;
+        }
+      }
+      if (!changed) return;
+      this.findDead();
+    }
   }
 
   /** which parts each open contact has cut off: those the wiring no longer reaches from any supply on their net */
@@ -1302,7 +1365,13 @@ export class Plant implements PlantPort, PlantView {
     const vinv = at(vin);
     const bat = this.netOf(this.mcu, "BAT");
     const batv = at(bat);
-    if (v5v !== undefined && v5v > 0.5) {
+    // a board fed straight at its logic voltage (a flight computer on its stack's 3.3 V bus)
+    const v33 = this.board.logicV < 4 ? (this.netOf(this.mcu, "V3V3") ?? this.netOf(this.mcu, "3V3")) : undefined;
+    const v33fed = !!v33 && !!this.mcuPart?.pins.some((x) => (x.id === "V3V3" || x.id === "3V3") && x.type === "pwr_in");
+    if (v33fed && at(v33) !== undefined) {
+      this.mcuV = at(v33) ?? 0;
+      this.mcuSupply = "3.3 V pin";
+    } else if (v5v !== undefined && v5v > 0.5) {
       this.mcuV = v5v;
       this.mcuSupply = "5 V pin";
     } else if (v5 && this.regs.some((g) => g.vout?.id === v5.id)) {
@@ -1407,7 +1476,8 @@ export class Plant implements PlantPort, PlantView {
       const powered = this.volts(s.vcc, s.comp) > 4;
       const us = this.pulse(s.pin, s.sig);
       const mv = moved?.get(s.comp);
-      if (s.s instanceof BusServo) s.s.tick(dt, powered, s.vcc ? (this.netV.get(s.vcc.id) ?? 0) : 0);
+      if (s.s instanceof BusServo || s.s instanceof AkMotor) s.s.tick(dt, powered, s.vcc ? (this.netV.get(s.vcc.id) ?? 0) : 0);
+      if (mv && s.s instanceof AkMotor) s.s.vel = mv.speed * (Math.PI / 180);
       if (mv) s.s.follow(us, mv.pos, mv.load, powered);
       else s.s.step(us, this.world.servoLoad?.(s.comp) ?? 0, powered, dt);
     }
@@ -1454,6 +1524,7 @@ export class Plant implements PlantPort, PlantView {
       const said = s.step(nets.reduce((a, n) => a + carried(n), 0), dt);
       if (said) this.events.push({ t, kind: "warn", text: said });
     }
+    for (const x of this.extras) x.tick?.(dt, t);
     if (this.mcuSupply === "USB") {
       const said = this.usb.step(this.logicLoad, dt);
       if (said) this.events.push({ t, kind: "warn", text: `The ${this.board.name}'s ${said}` });
@@ -1470,7 +1541,7 @@ export class Plant implements PlantPort, PlantView {
         this.hal.powerFail = `fuse ${f.comp} blew`;
       }
     }
-    if (this.mcuV < (this.board.logicV < 4 ? 3.4 : 4)) {
+    if (this.mcuV < (this.mcuSupply === "3.3 V pin" ? 2.9 : this.board.logicV < 4 ? 3.4 : 4)) {
       this.events.push({ t, kind: "warn", text: `The ${this.board.name} browned out: its supply fell to ${this.mcuV.toFixed(1)} V` });
       this.hal.powerFail = "brownout";
     }
@@ -1593,6 +1664,18 @@ export class Plant implements PlantPort, PlantView {
     }
   }
 
+  /** the controller pin behind a level translator's high-side output on this net (B1 from A1, as on a TXB0104) */
+  private translatedPin(n: Net): number | undefined {
+    for (const p of n.pins) {
+      const k = /^B(\d)$/.exec(p.pin.id);
+      if (!k || p.pin.type !== "out") continue;
+      const a = this.netOf(p.comp, `A${k[1]}`);
+      const pin = a && this.mcuPinOfNet.get(a.id);
+      if (pin !== undefined) return pin;
+    }
+    return undefined;
+  }
+
   /**
    * Fuses that share a net each protect a branch of it (an arm each, say). Work out what each one feeds: the
    * pins reached from its far side without going back through it, the far side being the one no supply is on.
@@ -1614,7 +1697,8 @@ export class Plant implements PlantPort, PlantView {
       for (const p of n.pins) {
         if (p.pin.type !== "passive" || !p.pin.through) continue;
         const o = n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through);
-        if (o && p.key < o.key) link(p.key, o.key);
+        // every through pin: a lever nut's C, D and E all go through to A
+        if (o) link(p.key, o.key);
       }
       const source = (p: NetPin) => (p.part.kind === "battery" || p.part.kind === "psu" || p.part.kind === "regulator") && p.pin.type !== "gnd" && p.pin.type !== "pwr_in";
       for (const f of fs) {
@@ -1731,6 +1815,11 @@ export class Plant implements PlantPort, PlantView {
         out[`${s.comp}.load`] = s.s.load;
         out[`${s.comp}.temp`] = s.s.temp;
       }
+      if (s.s instanceof AkMotor) {
+        out[`${s.comp}.amps`] = s.s.current;
+        out[`${s.comp}.torque`] = s.s.torque;
+        out[`${s.comp}.temp`] = s.s.temp;
+      }
     }
     for (const e of this.escs) {
       out[`${e.comp}.amps`] = e.dev.current;
@@ -1776,6 +1865,7 @@ export class Plant implements PlantPort, PlantView {
     }
     if (this.mcuSupply === "USB") out["usb.amps"] = this.usb.current;
     out["logic.volts"] = this.mcuV;
+    for (const x of this.extras) x.channels?.(out);
     this.steppers.channels(out);
     this.sensing.channels(out);
   }
@@ -1806,6 +1896,7 @@ export function fieldResults(plant: Plant): Record<string, number | boolean | st
     r[`${g.comp}.pressure`] = g.dev.last;
   }
   Object.assign(r, plant.steppers.results(), plant.sensing.results());
+  for (const x of plant.extras) Object.assign(r, x.results?.() ?? {});
   return r;
 }
 

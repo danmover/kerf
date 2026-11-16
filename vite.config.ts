@@ -112,6 +112,8 @@ export default defineConfig({
   plugins: [react(), securityPolicy(), appRuntime(pkg.version)],
   define: {
     __APP_VERSION__: JSON.stringify(pkg.version),
+    // a new id for every build (and dev server start): kept geometry from another build is not trusted
+    __BUILD_ID__: JSON.stringify(`${pkg.version}-${Date.now().toString(36)}`),
   },
   worker: {
     format: "es",

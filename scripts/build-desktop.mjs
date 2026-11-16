@@ -26,6 +26,8 @@ const define = { __KERF_TERMS__: JSON.stringify(terms), __KERF_ACCESS_SERVER__: 
 const common = { bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron"], legalComments: "linked", logLevel: "info", define };
 await build({ ...common, entryPoints: ["desktop/main.ts"], outfile: `${out}/main.cjs` });
 await build({ ...common, entryPoints: ["desktop/preload.ts"], outfile: `${out}/preload.cjs` });
+// what Claude Code runs for Kerf after Connect (desktop/bridge.ts), with Kerf's executable as plain Node
+await build({ ...common, entryPoints: ["desktop/bridgeMain.ts"], outfile: `${out}/mcp-bridge.cjs`, define: { ...common.define, __KERF_VERSION__: JSON.stringify(pkg.version) } });
 await build({ ...common, entryPoints: ["desktop/access/gate-preload.ts"], outfile: `${out}/gate-preload.cjs` });
 
 // the sign-in window's page, with Kerf's fonts

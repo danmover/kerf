@@ -20,6 +20,8 @@ contextBridge.exposeInMainWorld("kerfDesktop", {
     info: () => ipcRenderer.invoke("kerf:claude-code-info"),
     setEnabled: (on: boolean) => ipcRenderer.invoke("kerf:set-claude-code", on),
     newToken: () => ipcRenderer.invoke("kerf:claude-code-new-token"),
+    connect: () => ipcRenderer.invoke("kerf:claude-code-connect"),
+    check: () => ipcRenderer.invoke("kerf:claude-code-check"),
     /** Claude Code's tool calls, run by the page; the main process only passes them on */
     serve: (page: { run: (id: number, method: string, params: unknown) => Promise<unknown>; cancel: (id: number) => void }) => {
       ipcRenderer.on("kerf:mcp-cancel", (_e, id: number) => page.cancel(id));
