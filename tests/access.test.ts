@@ -21,7 +21,8 @@ const SERVER = "https://access.test";
 
 function world() {
   const env = devEnv();
-  let clock = Date.parse("2026-11-16T05:00:00Z");
+  // a fixed time well away from the real clock: everything must go by the clock it is given
+  let clock = Date.parse("2026-03-01T09:00:00Z");
   let online = true;
   const fetchFn: Fetch = async (url, init) => {
     if (!online) throw new TypeError("fetch failed");
@@ -31,7 +32,7 @@ function world() {
   /** a computer running Kerf: its own folder, code and (for the owner) key */
   const computer = (name: string, owner = false) => {
     const store = new AccessStore(mkdtempSync(join(tmpdir(), `kerf-access-${name}-`)));
-    const client = new AccessClient(SERVER, fetchFn, owner ? ownerKey : null);
+    const client = new AccessClient(SERVER, fetchFn, owner ? ownerKey : null, 8000, () => clock);
     return new AccessController(store, client, codeFor(name), env.OWNER_PUBLIC_KEY, "Kerf test", () => clock);
   };
   return {
@@ -223,7 +224,7 @@ describe("sign-in", () => {
     // a stand-in server with its own key can't let anyone in
     const fake = new AccessController(
       new AccessStore(mkdtempSync(join(tmpdir(), "kerf-access-fake-"))),
-      new AccessClient(SERVER, async (url, init) => handle(new Request(url, init), other, w.now()), createPrivateKey(other.pem)),
+      new AccessClient(SERVER, async (url, init) => handle(new Request(url, init), other, w.now()), createPrivateKey(other.pem), 8000, w.now),
       codeFor("pc"),
       w.env.OWNER_PUBLIC_KEY,
       "Kerf test",
@@ -234,14 +235,14 @@ describe("sign-in", () => {
     expect(r.ok).toBe(false);
 
     // owner requests from a key that isn't the owner's
-    const intruder = new AccessClient(SERVER, w.fetchFn, generateKeyPairSync("ed25519").privateKey);
+    const intruder = new AccessClient(SERVER, w.fetchFn, generateKeyPairSync("ed25519").privateKey, 8000, w.now);
     const list = await intruder.owner("GET", "/v1/owner/users");
     expect(list.ok ? 0 : (list as { status: number }).status).toBe(401);
     // and a signed request can't be replayed later
     const client = new AccessClient(SERVER, async (url, init) => {
       w.advance(10 * 60_000);
       return handle(new Request(url, init), w.env, w.now());
-    }, createPrivateKey(w.env.pem));
+    }, createPrivateKey(w.env.pem), 8000, w.now);
     expect((await client.owner("GET", "/v1/owner/users")).ok).toBe(false);
   });
 

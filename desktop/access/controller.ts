@@ -121,7 +121,7 @@ export class AccessController {
       await new Promise((res) => setTimeout(res, 800));
       return { ok: false, message: "Wrong username or password.", field: "password" };
     }
-    return { ok: false, message: local ? `${r.message} Kerf can start offline only for 14 days after a sign-in.` : r.message };
+    return { ok: false, message: local ? `${r.message} Kerf can start offline for up to 14 days after its last sign-in.` : r.message };
   }
 
   /** The owner's first sign-in on the owner's PC: makes the owner account on the server, then signs in. */
@@ -218,7 +218,10 @@ export class AccessController {
       return USERNAME.test(user) ? { user, path: `/v1/owner/users/${user}` } : null;
     };
     const done = (r: Reply<{ users?: OwnerUser[]; user?: OwnerUser }>, password?: string): OwnerResult =>
-      r.ok ? { ok: true, users: r.users, user: r.user, ...(password ? { password } : {}) } : { ok: false, message: r.message };
+      r.ok
+        ? { ok: true, users: r.users, user: r.user, ...(password ? { password } : {}) }
+        : // the server turns away owner requests more than 5 minutes off its clock
+          { ok: false, message: !r.offline && r.error === "not-owner" ? `${r.message} If this is the owner's PC, check its clock is set to the right time.` : r.message };
     if (o.op === "list") return done(await this.client.owner("GET", "/v1/owner/users"));
     const p = path(o.user);
     if (!p) return { ok: false, message: "Usernames are 2 to 32 lowercase letters, digits, dots, dashes or underscores, starting with a letter or digit." };

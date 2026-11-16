@@ -33,6 +33,7 @@ export class AccessClient {
     private fetchFn: Fetch,
     private ownerKey: KeyObject | null = null,
     private timeoutMs = 8000,
+    private clock: () => number = Date.now,
   ) {}
 
   get isOwnerComputer() {
@@ -81,7 +82,7 @@ export class AccessClient {
   owner<T>(method: "GET" | "PUT" | "PATCH" | "DELETE", path: string, body?: unknown): Promise<Reply<T>> {
     if (!this.ownerKey) return Promise.resolve({ ok: false, offline: false, status: 401, error: "not-owner", message: "Only the owner's computer can do that." });
     const text = body === undefined ? "" : JSON.stringify(body);
-    const time = String(Date.now());
+    const time = String(this.clock());
     const nonce = randomBytes(18).toString("base64url");
     const sig = sign(null, Buffer.from(ownerMessage(method, path, time, nonce, text)), this.ownerKey).toString("base64url");
     return this.call<T>(method, path, body, { "x-kerf-owner-time": time, "x-kerf-owner-nonce": nonce, "x-kerf-owner-signature": sig });
