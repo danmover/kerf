@@ -8,14 +8,13 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useRef, useState, type ReactElement } from "react";
 import * as THREE from "three";
 import { create } from "zustand";
-import { meshes, useDesign } from "../../core/engine";
+import { madeByDetailWorker, meshes, useDesign } from "../../core/engine";
 import type { EvalPart } from "../../core/model";
 import { commitSource, endComparison } from "../../app/project";
 import { kernel } from "../../kernel/client";
 import type { EntityInfo, PickMeasure, PickRef } from "../../kernel/drawing";
 import type { MeshData } from "../../kernel/build";
-import { hasDetail, xformMatrix, type V3 } from "../../kernel/recipe";
-import { displayBuilt } from "../../kernel/threadMarks";
+import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { drawingFor, openDrawings, useDrawings } from "../../drawing/engine";
 import { addBlockLine, ensureBlock } from "../../drawing/source";
 import { fmtNum } from "../../lang/values";
@@ -610,11 +609,9 @@ function placement(part: EvalPart) {
 export function pickRef(s: Snap, part: EvalPart | undefined): PickRef | null {
   if (!part) return null;
   const p = s.local.clone().applyMatrix4(placement(part));
-  // a detailed mesh comes from the detail worker, whose face and edge ids mean nothing to the main kernel that
-  // measures: send only the point, so the kernel takes the sub-shape nearest it
-  // (a display mesh too, when the detail worker built it: one with knurls or cosmetic steps as well as threads)
-  const e = meshes.get(part.hash);
-  const detailed = hasDetail(part.recipe) && (e?.final === s.data || (e?.display === s.data && displayBuilt(part.recipe)));
+  // a mesh the detail worker made (refined and detailed meshes) has face and edge ids that mean nothing to the main
+  // kernel that measures: send only the point, so the kernel takes the sub-shape nearest it
+  const detailed = madeByDetailWorker(s.data);
   return { hash: part.hash, xf: part.xf, kind: s.kind, id: detailed ? undefined : s.id, point: [p.x, p.y, p.z] };
 }
 

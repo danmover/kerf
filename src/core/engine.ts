@@ -6,7 +6,7 @@ import { create } from "zustand";
 import { parse } from "../lang/parser";
 import { evaluate } from "../lang/evaluator";
 import { detailKernel, kernel, type KernelStatus, type PartResult } from "../kernel/client";
-import type { MeshData } from "../kernel/build";
+import type { MeshData, MeshQuality } from "../kernel/build";
 import type { Interference, ChecksResult } from "../kernel/protocol";
 import { hasDetail, type V3 } from "../kernel/recipe";
 import { displayBuilt, hasThreads } from "../kernel/threadMarks";
@@ -127,6 +127,10 @@ let reportBase: { report: CheckReport; ctx: ReportContext } | null = null;
 let lastKernel: ChecksResult | null = null;
 export const kernelResult = (): ChecksResult | null => lastKernel;
 let activeJobs: { cancel: () => void }[] = [];
+/** meshes the detail worker made: their face and edge ids are that worker's own and mean nothing to the main kernel */
+const detailMade = new WeakSet<MeshData>();
+/** Whether a mesh came from the detail worker (so a pick on it goes to the main kernel as a point, not by id). */
+export const madeByDetailWorker = (m: MeshData): boolean => detailMade.has(m);
 /** geometry hashes whose detailed build failed: not retried until the design is reloaded */
 const detailFailed = new Set<string>();
 let bumpScheduled = false;
@@ -269,6 +273,102 @@ function uniqueParts(model: Model): Map<string, EvalPart> {
   return byHash;
 }
 
+/** How a refine pass went: `after` finishes it once the checks are done; `issues` are the detail pass's warnings. */
+interface Refined {
+  cancelled: boolean;
+  after: () => Promise<boolean>;
+  issues: (live: Map<string, EvalPart>) => Map<string, string>;
+}
+
+/**
+ * The finished look of each part and its detailed geometry: exact-tolerance meshes, display meshes for parts with
+ * threads (the threads drawn on plain cylinders, which the 3D view shows) and the detailed builds (real threads,
+ * knurls, cosmetic steps) for close-ups, photoreal and export. All of it goes to the detail worker as soon as the fast
+ * build is done, so it runs alongside the checks in the main worker and a slow detail build never holds up the next
+ * edit's preview and checks. If the detail worker is unavailable, the main worker makes the meshes after the checks.
+ * Null when every part is refined already.
+ */
+async function refine(rev: number, byHash: Map<string, EvalPart>): Promise<Refined | null> {
+  const shown = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview);
+  const todo = shown.filter((p) => !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
+  const needDisplay = shown.filter((p) => !meshes.get(p.hash)?.display && hasDetail(p.recipe) && hasThreads(p.recipe));
+  if (!todo.length && !needDisplay.length) return null;
+  const issues = new Map(get().detailIssues);
+  const onPart = (r: PartResult) => {
+    const prev = meshes.get(r.hash);
+    if (prev) {
+      if (r.quality === "display") prev.display = r.mesh;
+      else prev.final = r.mesh;
+      bumpMeshes();
+    }
+    if (r.quality === "display") return;
+    if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
+    else issues.delete(r.hash);
+  };
+  const onError = (hash: string, message: string) => {
+    // the simple shape stays on screen; say what the detail pass could not do
+    detailFailed.add(hash);
+    issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
+    // keep it even if this run is cut short: a detail worker that stalls is replaced, which cancels the run
+    set({ detailIssues: new Map(get().detailIssues).set(hash, issues.get(hash)!) });
+    refreshReport();
+  };
+  // a display mesh that can't be made leaves the part as it is: its detailed build comes next and says why
+  const onDisplayError = () => undefined;
+  const item = (p: EvalPart) => ({ hash: p.hash, recipe: p.recipe, label: p.label });
+  const detailed = todo.filter((p) => hasDetail(p.recipe));
+  const plain = todo.filter((p) => !hasDetail(p.recipe));
+  const run = (job: ReturnType<typeof kernel.build>) => {
+    activeJobs.push(job);
+    return job.done;
+  };
+  const result = (cancelled: boolean, after: () => Promise<boolean>): Refined => ({
+    cancelled,
+    after,
+    issues: (live) => {
+      for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
+      return issues;
+    },
+  });
+  // the main worker, after the checks: the meshes only, as the detailed builds need the detail worker
+  const inMain = async () => {
+    const missing = (q: "display" | "final") => (p: EvalPart) => !meshes.get(p.hash)?.[q];
+    for (const p of detailed.filter(missing("final"))) issues.set(p.hash, `The detailed build is unavailable, so the simple shape is shown: ${detailKernel.error}`);
+    const fast = needDisplay.filter((p) => !displayBuilt(p.recipe)).filter(missing("display"));
+    const rest = plain.filter(missing("final"));
+    const jobs: Promise<{ cancelled: boolean }>[] = [];
+    if (fast.length) jobs.push(run(kernel.build(fast.map(item), "display", onPart, onDisplayError)));
+    if (rest.length) jobs.push(run(kernel.build(rest.map(item), "final", onPart, onError)));
+    const results = await Promise.all(jobs);
+    return !results.some((r) => r.cancelled) && get().rev === rev;
+  };
+  if (detailKernel.status === "error") return result(false, inMain);
+  detailKernel.start();
+  // the detail worker needs the imported STEP files the parts build on
+  if ([...todo, ...needDisplay].some((p) => recipeUsesImport(p.recipe))) {
+    await detailImportsLoaded();
+    if (get().rev !== rev) return result(true, async () => false);
+  }
+  // what the view shows first (drawn threads, exact-tolerance plain parts), then the real threads
+  const steps: [EvalPart[], MeshQuality, (hash: string, message: string) => void][] = [
+    [needDisplay, "display", onDisplayError],
+    [plain, "final", onError],
+    [detailed, "final", onError],
+  ];
+  const fromDetail = (r: PartResult) => {
+    detailMade.add(r.mesh);
+    onPart(r);
+  };
+  for (const [parts, quality, err] of steps) {
+    if (!parts.length) continue;
+    const r = await run(detailKernel.build(parts.map(item), quality, fromDetail, err));
+    if (get().rev !== rev) return result(true, async () => false);
+    // the detail worker failed to start or gave up: the main worker makes the meshes after the checks
+    if (r.cancelled) return (detailKernel.status as KernelStatus) === "error" ? result(false, inMain) : result(true, async () => false);
+  }
+  return result(false, async () => true);
+}
+
 async function runPipeline(rev: number, src: string, model: Model, parsed: ReturnType<typeof parse>) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
@@ -332,6 +432,10 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     return runPipeline(rev, src, next, parsed);
   }
 
+  // the meshes the view shows when it settles, and the detailed geometry, start now in the detail worker: they run
+  // alongside the checks rather than after them
+  const refining = refine(rev, byHash).catch(() => null);
+
   // mates pick from the built solids' faces: have the kernel list any not listed yet, then read the design again
   const mated = await withFaces(rev, src, model, parsed);
   if (get().rev !== rev) return;
@@ -379,75 +483,14 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     timings: { ...get().timings, checksMs: performance.now() - tChecks },
   });
 
-  // refine: exact-tolerance meshes here; the detailed geometry (threads, knurls, cosmetic steps) in a worker of its
-  // own, so a slow detail build never holds up the next edit's preview and checks. A part with threads also gets a
-  // display mesh, which the 3D view shows: its threads drawn on plain cylinders rather than built, which is most of
-  // the triangles and most of the detail build's time in a design with many screws
-  const shown = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview);
-  const refine = shown.filter((p) => !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
-  const needDisplay = shown.filter((p) => !meshes.get(p.hash)?.display && hasDetail(p.recipe) && hasThreads(p.recipe));
-  if (refine.length || needDisplay.length) {
-    const issues = new Map(get().detailIssues);
-    const onPart = (r: PartResult) => {
-      const prev = meshes.get(r.hash);
-      if (prev) {
-        if (r.quality === "display") prev.display = r.mesh;
-        else prev.final = r.mesh;
-        bumpMeshes();
-      }
-      if (r.quality === "display") return;
-      if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
-      else issues.delete(r.hash);
-    };
-    const onError = (hash: string, message: string) => {
-      // the simple shape stays on screen; say what the detail pass could not do
-      detailFailed.add(hash);
-      issues.set(hash, `The detailed build failed, so the simple shape is shown: ${message}`);
-      // keep it even if this run is cut short: a detail worker that stalls is replaced, which cancels the run
-      set({ detailIssues: new Map(get().detailIssues).set(hash, issues.get(hash)!) });
-      refreshReport();
-    };
-    // a display mesh that can't be made leaves the part as it is: its detailed build comes next and says why
-    const onDisplayError = () => undefined;
-    const item = (p: EvalPart) => ({ hash: p.hash, recipe: p.recipe, label: p.label });
-    const detailed = refine.filter((p) => hasDetail(p.recipe));
-    const plain = refine.filter((p) => !hasDetail(p.recipe));
-    // display meshes of parts whose only detail is threads are their fast solid, already in the main worker
-    const displayFast = needDisplay.filter((p) => !displayBuilt(p.recipe));
-    const displayDetailed = needDisplay.filter((p) => displayBuilt(p.recipe));
-    // the detail worker needs the imported STEP files that detailed parts build on
-    if ([...detailed, ...displayDetailed].some((p) => recipeUsesImport(p.recipe)) && detailKernel.status !== "error") {
-      await detailImportsLoaded();
-      if (get().rev !== rev) return;
-    }
-    const jobs: Promise<{ cancelled: boolean }>[] = [];
-    const run = (job: ReturnType<typeof kernel.build>) => {
-      activeJobs.push(job);
-      return job.done;
-    };
-    if (displayFast.length) jobs.push(run(kernel.build(displayFast.map(item), "display", onPart, onDisplayError)));
-    if (plain.length) jobs.push(run(kernel.build(plain.map(item), "final", onPart, onError)));
-    if ((detailed.length || displayDetailed.length) && detailKernel.status === "error") {
-      for (const p of detailed) issues.set(p.hash, `The detailed build is unavailable, so the simple shape is shown: ${detailKernel.error}`);
-    } else if (detailed.length || displayDetailed.length) {
-      detailKernel.start();
-      // the display meshes first: they are what the view shows, and they are quick without their threads
-      jobs.push(
-        (async () => {
-          if (displayDetailed.length) {
-            const r = await run(detailKernel.build(displayDetailed.map(item), "display", onPart, onDisplayError));
-            if (r.cancelled || get().rev !== rev) return { cancelled: true };
-          }
-          return detailed.length ? run(detailKernel.build(detailed.map(item), "final", onPart, onError)) : { cancelled: false };
-        })(),
-      );
-    }
-    const results = await Promise.all(jobs);
-    if (results.some((r) => r.cancelled) || get().rev !== rev) return;
-    const live = new Set(byHash.keys());
-    for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
-    set({ detailIssues: issues });
-    // the detail pass adds these to the report
+  // refine: whatever the detail worker could not do (it is unavailable), here after the checks, then the detail
+  // pass's warnings into the report
+  const refined = await refining;
+  if (get().rev !== rev) return;
+  if (refined) {
+    const ok = refined.cancelled ? false : await refined.after();
+    if (!ok || get().rev !== rev) return;
+    set({ detailIssues: refined.issues(byHash) });
     refreshReport();
   }
   set({ stage: "done" });
