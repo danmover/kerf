@@ -50,7 +50,7 @@ export interface WiringSteps {
 }
 
 /** Plugs that only go in one way round: their wires need no telling apart. */
-const KEYED = new Set<PlugKind>(["sh", "xt60", "usb_c", "usb_micro", "xh", "ph", "barrel"]);
+const KEYED = new Set<PlugKind>(["sh", "xt60", "usb_c", "usb_micro", "usb_a", "xh", "ph", "barrel", "ufl"]);
 
 /** What a cut wire needs on its end for each kind of terminal. */
 const FIT: Record<PlugKind, string> = {
@@ -62,15 +62,17 @@ const FIT: Record<PlugKind, string> = {
   ring: "ring crimp",
   usb_c: "USB-C plug",
   usb_micro: "micro-USB plug",
+  usb_a: "USB-A plug",
   xt60: "XT60, soldered",
   lead: "joined to the part's own lead",
   solder: "soldered to the pad",
   lug: "soldered to the lug, under heat-shrink",
   barrel: "DC barrel plug",
   spade: "6.3 mm insulated spade crimp",
-  sh: "STEMMA QT plug",
+  sh: "JST SH 1.0 mm plug",
   lever: "stripped end in the lever",
   bare: "stripped end under the screw",
+  ufl: "U.FL plug, pressed on",
 };
 
 /** Copper area of an AWG size, mm². */

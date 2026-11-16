@@ -156,6 +156,61 @@ export class ServoDrive extends AxisDrive {
 }
 
 /**
+ * A quasi-direct-drive actuator (a CubeMars AK series joint in MIT mode) turning a pivot: its own driver holds
+ * τ = kp (p_des − p) + kd (v_des − v) + τ_ff, within its peak torque, so the joint is a stiff, damped spring the
+ * firmware moves frame by frame over CAN. Out of motor mode (or unpowered) it is back-drivable: only its gearbox
+ * and cogging drag it. Angles and torques are in the actuator's own sense (sign × the joint's).
+ */
+export class QddDrive extends AxisDrive {
+  enabled = false;
+  pDes = 0;
+  vDes = 0;
+  kp = 0;
+  kd = 0;
+  tFf = 0;
+  constructor(
+    name: string,
+    joint: Joint,
+    public sign: number,
+    /** N·m */
+    public tMax: number,
+    /** drag of the gearbox and the motor's cogging, back-driven, N·m */
+    public tf: number,
+  ) {
+    super(name, joint);
+  }
+  build(_s: Solver, dt: number, emit: (r: Row) => void) {
+    const s = this.sign;
+    if (this.enabled && (this.kp > 0 || this.kd > 0)) {
+      const r = this.joint.axisTerms(this.row.reset(), s);
+      const pos = s * this.joint.coord;
+      if (this.kp > 0) {
+        // the spring's rest point carries the feed-forward torque: kp (p_des + τ_ff/kp − p)
+        r.soft(this.kp, this.kd, pos - this.pDes - this.tFf / this.kp, dt);
+        r.target += (this.kd * this.vDes) / (this.kd + dt * this.kp);
+      } else {
+        r.soft(0, this.kd, 0, dt);
+        r.target = this.vDes + this.tFf / this.kd;
+      }
+      r.lo = -this.tMax * dt;
+      r.hi = this.tMax * dt;
+      emit(r);
+    } else if (this.enabled && this.tFf !== 0) emit(this.joint.axisTerms(this.row.reset(), s).push(Math.max(-this.tMax, Math.min(this.tMax, this.tFf)) * dt));
+    if (this.tf > 0) emit(this.joint.axisTerms(this.fr.reset(), 1).friction(this.tf * dt));
+  }
+  after(_s: Solver, dt: number) {
+    const drive = this.row.wasActive ? this.sign * this.row.acc : 0;
+    const fric = this.fr.wasActive ? this.fr.acc : 0;
+    this.joint.axisImpulse += drive + fric;
+    // the torque it gave along the joint's axis (sign × this is its own sense), like the other drives
+    this.load = drive / dt;
+    if (Math.abs(this.load) > this.peak) this.peak = Math.abs(this.load);
+    this.power = this.load * this.joint.speed;
+    this.work += this.power * dt;
+  }
+}
+
+/**
  * A linear actuator (catalog part) on a slider: its speed falls with load to nothing at its stall force; its
  * lead screw holds the load when unpowered until the back-drive force.
  */

@@ -13,8 +13,8 @@ export interface LibClass {
   methods: Record<string, LibMethod>;
   /** `Type name(args);`: builds an instance from constructor arguments */
   construct?: (args: C[], ctx: Ctx, pos: Pos) => C;
-  /** `Type name;`: an instance with no constructor arguments (its default constructor runs at power-up) */
-  make?: (ctx: Ctx) => unknown;
+  /** `Type name;`: an instance with no constructor arguments (its default constructor runs at power-up), with a class template's arguments */
+  make?: (ctx: Ctx, targs?: number[]) => unknown;
   /** `if (obj)`, `!obj`: the class's operator bool (an SD File is true while it is open) */
   truthy?: (obj: unknown) => boolean;
 }

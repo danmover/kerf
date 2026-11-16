@@ -58,6 +58,12 @@ const GROUPS: Record<CatalogKind, string> = {
   led: "Lights",
   magnet: "Electronics",
   coil: "Electronics",
+  propeller: "Drone",
+  vtx: "Drone",
+  camera: "Drone",
+  antenna: "Drone",
+  receiver: "Drone",
+  buzzer: "Drone",
 };
 
 const KIND_DOC: Partial<Record<CatalogKind, string>> = {

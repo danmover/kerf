@@ -85,7 +85,7 @@ export async function callTool(params: { name?: unknown; arguments?: unknown }, 
 
 let serving = false;
 
-/** In the desktop app, answer Claude Code's calls whenever Settings → Claude has them switched on. */
+/** In the desktop app, answer Claude Code's calls whenever Settings → AI has them switched on. */
 export function serveClaudeCode() {
   const cc = desktop()?.claudeCode;
   if (!cc || serving) return;

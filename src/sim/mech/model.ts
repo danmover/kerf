@@ -51,7 +51,7 @@ export interface MechJoint {
 
 export type MechDrive =
   | { kind: "motor"; joint: string; comp: string; sign: number }
-  | { kind: "servo"; joint: string; comp: string; sign: number; /** servo angle at the design pose, deg */ zero: number }
+  | { kind: "servo"; joint: string; comp: string; sign: number; /** servo angle at the design pose, deg */ zero: number; /** it reads its own angle and starts limp (a CAN actuator), so its joint may have a start: */ limpStart?: boolean }
   | { kind: "actuator"; joint: string; comp: string; sign: number; /** stroke at the design pose, mm */ start: number }
   | { kind: "turn"; name: string; joint: string; speed: Schedule; limit: number }
   | { kind: "force"; name: string; joint: string; value: Schedule }

@@ -180,7 +180,14 @@ export type CatalogKind =
   | "amplifier"
   | "display"
   | "knob"
-  | "circuit_board";
+  | "circuit_board"
+  // FPV quad parts (catalog/drone.ts)
+  | "propeller"
+  | "vtx"
+  | "camera"
+  | "antenna"
+  | "receiver"
+  | "buzzer";
 
 /** Geometry classes. Each generator in geometry.ts reads the numbers it documents. */
 export type GeomClass =
@@ -195,6 +202,12 @@ export type GeomClass =
   | "servo"
   // serial bus servo: a flat case with an output horn and an idler horn on one axis (geometryBusServo.ts)
   | "bus_servo"
+  // legged-robot parts (geometryLegged.ts): an AK-series actuator, a depth camera, a Jetson kit, an ISO relay, a flanged HTD pulley
+  | "qdd"
+  | "depth_camera"
+  | "jetson_devkit"
+  | "auto_relay"
+  | "htd_pulley"
   | "actuator"
   | "box"
   | "extrusion"
@@ -224,6 +237,17 @@ export type GeomClass =
   | "disc"
   // differential pressure sensor: a housing with two tube ports and a screw lug
   | "dp_sensor"
+  // FPV quad parts (geometryDrone.ts): a 22xx motor drawn as built, a moulded prop, a digital video camera and air
+  // unit, antennas, a nano receiver, a GNSS board, a buzzer and a capacitor on its own legs
+  | "fpv_motor"
+  | "prop"
+  | "fpv_cam"
+  | "fpv_vtx"
+  | "fpv_antenna"
+  | "fpv_rx"
+  | "fpv_gps"
+  | "fpv_buzzer"
+  | "radial_cap"
   // spacecraft hardware (geometrySpace.ts): solar panels cell by cell, a telescope, a star tracker, a deployable
   // antenna, a patch antenna, an ADCS module, a battery board, microswitches, a sun sensor and a burn-wire hold-down
   | "space_panel"
@@ -482,6 +506,8 @@ export interface NetDef {
   width?: number;
   /** fill the board's free copper with this net (true), or never pour it (false) */
   pour?: boolean;
+  /** wire the pins one to the next in the order given (a CAN or RS-485 bus), not as a star from the first */
+  chain?: boolean;
   span: Span;
 }
 

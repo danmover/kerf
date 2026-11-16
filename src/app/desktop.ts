@@ -29,12 +29,35 @@ export interface ClaudeCodeInfo {
   lastConnect?: { at: number; client: string } | null;
   /** the last time a program was turned away for a missing or old token */
   lastRefused?: { at: number; why: "no-token" | "wrong-token" } | null;
+  /** the local pipe Kerf's bridge connects to, or "" */
+  pipe?: string;
+  /** Kerf added its bridge to Claude Code with Connect */
+  registered?: boolean;
+  /** the terminal command that does what Connect does */
+  bridgeCommand?: string;
+}
+
+/** One line of what Connect did or what Check found: ok true passes, false is what's wrong, null is worth knowing. */
+export interface ClaudeCodeStep {
+  ok: boolean | null;
+  t: string;
+  d?: string;
+}
+
+export interface ClaudeCodeReport {
+  ok: boolean;
+  steps: ClaudeCodeStep[];
+  info: ClaudeCodeInfo;
 }
 
 export interface ClaudeCodeBridge {
   info(): Promise<ClaudeCodeInfo>;
   setEnabled(on: boolean): Promise<ClaudeCodeInfo>;
   newToken(): Promise<ClaudeCodeInfo>;
+  /** turn Kerf's tools on and add Kerf to Claude Code, replacing any old connection */
+  connect(): Promise<ClaudeCodeReport>;
+  /** check every link between Claude Code and Kerf */
+  check(): Promise<ClaudeCodeReport>;
   serve(page: { run(id: number, method: string, params: unknown): Promise<unknown>; cancel(id: number): void }): Promise<void>;
 }
 

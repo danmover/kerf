@@ -3,7 +3,8 @@
 
 import * as R from "replicad";
 import type { Shape3D } from "replicad";
-import { applyXf, bboxOf, buildPartFull, importFaceColors, importFaceted, meshShape, solidVolume, type MeshData } from "./build";
+import { applyXf, bboxOf, buildPartFull, importFaceColors, importFaceted, meshShape, solidVolume, type MeshData, type MeshQuality } from "./build";
+import { displayBuilt, threadMarks, type ThreadMark } from "./threadMarks";
 import { applyXforms, hasDetail, recipeHash, stableStringify, vadd, vscale, type V3, type Xform } from "./recipe";
 import type { BuildItem, ChecksRequest, ChecksResult, ExportItem, InspectRequest, InspectResult, Interference, PlacedItem } from "./protocol";
 import { inspectPart as inspectForReview, solidPieces, type PartInspection } from "./inspect";
@@ -20,7 +21,9 @@ interface CacheEntry {
   shape: Shape3D;
   volume: number;
   bbox: [V3, V3];
-  meshes: Partial<Record<"preview" | "final", MeshData>>;
+  meshes: Partial<Record<MeshQuality, MeshData>>;
+  /** the thread stand-ins in this solid (fast and display builds), for drawing threads on them */
+  threads: ThreadMark[];
   inspection?: PartInspection;
   /** its flat and round faces, for mates */
   faces?: FaceCatalogue;
@@ -65,6 +68,8 @@ export class KernelCore {
   private cache = new Map<string, CacheEntry>();
   /** detailed builds (threads, knurls, cosmetic steps) for final meshes and STEP export */
   private detailCache = new Map<string, CacheEntry>();
+  /** display builds: detailed, but with threads as stand-ins (only parts with threads and other detail) */
+  private displayCache = new Map<string, CacheEntry>();
   private placedCache = new Map<string, { shape: Shape3D; bbox: [V3, V3]; used: number; key: string }>();
   /** overlaps of placed pairs, kept across checks so an edit re-tests only the pairs it moved or changed */
   private pairs = new Map<string, PairResult>();
@@ -84,16 +89,21 @@ export class KernelCore {
     return e;
   }
 
-  /** Build a part. Final quality builds the detailed version when the recipe has detail. */
-  build(item: BuildItem, quality: "preview" | "final" = "preview"): CacheEntry {
-    if (quality === "final" && hasDetail(item.recipe)) {
-      const hit = this.detailCache.get(item.hash);
+  /**
+   * Build a part. Final quality builds the detailed version when the recipe has detail; display quality builds the
+   * detailed version with its threads left as stand-ins when it has other detail too, else it is the fast build.
+   */
+  build(item: BuildItem, quality: MeshQuality = "preview"): CacheEntry {
+    const display = quality === "display" && displayBuilt(item.recipe);
+    if ((quality === "final" && hasDetail(item.recipe)) || display) {
+      const cache = display ? this.displayCache : this.detailCache;
+      const hit = cache.get(item.hash);
       if (hit) {
         hit.used = ++this.tick;
         return hit;
       }
-      const entry = this.make(item, true);
-      this.detailCache.set(item.hash, entry);
+      const entry = this.make(item, display ? "display" : true);
+      cache.set(item.hash, entry);
       this.trim();
       return entry;
     }
@@ -105,21 +115,22 @@ export class KernelCore {
     return entry;
   }
 
-  private make(item: BuildItem, detail: boolean): CacheEntry {
-    const { shape, warnings, features } = buildPartFull(item.recipe, { detail });
+  private make(item: BuildItem, detail: boolean | "display"): CacheEntry {
+    const { shape, warnings, features } = buildPartFull(item.recipe, { detail: detail !== false, threads: detail === true });
     let volume = 0;
     try {
       volume = solidVolume(shape);
     } catch {
       volume = 0;
     }
-    return { shape, volume, bbox: bboxOf(shape), meshes: {}, faceColors: importFaceColors(item.recipe), faceted: importFaceted(item.recipe), used: ++this.tick, features, warnings };
+    const threads = detail === true ? [] : threadMarks(item.recipe, detail === "display");
+    return { shape, volume, bbox: bboxOf(shape), meshes: {}, threads, faceColors: importFaceColors(item.recipe), faceted: importFaceted(item.recipe), used: ++this.tick, features, warnings };
   }
 
-  mesh(hash: string, quality: "preview" | "final"): MeshData {
-    const e = (quality === "final" ? this.detailCache.get(hash) : undefined) ?? this.get(hash);
+  mesh(hash: string, quality: MeshQuality): MeshData {
+    const e = (quality === "final" ? this.detailCache.get(hash) : quality === "display" ? this.displayCache.get(hash) : undefined) ?? this.get(hash);
     if (!e) throw new Error("not built");
-    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors, e.volume, e.faceted);
+    if (!e.meshes[quality]) e.meshes[quality] = meshShape(e.shape, quality, e.faceColors, e.volume, e.faceted, e.threads);
     return e.meshes[quality]!;
   }
 
@@ -182,6 +193,12 @@ export class KernelCore {
         this.detailCache.delete(h);
       }
     }
+    for (const [h, e] of this.displayCache) {
+      if (!k.has(h)) {
+        safeDelete(e.shape);
+        this.displayCache.delete(h);
+      }
+    }
     for (const [key, p] of this.placedCache) {
       if (!k.has(key.split("|")[0])) {
         safeDelete(p.shape);
@@ -192,7 +209,7 @@ export class KernelCore {
   }
 
   private trim() {
-    for (const map of [this.cache, this.detailCache]) {
+    for (const map of [this.cache, this.detailCache, this.displayCache]) {
       if (map.size <= this.maxEntries) continue;
       const sorted = [...map.entries()].sort((a, b) => a[1].used - b[1].used);
       for (const [h, e] of sorted.slice(0, map.size - this.maxEntries)) {

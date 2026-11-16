@@ -4,8 +4,10 @@
 import type { CatalogKind, CatalogPart } from "../types";
 import { AUDIO } from "./audio";
 import { BOARDS } from "./boards";
+import { DRONE } from "./drone";
 import { ELECTRONICS } from "./electronics";
 import { FIELDS } from "./fields";
+import { LEGGED } from "./legged";
 import { LIGHTS } from "./lights";
 import { MODULES } from "./modules";
 import { MOTION } from "./motion";
@@ -14,7 +16,7 @@ import { ROBOTICS } from "./robotics";
 import { SENSING } from "./sensing";
 import { SPACE } from "./space";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...BOARDS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS, ...SENSING, ...MODULES, ...SPACE];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...BOARDS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS, ...SENSING, ...MODULES, ...DRONE, ...LEGGED, ...SPACE];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 
