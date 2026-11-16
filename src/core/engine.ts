@@ -7,6 +7,7 @@ import { parse } from "../lang/parser";
 import { evaluate } from "../lang/evaluator";
 import { detailKernel, kernel, type KernelStatus, type PartResult } from "../kernel/client";
 import type { MeshData, MeshQuality } from "../kernel/build";
+import { keepMesh, keptKey, keptMeshes, type KeptMesh, type KeptQuality } from "../persist/geometryCache";
 import type { Interference, ChecksResult } from "../kernel/protocol";
 import { hasDetail, type V3 } from "../kernel/recipe";
 import { displayBuilt, hasThreads } from "../kernel/threadMarks";
@@ -127,10 +128,15 @@ let reportBase: { report: CheckReport; ctx: ReportContext } | null = null;
 let lastKernel: ChecksResult | null = null;
 export const kernelResult = (): ChecksResult | null => lastKernel;
 let activeJobs: { cancel: () => void }[] = [];
-/** meshes the detail worker made: their face and edge ids are that worker's own and mean nothing to the main kernel */
-const detailMade = new WeakSet<MeshData>();
-/** Whether a mesh came from the detail worker (so a pick on it goes to the main kernel as a point, not by id). */
-export const madeByDetailWorker = (m: MeshData): boolean => detailMade.has(m);
+/**
+ * meshes the main kernel did not make (the detail worker's, or kept from an earlier session): their face and edge ids
+ * are another kernel's and mean nothing to the main one
+ */
+const foreignIds = new WeakSet<MeshData>();
+/** Whether a pick on this mesh must go to the main kernel as a point, its face and edge ids being another kernel's. */
+export const pickByPoint = (m: MeshData): boolean => foreignIds.has(m);
+/** refined meshes kept from earlier sessions, read for this design's parts, waiting for their fast build */
+const kept = new Map<string, { display?: KeptMesh; final?: KeptMesh }>();
 /** geometry hashes whose detailed build failed: not retried until the design is reloaded */
 const detailFailed = new Set<string>();
 let bumpScheduled = false;
@@ -198,6 +204,8 @@ export function loadSource(src: string) {
   faceCats.clear();
   faceCatsByName.clear();
   detailFailed.clear();
+  kept.clear();
+  keptWarnings.clear();
   kernel.evict([]);
   reportBase = null;
   detailKernel.evict([]);
@@ -273,6 +281,46 @@ function uniqueParts(model: Model): Map<string, EvalPart> {
   return byHash;
 }
 
+/**
+ * Read the refined meshes kept from earlier sessions for parts that have none yet. A part takes them once its fast
+ * build is in (see adopt): the main kernel still needs its solid for the checks, but not the refine.
+ */
+async function restoreKept(byHash: Map<string, EvalPart>): Promise<void> {
+  for (const h of [...kept.keys()]) if (!byHash.has(h)) kept.delete(h);
+  const wanted: { hash: string; quality: KeptQuality }[] = [];
+  for (const p of byHash.values()) {
+    if (kept.has(p.hash) || detailFailed.has(p.hash)) continue;
+    const e = meshes.get(p.hash);
+    if (!e?.final) wanted.push({ hash: p.hash, quality: "final" });
+    if (!e?.display && hasDetail(p.recipe) && hasThreads(p.recipe)) wanted.push({ hash: p.hash, quality: "display" });
+  }
+  const found = await keptMeshes(wanted);
+  for (const w of wanted) {
+    const k = found.get(keptKey(w.hash, w.quality));
+    if (!k) continue;
+    foreignIds.add(k.mesh);
+    kept.set(w.hash, { ...kept.get(w.hash), [w.quality]: k });
+    if (meshes.get(w.hash)?.preview) adopt(w.hash);
+  }
+}
+
+/** kept detailed builds' warnings, for the report, until the next refine pass takes them */
+const keptWarnings = new Map<string, string[]>();
+
+/** A part whose fast build is in takes the refined meshes kept for it. */
+function adopt(hash: string) {
+  const k = kept.get(hash);
+  const e = meshes.get(hash);
+  if (!k || !e?.preview) return;
+  kept.delete(hash);
+  if (k.display && !e.display) e.display = k.display.mesh;
+  if (k.final && !e.final) {
+    e.final = k.final.mesh;
+    keptWarnings.set(hash, k.final.warnings ?? []);
+  }
+  bumpMeshes();
+}
+
 /** How a refine pass went: `after` finishes it once the checks are done; `issues` are the detail pass's warnings. */
 interface Refined {
   cancelled: boolean;
@@ -288,12 +336,33 @@ interface Refined {
  * edit's preview and checks. If the detail worker is unavailable, the main worker makes the meshes after the checks.
  * Null when every part is refined already.
  */
-async function refine(rev: number, byHash: Map<string, EvalPart>): Promise<Refined | null> {
+async function refine(rev: number, byHash: Map<string, EvalPart>, restoring: Promise<void>): Promise<Refined | null> {
+  // meshes kept from an earlier session go first: what they cover is not built again
+  await restoring;
+  if (get().rev !== rev) return null;
+  for (const h of byHash.keys()) adopt(h);
+  const issues = new Map(get().detailIssues);
+  const result = (cancelled: boolean, after: () => Promise<boolean>): Refined => ({
+    cancelled,
+    after,
+    issues: (live) => {
+      for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
+      return issues;
+    },
+  });
+  let restored = false;
+  for (const h of byHash.keys()) {
+    const w = keptWarnings.get(h);
+    if (!w) continue;
+    keptWarnings.delete(h);
+    if (w.length) issues.set(h, w.join(" "));
+    else issues.delete(h);
+    restored = true;
+  }
   const shown = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview);
   const todo = shown.filter((p) => !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
   const needDisplay = shown.filter((p) => !meshes.get(p.hash)?.display && hasDetail(p.recipe) && hasThreads(p.recipe));
-  if (!todo.length && !needDisplay.length) return null;
-  const issues = new Map(get().detailIssues);
+  if (!todo.length && !needDisplay.length) return restored ? result(false, async () => true) : null;
   const onPart = (r: PartResult) => {
     const prev = meshes.get(r.hash);
     if (prev) {
@@ -301,6 +370,7 @@ async function refine(rev: number, byHash: Map<string, EvalPart>): Promise<Refin
       else prev.final = r.mesh;
       bumpMeshes();
     }
+    if (r.quality === "display" || r.quality === "final") keepMesh(r.hash, r.quality, { mesh: r.mesh, volume: r.volume, bbox: r.bbox, warnings: r.warnings });
     if (r.quality === "display") return;
     if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
     else issues.delete(r.hash);
@@ -322,14 +392,6 @@ async function refine(rev: number, byHash: Map<string, EvalPart>): Promise<Refin
     activeJobs.push(job);
     return job.done;
   };
-  const result = (cancelled: boolean, after: () => Promise<boolean>): Refined => ({
-    cancelled,
-    after,
-    issues: (live) => {
-      for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);
-      return issues;
-    },
-  });
   // the main worker, after the checks: the meshes only, as the detailed builds need the detail worker
   const inMain = async () => {
     const missing = (q: "display" | "final") => (p: EvalPart) => !meshes.get(p.hash)?.[q];
@@ -356,7 +418,7 @@ async function refine(rev: number, byHash: Map<string, EvalPart>): Promise<Refin
     [detailed, "final", onError],
   ];
   const fromDetail = (r: PartResult) => {
-    detailMade.add(r.mesh);
+    foreignIds.add(r.mesh);
     onPart(r);
   };
   for (const [parts, quality, err] of steps) {
@@ -372,6 +434,8 @@ async function refine(rev: number, byHash: Map<string, EvalPart>): Promise<Refin
 async function runPipeline(rev: number, src: string, model: Model, parsed: ReturnType<typeof parse>) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
+  // refined meshes kept from earlier sessions are read while the kernel starts and the fast builds run
+  const restoring = restoreKept(uniqueParts(model)).catch(() => undefined);
   try {
     await kernel.ready();
   } catch {
@@ -403,7 +467,11 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
         const rebuilt = lost.delete(r.hash) && !!prev;
         // a part built again after a kernel restart is the shape already shown: keep its mesh objects, so the
         // 3D view and anything holding them sees no change
-        if (!rebuilt) meshes.set(r.hash, { ...prev, preview: r.mesh, volume: r.volume, bbox: r.bbox, rev: prev?.rev ?? rev });
+        if (!rebuilt) {
+          meshes.set(r.hash, { ...prev, preview: r.mesh, volume: r.volume, bbox: r.bbox, rev: prev?.rev ?? rev });
+          // the finished look kept from an earlier session, if there is one
+          adopt(r.hash);
+        }
         done++;
         if (get().rev === rev) set({ progress: { done, total } });
         if (!rebuilt) bumpMeshes();
@@ -434,7 +502,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
 
   // the meshes the view shows when it settles, and the detailed geometry, start now in the detail worker: they run
   // alongside the checks rather than after them
-  const refining = refine(rev, byHash).catch(() => null);
+  const refining = refine(rev, byHash, restoring).catch(() => null);
 
   // mates pick from the built solids' faces: have the kernel list any not listed yet, then read the design again
   const mated = await withFaces(rev, src, model, parsed);
