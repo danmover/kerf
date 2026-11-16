@@ -38,10 +38,14 @@ export interface LightingPreset {
   edge: { color: string; alpha: number };
   bloom: number;
   vignette: number;
+  /** contact shadow on the floor: darkening right under the model, and the wider soft pool around it (0..1; defaults 0.85 and 0.5) */
+  contact?: { near: number; pool: number };
+  /** a soft spot of light on the floor under the model (dark sets: so the floor and the shadows on it show) */
+  floorLight?: { color: string; amount: number };
   /** a light background (UI chrome over it should switch to dark text) */
   light?: boolean;
   /** the set in the light theme, for presets whose own set is dark: same lights, a pale backdrop */
-  lightSet?: Pick<LightingPreset, "backdrop" | "grid" | "edge" | "vignette" | "bloom" | "shadow">;
+  lightSet?: Pick<LightingPreset, "backdrop" | "grid" | "edge" | "vignette" | "bloom" | "shadow" | "contact" | "floorLight">;
 }
 
 export const LIGHTING: LightingPreset[] = [
@@ -70,6 +74,7 @@ export const LIGHTING: LightingPreset[] = [
     edge: { color: "#05070a", alpha: 0.5 },
     bloom: 0.1,
     vignette: 0.28,
+    floorLight: { color: "#8a94a8", amount: 0.55 },
     lightSet: {
       backdrop: { top: "#f1f3f7", bottom: "#c8cdd7", glow: "#ffffff", glowAmt: 0.45 },
       grid: { minor: "#cdd2dc", major: "#a9b2c2", alpha: 0.8 },
@@ -77,6 +82,7 @@ export const LIGHTING: LightingPreset[] = [
       edge: { color: "#141924", alpha: 0.42 },
       bloom: 0.04,
       vignette: 0.1,
+      floorLight: { color: "#000000", amount: 0 },
     },
   },
   {
@@ -123,6 +129,7 @@ export const LIGHTING: LightingPreset[] = [
     edge: { color: "#9fb2ff", alpha: 0.32 },
     bloom: 0.22,
     vignette: 0.32,
+    floorLight: { color: "#4a6cc0", amount: 0.5 },
     // a whiteprint: pale blue paper with blue rules
     lightSet: {
       backdrop: { top: "#eaf0fb", bottom: "#bccbe8", glow: "#ffffff", glowAmt: 0.4 },
@@ -131,6 +138,7 @@ export const LIGHTING: LightingPreset[] = [
       edge: { color: "#1b2a5e", alpha: 0.48 },
       bloom: 0.06,
       vignette: 0.12,
+      floorLight: { color: "#000000", amount: 0 },
     },
   },
   {
@@ -153,6 +161,7 @@ export const LIGHTING: LightingPreset[] = [
     edge: { color: "#0a0806", alpha: 0.5 },
     bloom: 0.12,
     vignette: 0.32,
+    floorLight: { color: "#96806a", amount: 0.55 },
     lightSet: {
       backdrop: { top: "#f5f1ea", bottom: "#d5cbbb", glow: "#fffaf0", glowAmt: 0.4 },
       grid: { minor: "#d9d0c2", major: "#b5a690", alpha: 0.8 },
@@ -160,6 +169,7 @@ export const LIGHTING: LightingPreset[] = [
       edge: { color: "#241b12", alpha: 0.44 },
       bloom: 0.05,
       vignette: 0.14,
+      floorLight: { color: "#000000", amount: 0 },
     },
   },
   {

@@ -120,8 +120,9 @@ const TWEAKS: Record<string, (l: Look, finish: string) => Partial<Look>> = {
   AlSi10Mg: (l, f) => (f === "bead-blasted" ? { roughness: 0.58, detailAmp: 0.004 } : {}),
   "Carbon fiber": (l, f) =>
     f === "gloss"
-      ? { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 2, roughVar: 0.18, tintAmt: 0.45 }
-      : { roughness: 0.55, detail: Detail.Weave, detailAmp: 0.012, detailScale: 2, roughVar: 0.12, tintAmt: 0.4 },
+      ? // the tows differ by how they catch the light more than by colour: a small shift of tone, a bigger one of gloss
+        { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 2, roughVar: 0.26, tintAmt: 0.4 }
+      : { roughness: 0.55, detail: Detail.Weave, detailAmp: 0.012, detailScale: 2, roughVar: 0.18, tintAmt: 0.35 },
   Silicone: () => ({ roughness: 0.82, sheen: 0.5, sheenRoughness: 0.7, detail: Detail.Grain, detailAmp: 0.002, detailScale: 0.06, roughVar: 0.05 }),
   Neoprene: () => ({ roughness: 0.7, sheen: 0.35, sheenRoughness: 0.6, detail: Detail.Grain, detailAmp: 0.0015, detailScale: 0.05, roughVar: 0.06 }),
   FR4: (l, f) => (f === "matte" ? { roughness: 0.72 } : {}),
