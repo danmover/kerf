@@ -14,8 +14,9 @@ import { MOTION } from "./motion";
 import { MOTORS } from "./motors";
 import { ROBOTICS } from "./robotics";
 import { SENSING } from "./sensing";
+import { SPACE } from "./space";
 
-export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...BOARDS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS, ...SENSING, ...MODULES, ...DRONE, ...LEGGED];
+export const CATALOG: CatalogPart[] = [...ELECTRONICS, ...BOARDS, ...MOTION, ...MOTORS, ...AUDIO, ...LIGHTS, ...FIELDS, ...ROBOTICS, ...SENSING, ...MODULES, ...DRONE, ...LEGGED, ...SPACE];
 
 const BY_ID = new Map(CATALOG.map((p) => [p.id, p]));
 

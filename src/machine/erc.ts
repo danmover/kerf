@@ -233,7 +233,10 @@ function powerChecks(c: Ctx) {
       item(c, `short:${n.id}`, "fail", `Short circuit on ${name}`, `${who(s)} (${fmtNum(s.pin.v ?? 0)} V) is connected straight to ground (${who(gnd[0])}).`, [s.comp, gnd[0].comp], span);
       continue;
     }
-    if (out.length > 1) {
+    // solar strings that each end in a blocking diode share a bus by design: the weaker string just stops feeding
+    if (out.length > 1 && out.every((p) => p.part.specs.blocking_diode === true)) {
+      item(c, `fight:${n.id}`, "pass", `Strings in parallel on ${name}`, `${out.map(who).join(" and ")} share it through their blocking diodes.`, out.map((p) => p.comp), span);
+    } else if (out.length > 1) {
       const vs = [...new Set(out.map((p) => p.pin.v))];
       item(c, `fight:${n.id}`, vs.length > 1 ? "fail" : "warn", `Two supplies on ${name}`, vs.length > 1 ? `${out.map((p) => `${who(p)} (${fmtNum(p.pin.v ?? 0)} V)`).join(" and ")} are tied together: they will fight.` : `${out.map(who).join(" and ")} are paralleled. Only do this if both are designed to share current.`, out.map((p) => p.comp), span);
     }
@@ -522,7 +525,10 @@ function protection(c: Ctx) {
     if (!pos) continue;
     const fused = pos.pins.some((p) => p.part.kind === "fuse");
     const switched = pos.pins.some((p) => p.part.kind === "switch" || p.part.kind === "connector");
-    if (!fused) item(c, `fuse:${b.name}`, "warn", `No fuse on ${b.name}`, `A LiPo can deliver over 100 A into a short. Put a fuse on the positive lead right at the battery.`, [b.name], b.span);
+    // a pack with its own protection board (space and e-bike packs) trips on a short by itself
+    const own = catalogPart(b.catalogId)?.specs.protection;
+    if (!fused && typeof own === "string" && own) item(c, `fuse:${b.name}`, "pass", `${b.name} protects itself`, `It has ${own}, so a short trips it before the wiring overheats.`, [b.name], b.span);
+    else if (!fused) item(c, `fuse:${b.name}`, "warn", `No fuse on ${b.name}`, `A LiPo can deliver over 100 A into a short. Put a fuse on the positive lead right at the battery.`, [b.name], b.span);
     if (!switched) item(c, `switch:${b.name}`, "info", `No power switch on ${b.name}`, "Add a switch, or a connector on the positive lead that works as a removable link, so the machine can be turned off quickly.", [b.name], b.span);
   }
   for (const p of c.m.components.filter((x) => catalogPart(x.catalogId)?.kind === "psu")) {

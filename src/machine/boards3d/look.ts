@@ -5,6 +5,7 @@
 // reset button). Boards not listed here get a look from their features' sizes.
 
 import { DRONE_BOARD_STYLES } from "./lookDrone";
+import { SPACE_STYLES } from "./lookSpace";
 
 /** What a board feature is drawn as. */
 export type Look =
@@ -595,4 +596,6 @@ export const BOARD_STYLES: Record<string, BoardStyle> = {
       { look: "inductor", x: -20, y: 5.5, w: 8, d: 8, h: 5, mark: "220" },
     ],
   },
+  // CubeSat flight boards (lookSpace.ts)
+  ...SPACE_STYLES,
 };

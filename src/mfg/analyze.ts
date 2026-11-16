@@ -898,7 +898,14 @@ function insideCorners(c: Ctx, rules: Rules, stats: ProcessStats): ProcessFindin
   const floor = (e: SharpEdge) =>
     !!ir.dirs &&
     ir.dirs.some((d) => Math.abs(dot3(e.dir, d)) < 0.1 && ((dot3(e.n1, d) > 0.98 && reached(d).has(e.f1)) || (dot3(e.n2, d) > 0.98 && reached(d).has(e.f2))));
-  const sharp = c.sharpEdges().filter((e) => e.concave && e.angle > 30 && along(e.dir) && (!ir.dirs || (perp(e.n1) && perp(e.n2) && !rim(e) && !floor(e))));
+  // a drilled hole's bottom (or a counterbore's) is shaped by the drill along the hole, not by an end mill's corner
+  const drilled = (f: number) => {
+    const x = c.m.faces[f];
+    return !!x && x.type === "CYLINDRE" && !!x.fullTurn && !!x.concave;
+  };
+  const sharp = c.sharpEdges().filter(
+    (e) => e.concave && e.angle > 30 && along(e.dir) && (!ir.dirs || (perp(e.n1) && perp(e.n2) && !rim(e) && !floor(e))) && !drilled(e.f1) && !drilled(e.f2),
+  );
   // fillets tighter than the minimum
   const tight = new Set<number>();
   let tightest = Infinity;

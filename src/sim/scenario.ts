@@ -11,7 +11,7 @@ import type { BenchSpec } from "./worlds/bench";
 import type { BenchSupplySpec } from "./worlds/types";
 import { noteHz, type SignalShape, type SignalSpec } from "./worlds/signals";
 import type { HingeSpec, SandPitSpec, ScrewSpec, TunnellerSpec } from "./worlds/sandPit";
-import { VARIANTS, type VariantName } from "./worlds/common";
+import { G, VARIANTS, type VariantName } from "./worlds/common";
 import { catalogPart } from "../machine/catalog";
 import type { MachineData } from "../machine/types";
 import { flavorOf, PRINTER_FLAVORS } from "../machine/firmware/printer";
@@ -160,8 +160,8 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
   ),
   simFn(
     "bench",
-    ["load", "force", "range", "ambient", "signals", "supply"],
-    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. It runs from the design's own battery or power supply (a plug-in adapter or mains supply is plugged in and on). Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C); signals: a sim.signal(...) or a list of them, test signals on nets that reach the controller's analog inputs; supply: a sim.supply(...) bench supply to power it from instead.",
+    ["load", "force", "range", "ambient", "signals", "supply", "gravity"],
+    "The machine on the bench: motors turn against their design load (load: on each motor) and sensors see a still, level machine. It runs from the design's own battery or power supply (a plug-in adapter or mains supply is plugged in and on). Use it for power-up, battery runtime, overload and hot-room tests. load: share of the design load (1; 0 runs the motors free, 1.5 is a 50 % overload); force: push on each linear actuator's rod (0 N); range: what a distance sensor sees (1 m); ambient: room temperature (20C); signals: a sim.signal(...) or a list of them, test signals on nets that reach the controller's analog inputs; supply: a sim.supply(...) bench supply to power it from instead; gravity: its pull as a share of Earth's (1; 0 for a mechanism tested as it works in orbit, 0.165 on the Moon).",
     (a, ctx) => {
       const load = a.num("load", 1);
       if (load < 0) a.ctx.error("sim.bench(): load is a share of the design load, 0 or more");
@@ -170,7 +170,32 @@ const SIM_FNS: Record<string, Fn> = Object.fromEntries([
       const signals = list.map((v, i) => (v instanceof SimSpec && v.what === "signal" ? (v.data as SignalSpec) : ctx.error(`sim.bench(): signal ${i + 1} is ${typeName(v)}, not sim.signal(...)`)));
       const pv = a.value("supply");
       const supply = pv === undefined ? undefined : pv instanceof SimSpec && pv.what === "supply" ? (pv.data as BenchSupplySpec) : ctx.error(`sim.bench(): supply is ${typeName(pv)}, not sim.supply(...)`);
-      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20), signals, ...(supply ? { supply } : {}) } }, "bench");
+      const gravity = a.num("gravity", 1);
+      if (gravity < 0 || gravity > 30) a.ctx.error("sim.bench(): gravity is a share of Earth's, from 0 (in orbit) up");
+      return new SimSpec("world", { kind: "bench", bench: { loads: {}, loadFactor: load, forces: {}, force: a.num("force", 0), range: a.positive("range", 1000), ambient: a.num("ambient", 20), signals, ...(supply ? { supply } : {}), ...(a.has("gravity") ? { gravity: gravity * G } : {}) } }, gravity === 1 ? "bench" : `bench at ${+gravity.toFixed(3)} g`);
+    },
+  ),
+  simFn(
+    "orbit",
+    ["alt", "ltan", "decl", "start", "tipoff", "inertia", "wings", "deployed", "ambient"],
+    "A spacecraft in a circular sun-synchronous orbit, for CubeSat and other flight boards (the catalog's spacecraft parts): no gravity, the sun on the panels the attitude system turns towards it, and Earth's shadow once an orbit. The run starts as the satellite leaves its dispenser, tumbling, unless deployed: is true (a later orbit in normal operations). alt: height (525km); ltan: local time of the ascending node, hours (10.5 is 10:30); decl: the sun's declination (0deg at the equinoxes, 23.44deg at the June solstice); start: where the run starts round the orbit from the point nearest the sun (0deg), or \"eclipse exit\" or \"eclipse entry\" to start it as it leaves or enters Earth's shadow; tipoff: body rates at separation (5, deg/s); inertia: the satellite's moment of inertia about its tumble axis, kg·m² (0.05 for a 3U); wings: the body axis the open wings' cells face ((1, 0, 0)); deployed: the wings start open (false); ambient: the temperature inside the structure (20C).",
+    (a) => {
+      const alt = a.positive("alt", 525e6) / 1e6;
+      if (alt < 160 || alt > 2000) a.ctx.error(`sim.orbit(): alt is the orbit's height, from 160 km (it would fall in days below that) to 2000 km (low Earth orbit), not ${+alt.toFixed(0)} km`);
+      // hours as a plain number, or a time like 10.5h
+      let ltan = a.num("ltan", 10.5);
+      if (ltan > 24) ltan /= 3600;
+      if (ltan < 0 || ltan > 24) a.ctx.error("sim.orbit(): ltan is a local time in hours, 0 to 24 (10.5 is 10:30)");
+      const decl = a.num("decl", 0);
+      if (Math.abs(decl) > 23.5) a.ctx.error("sim.orbit(): decl is the sun's declination, -23.44deg to 23.44deg");
+      const inertia = a.positive("inertia", 0.05);
+      const wings = a.dir("wings", [1, 0, 0]);
+      // start: an angle round the orbit, or "eclipse exit" / "eclipse entry"
+      const sv = a.has("start") ? a.value("start") : 0;
+      const startAt = typeof sv === "string" ? (/exit|leav|out/i.test(sv) ? "eclipse_exit" : /entr|into|in\b/i.test(sv) ? "eclipse_entry" : a.ctx.error('sim.orbit(): start is an angle round the orbit, like 120deg, or "eclipse exit" or "eclipse entry"')) : undefined;
+      const orbit = { alt, ltan, decl, start: startAt ? 0 : a.num("start", 0), ...(startAt ? { startAt: startAt as "eclipse_exit" | "eclipse_entry" } : {}), tipoff: a.num("tipoff", 5), inertia, wings, deployed: a.bool("deployed", false) };
+      const bench = { loads: {}, loadFactor: 0, forces: {}, force: 0, range: 1e7, ambient: a.num("ambient", 20), signals: [], gravity: 0, orbit };
+      return new SimSpec("world", { kind: "bench", bench }, `${+alt.toFixed(0)} km sun-synchronous orbit`);
     },
   ),
   simFn(

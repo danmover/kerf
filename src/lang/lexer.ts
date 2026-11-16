@@ -63,6 +63,8 @@ export const UNITS: Record<string, number> = {
   mm: 1,
   cm: 10,
   m: 1000,
+  // orbit heights
+  km: 1e6,
   in: 25.4,
   deg: 1,
   rad: 180 / Math.PI,

@@ -501,6 +501,12 @@ export function dfaReport(model: Model, facts: DfaFacts = {}): DfaReport {
     groups.set(inst, [...(groups.get(inst) ?? []), p]);
   }
 
+  // a part that rides a sim joint (a wing on its sprung hinge, a gimbal's frame) moves relative to the parts around it;
+  // a free body (a whole vehicle in the world) does not, so its parts can still be merged
+  const riders = new Set<string>();
+  for (const sc of model.scenarios ?? [])
+    for (const it of sc.spec.mechanism?.items ?? []) if ((it.k === "pivot" || it.k === "slider" || it.k === "ball") && it.what) for (const w of it.what) riders.add(w);
+
   // a part a sprung blade is drawn pressing on (flexure preload:, against:) is held by that spring and moves against it
   const pressedBy = new Map<string, EvalPart>();
   for (const p of model.parts) for (const f of p.flex ?? []) if (f.kind === "flexure" && f.preload && f.against) pressedBy.set(f.against, p);
@@ -541,7 +547,7 @@ export function dfaReport(model: Model, facts: DfaFacts = {}): DfaReport {
       solids,
       box,
       volume,
-      moves: solids.some((s) => turns(s.motion)) || !!springHost(solids),
+      moves: solids.some((s) => turns(s.motion) || riders.has(s.name)) || !!springHost(solids),
       removable: solids.some((s) => s.removable),
       op: "",
     });

@@ -271,6 +271,10 @@ export class MechWorld implements World {
     return this.inner?.supply?.();
   }
 
+  orbit() {
+    return this.inner?.orbit?.();
+  }
+
   thermal() {
     return this.inner?.thermal() ?? { ambient: this.ambient, cooling: 1 };
   }

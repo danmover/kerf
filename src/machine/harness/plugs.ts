@@ -10,6 +10,7 @@
 // along the line of contacts. Parts without an entry get a plug placed from
 // their geometry class, so every design draws, just less exactly.
 
+import { SPACE_PLUGS } from "./spacePlugs";
 import type { V3 } from "../../kernel/recipe";
 import type { CatalogPart, PinDef } from "../types";
 import { pinSpots } from "../boards3d/pins";
@@ -271,6 +272,7 @@ const NAU: PlugTable = { ...qtPlugs("QT1", [-12.65, 0.6, 3.1], NX, Y), ...qtPlug
 export const PLUGS: Record<string, PlugTable> = {
   ...FIELD_PLUGS,
   ...DRONE_PLUGS,
+  ...SPACE_PLUGS,
   esp32_devkitc: devkitcPins(),
   waveshare_st3215: BUS_SERVO,
   // Bus Servo Adapter (A) (42 × 33, top at 1.6): supply screw terminal on the -X edge, the UART header along the
