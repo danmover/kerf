@@ -165,6 +165,13 @@ export function plugBody(p: MeshBuilder, m: MeshBuilder, f: Frame, look: PlugLoo
       for (let i = 0; i < Math.max(spec.ways ?? n, n); i++) p.box(f, -span / 2 + i * pitch - 0.3, -span / 2 + i * pitch + 0.3, -0.45, 0.45, 4.6, 4.68, "#0f1012");
       return;
     }
+    case "ufl": {
+      // a U.FL plug: the gold cup pressed over the socket and the little moulded body the coax leaves sideways
+      m.cyl(f, 0, 0, -0.9, 0.2, 1.0, GOLD, 16);
+      p.box(f, -1.3, 1.3, -1.3, 1.3, 0.2, 1.4, "#e9e3d2");
+      m.box(f, -0.9, 0.9, -0.9, 0.9, 1.4, 2.4, TIN);
+      return;
+    }
     case "lever":
     case "bare": {
       // the stripped end: tinned strands going into the clamp

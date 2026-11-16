@@ -78,6 +78,14 @@ function fingerprint(s: string) {
 
 const buildKey = (quality: MeshQuality, hash: string) => `${quality}:${hash}`;
 
+/**
+ * Crashes (a worker that died, or traps one after another) this close together mean the kernel can't run here, and
+ * Kerf stops trying and says so. Spread over a long session each one is recovered from: before, the fourth crash of
+ * a session gave up for good, however many hours apart they were, and only reloading the page brought it back.
+ */
+export const CRASH_WINDOW_MS = 5 * 60_000;
+export const CRASHES_ALLOWED = 3;
+
 export class KernelCrashed extends Error {
   constructor() {
     super("The geometry kernel stopped unexpectedly and was restarted.");
@@ -100,10 +108,15 @@ export class KernelClient {
   /** ones that crashed it once (perhaps memory ran out): a second crash poisons them */
   private trapped = new Set<string>();
   private trapStreak = 0;
+  /** when the worker crashed, within the last CRASH_WINDOW_MS */
+  private crashes: number[] = [];
   status: KernelStatus = "loading";
   initMs = 0;
   error = "";
+  /** crashes this session */
   restarts = 0;
+  /** the worker has been ready once: a later "loading" is a restart, with the model already on screen */
+  started = false;
 
   /** spawn: a stand-in worker for tests */
   constructor(
@@ -149,14 +162,24 @@ export class KernelClient {
     this.resetListeners.clear();
   }
 
+  /** After the kernel gave up (it kept crashing): forget the crashes and start a fresh worker. */
+  recover() {
+    this.crashes = [];
+    this.trapStreak = 0;
+    this.restart();
+  }
+
   private crash(message: string) {
     this.restarts++;
-    if (this.restarts > 3) {
+    const now = Date.now();
+    this.crashes = this.crashes.filter((t) => now - t < CRASH_WINDOW_MS);
+    this.crashes.push(now);
+    if (this.crashes.length > CRASHES_ALLOWED) {
       this.disarm();
       this.worker?.terminate();
       this.worker = null;
       this.status = "error";
-      this.error = `The geometry kernel keeps failing (${message}). Reload the page to try again.`;
+      this.error = `The geometry kernel keeps failing (${message}).`;
       this.failAll(new Error(this.error));
       this.emit();
       return;
@@ -271,6 +294,7 @@ export class KernelClient {
     switch (m.type) {
       case "ready":
         this.status = "ready";
+        this.started = true;
         this.initMs = m.ms;
         for (const w of this.readyWaiters.splice(0)) w.resolve();
         this.emit();

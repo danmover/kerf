@@ -67,10 +67,17 @@ export interface DesignState {
   kernelStatus: KernelStatus;
   kernelError: string;
   kernelInitMs: number;
+  /** the kernel has been ready before: "loading" now is a restart, with the model still on screen */
+  kernelStarted: boolean;
 }
 
 /** Mesh cache by geometry hash. Mutable, outside React state; meshVersion signals changes. */
 export const meshes = new Map<string, MeshEntry>();
+/**
+ * Geometry the kernel worker lost when it was restarted (it stalled or crashed). The meshes stay on screen, since
+ * the same hash is the same shape, and the pipeline builds these again so the new worker has the solids for checks.
+ */
+const lost = new Set<string>();
 /**
  * The kernel's lists of built solids' flat and round faces, by geometry hash, which mates pick from; and the last
  * list each part had, so a mated part stays in place while an edit to it is built.
@@ -108,6 +115,7 @@ export const useDesign = create<DesignState>(() => ({
   kernelStatus: "loading",
   kernelError: "",
   kernelInitMs: 0,
+  kernelStarted: false,
 }));
 
 const get = useDesign.getState;
@@ -147,12 +155,12 @@ let started = false;
 export function startEngine() {
   if (started) return;
   started = true;
-  kernel.subscribe(() => set({ kernelStatus: kernel.status, kernelError: kernel.error, kernelInitMs: kernel.initMs }));
+  kernel.subscribe(() => set({ kernelStatus: kernel.status, kernelError: kernel.error, kernelInitMs: kernel.initMs, kernelStarted: kernel.started }));
   kernel.onReset(() => {
-    // the worker's solid cache is gone: rebuild everything for the current source
-    meshes.clear();
+    // the worker's solid cache is gone: build everything again for the current source. The meshes stay on screen
+    // meanwhile (clearing them made the whole model vanish from the 3D view and come back part by part)
+    for (const h of meshes.keys()) lost.add(h);
     set({ buildErrors: new Map() });
-    bumpMeshes();
     reloadImports();
     const { source } = get();
     if (source) setSource(source, { force: true });
@@ -192,6 +200,7 @@ export function loadSource(src: string) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
   meshes.clear();
+  lost.clear();
   faceCats.clear();
   faceCatsByName.clear();
   detailFailed.clear();
@@ -442,7 +451,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
 
   const byHash = uniqueParts(model);
   const errors = get().buildErrors;
-  const todo = [...byHash.values()].filter((p) => !meshes.get(p.hash)?.preview && !errors.has(p.hash));
+  const todo = [...byHash.values()].filter((p) => (lost.has(p.hash) || !meshes.get(p.hash)?.preview) && !errors.has(p.hash));
   const total = byHash.size;
   let done = total - todo.length;
   const reused = done;
@@ -455,14 +464,21 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
       "preview",
       (r: PartResult) => {
         const prev = meshes.get(r.hash);
-        meshes.set(r.hash, { ...prev, preview: r.mesh, volume: r.volume, bbox: r.bbox, rev: prev?.rev ?? rev });
-        // the finished look kept from an earlier session, if there is one
-        adopt(r.hash);
+        const rebuilt = lost.delete(r.hash) && !!prev;
+        // a part built again after a kernel restart is the shape already shown: keep its mesh objects, so the
+        // 3D view and anything holding them sees no change
+        if (!rebuilt) {
+          meshes.set(r.hash, { ...prev, preview: r.mesh, volume: r.volume, bbox: r.bbox, rev: prev?.rev ?? rev });
+          // the finished look kept from an earlier session, if there is one
+          adopt(r.hash);
+        }
         done++;
         if (get().rev === rev) set({ progress: { done, total } });
-        bumpMeshes();
+        if (!rebuilt) bumpMeshes();
       },
       (hash, message) => {
+        // a part the new worker can't build again is not on screen as if it were fine
+        if (lost.delete(hash) && meshes.delete(hash)) bumpMeshes();
         const next = new Map(get().buildErrors);
         next.set(hash, message);
         done++;

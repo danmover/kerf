@@ -19,6 +19,8 @@ if (!terms) throw new Error("TERMS_VERSION not found in src/app/settings.ts");
 const common = { bundle: true, platform: "node", target: "node22", format: "cjs", external: ["electron"], legalComments: "linked", logLevel: "info", define: { __KERF_TERMS__: JSON.stringify(terms) } };
 await build({ ...common, entryPoints: ["desktop/main.ts"], outfile: `${out}/main.cjs` });
 await build({ ...common, entryPoints: ["desktop/preload.ts"], outfile: `${out}/preload.cjs` });
+// what Claude Code runs for Kerf after Connect (desktop/bridge.ts), with Kerf's executable as plain Node
+await build({ ...common, entryPoints: ["desktop/bridgeMain.ts"], outfile: `${out}/mcp-bridge.cjs`, define: { ...common.define, __KERF_VERSION__: JSON.stringify(pkg.version) } });
 
 cpSync("dist", `${out}/web`, { recursive: true });
 cpSync("desktop/resources/icon.png", `${out}/icon.png`);

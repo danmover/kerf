@@ -4,6 +4,8 @@
 // the parts the catalog geometry leaves out (a Pi Zero's ports, an Arduino's
 // reset button). Boards not listed here get a look from their features' sizes.
 
+import { DRONE_BOARD_STYLES } from "./lookDrone";
+
 /** What a board feature is drawn as. */
 export type Look =
   // chips
@@ -112,6 +114,7 @@ export const DEFAULT_STYLE: BoardStyle = { mask: GREEN, silk: WHITE_SILK, finish
 
 /** Looks by catalog id. */
 export const BOARD_STYLES: Record<string, BoardStyle> = {
+  ...DRONE_BOARD_STYLES,
   skr_mini_e3_v3: {
     mask: BLACK,
     silk: WHITE_SILK,
