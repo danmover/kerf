@@ -202,6 +202,9 @@ export function modelView3d(into: HTMLElement, panel: Extract<PanelSpec, { kind:
       overlay?.dispose();
       for (const d of disposables) d.dispose();
       renderer.dispose();
+      // give the drawing context back now rather than when the canvas is collected: a page may hold only a few, and
+      // past that the browser takes one away from a view still on screen (the main 3D view among them)
+      renderer.forceContextLoss();
       renderer.domElement.remove();
     },
   };

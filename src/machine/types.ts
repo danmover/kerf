@@ -175,7 +175,14 @@ export type CatalogKind =
   | "amplifier"
   | "display"
   | "knob"
-  | "circuit_board";
+  | "circuit_board"
+  // FPV quad parts (catalog/drone.ts)
+  | "propeller"
+  | "vtx"
+  | "camera"
+  | "antenna"
+  | "receiver"
+  | "buzzer";
 
 /** Geometry classes. Each generator in geometry.ts reads the numbers it documents. */
 export type GeomClass =
@@ -218,7 +225,18 @@ export type GeomClass =
   | "led"
   | "disc"
   // differential pressure sensor: a housing with two tube ports and a screw lug
-  | "dp_sensor";
+  | "dp_sensor"
+  // FPV quad parts (geometryDrone.ts): a 22xx motor drawn as built, a moulded prop, a digital video camera and air
+  // unit, antennas, a nano receiver, a GNSS board, a buzzer and a capacitor on its own legs
+  | "fpv_motor"
+  | "prop"
+  | "fpv_cam"
+  | "fpv_vtx"
+  | "fpv_antenna"
+  | "fpv_rx"
+  | "fpv_gps"
+  | "fpv_buzzer"
+  | "radial_cap";
 
 export interface BoardFeature {
   kind: "usb" | "jack" | "header" | "terminal" | "chip" | "heatsink" | "cap" | "socket" | "module";

@@ -43,6 +43,8 @@ const L_MARKS = 4;
 
 /** How many removed parts' materials are kept so their shaders stay compiled (see retire()). */
 const RETIRED_MAX = 48;
+/** frames in a row that may throw before the view counts as broken (about a third of a second) */
+const FRAME_FAILS = 20;
 /** How many material-ball materials are kept */
 const SWATCH_MATS_MAX = 96;
 
@@ -392,6 +394,14 @@ export class SceneController {
   /** a finger or pen held still on the view, in client pixels, and null when it lifts, moves or completes */
   onHold: (at: { x: number; y: number } | null) => void = () => undefined;
   onFirstFrame: () => void = () => undefined;
+  /** the graphics card reset and took the drawing context (true), or gave it back (false) */
+  onContextChange: (lost: boolean) => void = () => undefined;
+  /** frames keep failing to draw: the view is broken and needs replacing */
+  onBroken: (e: Error) => void = () => undefined;
+  /** the drawing context is gone until the browser gives it back */
+  contextLost = false;
+  /** frames that threw, in a row */
+  private failedFrames = 0;
   /** the user turned the lighting by dragging with Alt held */
   onLightAngle: (deg: number) => void = () => undefined;
   /** the turntable stopped because the user took the camera */
@@ -418,13 +428,22 @@ export class SceneController {
     this.softwareGL = softwareRenderer(this.renderer.getContext());
     // a GPU that resets mid-trace must not be sent straight back into it
     this.renderer.domElement.addEventListener("webglcontextlost", () => {
+      // dispose() gives the context back on purpose
+      if (this.disposed) return;
       if (this.render$.photoreal && (this.photo || this.photoLoading)) this.photoError = "The graphics card reset during the photoreal render, so it stopped";
       // a path tracer kept ready while photoreal is off goes too
       if (this.photo) this.dropPhoto();
+      this.contextLost = true;
+      this.onContextChange(true);
     });
     // three.js gets the context back and uploads meshes and textures again, but
     // what was drawn into render targets is gone: draw the lighting again
-    this.renderer.domElement.addEventListener("webglcontextrestored", () => this.contextRestored());
+    this.renderer.domElement.addEventListener("webglcontextrestored", () => {
+      if (this.disposed) return;
+      this.contextLost = false;
+      this.contextRestored();
+      this.onContextChange(false);
+    });
     this.pipe = new RenderPipeline(this.renderer);
     this.pipe.look.selColor.copy(ACCENT);
     this.pipe.look.hoverColor.copy(HOVER);
@@ -583,9 +602,45 @@ export class SceneController {
     const loop = () => {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(loop);
-      this.frame();
+      try {
+        this.frame();
+        this.failedFrames = 0;
+      } catch (e) {
+        this.frameFailed(e);
+      }
     };
     this.raf = requestAnimationFrame(loop);
+  }
+
+  /**
+   * A frame threw. One bad frame is logged and the next tries again; a view that throws on every frame shows a frozen
+   * or empty picture and ignores the mouse, so after a run of them the view says it is broken (the viewport then starts
+   * a new one in its place).
+   */
+  private frameFailed(e: unknown) {
+    this.failedFrames++;
+    const err = e instanceof Error ? e : new Error(String(e));
+    if (this.failedFrames === 1) console.error("The 3D view failed to draw a frame", err);
+    if (this.failedFrames === FRAME_FAILS) {
+      console.error(`The 3D view failed to draw ${FRAME_FAILS} frames in a row`);
+      this.onBroken(err);
+    }
+  }
+
+  /** The camera has framed the model (or the user took it): a view started in this one's place should keep it. */
+  get framed() {
+    return this.hasFitted || !this.autoFit;
+  }
+
+  /** Carry on from an earlier view of the same design (the 3D view was started again): its camera, and no framing of the first build. */
+  adoptCamera(s: { pos: [number, number, number]; target: [number, number, number] }) {
+    this.camera.position.set(...s.pos);
+    this.controls.target.set(...s.target);
+    this.camera.lookAt(this.controls.target);
+    this.controls.update();
+    this.hasFitted = true;
+    this.autoFit = false;
+    this.changed = true;
   }
 
   dispose() {
@@ -613,6 +668,9 @@ export class SceneController {
     this.photo?.dispose();
     this.envs.dispose();
     this.renderer.dispose();
+    // give the drawing context back now: a page may only hold a few, and one left for the garbage collector counts
+    // until then (when there are too many, the browser takes one from a view that is still on screen)
+    if (!this.contextLost) this.renderer.forceContextLoss();
     this.renderer.domElement.remove();
   }
 
