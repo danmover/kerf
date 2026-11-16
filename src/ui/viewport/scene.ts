@@ -12,6 +12,7 @@ import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explo
 import { ChainLinks } from "./chainLinks";
 import type { MeshEntry } from "../../core/engine";
 import { closeEnough, pickMesh, threadPitch } from "./threadLod";
+import { prepareRay } from "./fastPick";
 import type { MeshData } from "../../kernel/build";
 import type { Interference } from "../../kernel/protocol";
 import { xformMatrix } from "../../kernel/recipe";
@@ -312,6 +313,9 @@ export class SceneController {
   private sectionFill: THREE.Mesh;
   private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
   private maskMat = new THREE.MeshBasicMaterial({ blending: THREE.AdditiveBlending, transparent: true, depthWrite: false });
+  /** the selection mask tested against the view's kept depth (see keptMask): no depth pass of every part each frame */
+  private keptMaskU = { tViewDepth: { value: null as THREE.Texture | null }, uRes: { value: new THREE.Vector2(1, 1) }, uHover: { value: 0 } };
+  private keptMaskMat = keptMask(this.keptMaskU);
   /** something in the scene changed: restart the accumulation */
   private changed = true;
   private maskDirty = true;
@@ -757,6 +761,7 @@ export class SceneController {
     const ndc = new THREE.Vector2((x / Math.max(1, this.container.clientWidth)) * 2 - 1, -(y / Math.max(1, this.container.clientHeight)) * 2 + 1);
     this.raycaster.setFromCamera(ndc, this.camera);
     const meshes = [...this.parts.values()].filter((p) => p.group.visible && !p.removing).map((p) => p.mesh);
+    prepareRay(this.raycaster.ray, meshes);
     for (const h of this.raycaster.intersectObjects(meshes, false)) {
       if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
       if (!h.face) continue;
@@ -1444,6 +1449,8 @@ export class SceneController {
   /** Fill the depth buffer of the current target with the visible opaque parts, so overlays hide behind them. */
   private overlayDepth(cam: THREE.PerspectiveCamera = this.camera) {
     const r = this.renderer;
+    // the view's own depth, kept from its first sample: no pass over every part each frame an analysis shows
+    if (cam === this.camera && this.pipe.writeViewDepth(r.getRenderTarget(), cam)) return;
     const prevMask = cam.layers.mask;
     const prevClip = r.clippingPlanes;
     const saveShadow = r.shadowMap.autoUpdate;
@@ -1842,6 +1849,7 @@ export class SceneController {
     // parts drawn by an overlay (analysis results) are hidden but still pickable; see-through parts only when asked
     const pickable = (p: PartObj) => p.group.visible || (this.replaced.has(p.id) && !this.display.hidden.has(p.id) && !p.part.hidden);
     const meshes = [...this.parts.values()].filter((p) => pickable(p) && !p.removing && (ghosts || p.opacityTarget > 0.5)).map((p) => p.mesh);
+    prepareRay(this.raycaster.ray, meshes);
     const hits = this.raycaster.intersectObjects(meshes, false);
     for (const h of hits) {
       if (this.sectionAnim.on && this.sectionPlane.distanceToPoint(h.point) < 0) continue;
@@ -2159,11 +2167,6 @@ export class SceneController {
       photo.sync(parts, this.photoStage(parts), now);
     }
     this.photoHeld = held;
-    if (this.maskDirty) {
-      this.renderMask();
-      this.maskDirty = false;
-      this.needComposite = true;
-    }
     // selection outline and hover fade in
     const selTarget = this.display.selected.size ? 1 : 0;
     const hovTarget = this.display.hovered && !this.display.selected.has(this.display.hovered) ? 1 : 0;
@@ -2186,6 +2189,12 @@ export class SceneController {
       this.pipe.renderSample(this.scene, this.camera, (i) => this.placeKey(i));
       this.needComposite = true;
       rastered = true;
+    }
+    // after the sample: a new view's first sample keeps the depth the mask tests against
+    if (this.maskDirty) {
+      this.renderMask();
+      this.maskDirty = false;
+      this.needComposite = true;
     }
     // anything that moves restarts the photo image, so waiting on the restart covers motion too
     let traced = false;
@@ -2442,21 +2451,35 @@ export class SceneController {
       const saveShadow = r.shadowMap.autoUpdate;
       r.shadowMap.autoUpdate = false;
       r.clippingPlanes = this.sectionAnim.on ? [this.sectionPlane] : [];
-      this.scene.overrideMaterial = this.depthOnly;
-      cam.layers.set(L_OPAQUE);
-      r.render(this.scene, cam);
-      this.scene.overrideMaterial = this.maskMat;
-      this.maskMat.color.setRGB(1, 0, 0);
-      this.maskMat.depthFunc = THREE.LessEqualDepth;
-      cam.layers.set(L_SEL);
-      r.render(this.scene, cam);
-      this.maskMat.color.setRGB(0, 0, 1);
-      this.maskMat.depthFunc = THREE.GreaterDepth;
-      r.render(this.scene, cam);
-      this.maskMat.color.setRGB(0, 1, 0);
-      this.maskMat.depthFunc = THREE.LessEqualDepth;
-      cam.layers.set(L_HOVER);
-      r.render(this.scene, cam);
+      if (this.pipe.hasViewDepth(cam)) {
+        // the selected and hovered parts alone, each fragment tested against the depth this view's first sample kept
+        const u = this.keptMaskU;
+        u.tViewDepth.value = this.pipe.viewDepthRT.texture;
+        u.uRes.value.set(this.pipe.width, this.pipe.height);
+        this.scene.overrideMaterial = this.keptMaskMat;
+        u.uHover.value = 0;
+        cam.layers.set(L_SEL);
+        r.render(this.scene, cam);
+        u.uHover.value = 1;
+        cam.layers.set(L_HOVER);
+        r.render(this.scene, cam);
+      } else {
+        this.scene.overrideMaterial = this.depthOnly;
+        cam.layers.set(L_OPAQUE);
+        r.render(this.scene, cam);
+        this.scene.overrideMaterial = this.maskMat;
+        this.maskMat.color.setRGB(1, 0, 0);
+        this.maskMat.depthFunc = THREE.LessEqualDepth;
+        cam.layers.set(L_SEL);
+        r.render(this.scene, cam);
+        this.maskMat.color.setRGB(0, 0, 1);
+        this.maskMat.depthFunc = THREE.GreaterDepth;
+        r.render(this.scene, cam);
+        this.maskMat.color.setRGB(0, 1, 0);
+        this.maskMat.depthFunc = THREE.LessEqualDepth;
+        cam.layers.set(L_HOVER);
+        r.render(this.scene, cam);
+      }
       this.scene.overrideMaterial = null;
       r.shadowMap.autoUpdate = saveShadow;
     }
@@ -3178,4 +3201,35 @@ function gridMaterial() {
         gl_FragColor = vec4(col, a * fade * uAlpha);
       }`,
   });
+}
+
+/**
+ * The selection mask drawn without a depth pass: each fragment of a selected part is compared with the depth the
+ * view's first sample kept (packed RGBA). Selected: red where it is in front, blue where something hides it; hovered
+ * (uHover 1): green where it is in front.
+ */
+function keptMask(u: Record<string, THREE.IUniform>) {
+  const m = new THREE.MeshBasicMaterial({ blending: THREE.AdditiveBlending, transparent: true, depthTest: false, depthWrite: false });
+  m.onBeforeCompile = (shader) => {
+    Object.assign(shader.uniforms, u);
+    shader.fragmentShader = shader.fragmentShader
+      .replace(
+        "#include <common>",
+        `#include <common>
+#include <packing>
+uniform sampler2D tViewDepth;
+uniform vec2 uRes;
+uniform float uHover;`,
+      )
+      .replace(
+        "vec4 diffuseColor = vec4( diffuse, opacity );",
+        `float kept = unpackRGBAToDepth(texture2D(tViewDepth, gl_FragCoord.xy / uRes));
+  // the kept depth may be another MSAA sample's of this pixel: allow the surface's slope across it, and a few steps
+  float front = gl_FragCoord.z <= kept + fwidth(gl_FragCoord.z) + 2e-7 ? 1.0 : 0.0;
+  if (uHover > 0.5 && front < 0.5) discard;
+  vec4 diffuseColor = uHover > 0.5 ? vec4(0.0, 1.0, 0.0, 1.0) : vec4(front, 0.0, 1.0 - front, 1.0);`,
+      );
+  };
+  m.customProgramCacheKey = () => "kerf-kept-mask-1";
+  return m;
 }
