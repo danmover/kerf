@@ -246,17 +246,18 @@ export function Viewport() {
   }, [glTry, glGen]);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme });
-  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, scene]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, scene]);
 
   useEffect(() => {
     ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
   }, [settings.mouseScheme, settings.wheelReverse, scene]);
 
+  const building = stage === "building";
   useEffect(() => {
     boardDecor.current?.setModel(model);
-    if (model) ctl.current?.setParts(model.parts, meshes);
-  }, [model, meshVersion, scene]);
+    if (model) ctl.current?.setParts(model.parts, meshes, { building });
+  }, [model, meshVersion, scene, building]);
 
   // the exploded view: which way each part comes off and in what order, worked out when first needed
   const [explodeSteps, setExplodeSteps] = useState(0);

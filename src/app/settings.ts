@@ -51,6 +51,8 @@ export interface Settings {
   reduceMotion: boolean;
   grid: boolean;
   edges: boolean;
+  /** once the 3D view is still, the parts in front of and behind the selection soften a little */
+  focusBlur: boolean;
   /** viewport lighting preset (see ui/viewport/render/studio) */
   lighting: string;
   /** how far the lighting is turned about the vertical axis, degrees */
@@ -153,6 +155,7 @@ const DEFAULTS: Settings = {
   reduceMotion: false,
   grid: true,
   edges: true,
+  focusBlur: true,
   lighting: "studio",
   lightAngle: 0,
   quality: "balanced",

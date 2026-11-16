@@ -14,7 +14,7 @@
 
 import * as THREE from "three";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
-import { halton } from "./studio";
+import { concentricDisc, halton } from "./studio";
 
 export type Quality = "draft" | "balanced" | "high";
 
@@ -385,6 +385,23 @@ function mat(frag: string, uniforms: Record<string, THREE.IUniform>, opts: Parti
   return new THREE.ShaderMaterial({ vertexShader: VERT, fragmentShader: frag, uniforms, depthTest: false, depthWrite: false, ...opts });
 }
 
+/**
+ * Look through another point of a lens: move the eye by (ox, oy) across its own view, and skew the view back so the
+ * plane `focus` ahead stays where it was on screen. Nearer and farther points shift, so averaging samples taken across
+ * the lens blurs them while that plane stays sharp. The caller puts the camera's position and projection back.
+ */
+export function shiftLens(camera: THREE.PerspectiveCamera, ox: number, oy: number, focus: number) {
+  const m = camera.matrixWorld.elements;
+  camera.position.x += m[0] * ox + m[4] * oy;
+  camera.position.y += m[1] * ox + m[5] * oy;
+  camera.position.z += m[2] * ox + m[6] * oy;
+  camera.updateMatrixWorld();
+  const p = camera.projectionMatrix.elements;
+  p[8] -= (p[0] * ox) / focus;
+  p[9] -= (p[5] * oy) / focus;
+  camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
+}
+
 export class RenderPipeline {
   /** device pixels */
   width = 1;
@@ -392,6 +409,12 @@ export class RenderPipeline {
   pixelRatio = 1;
   samples = 0;
   maxSamples = SAMPLES.balanced;
+  /**
+   * Depth of field for the samples after the first: each looks from a point on a lens this wide (radius, world units)
+   * at the plane `focus` along the view, which stays sharp. Null: a pinhole, all sharp.
+   */
+  lens: { radius: number; focus: number } | null = null;
+  private savedPos = new THREE.Vector3();
   private sampleRT: THREE.WebGLRenderTarget;
   private aoRT: THREE.WebGLRenderTarget;
   private aoBlurRT: THREE.WebGLRenderTarget;
@@ -546,6 +569,11 @@ export class RenderPipeline {
       const jy = (halton(i, 3) - 0.5) * 2;
       camera.projectionMatrix.elements[8] += jx / this.width;
       camera.projectionMatrix.elements[9] += jy / this.height;
+      if (this.lens) {
+        const [lx, ly] = concentricDisc(halton(i, 11), halton(i, 13));
+        this.savedPos.copy(camera.position);
+        shiftLens(camera, lx * this.lens.radius, ly * this.lens.radius, this.lens.focus);
+      }
       camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
     }
     const prevTarget = r.getRenderTarget();
@@ -581,6 +609,10 @@ export class RenderPipeline {
     if (jitter) {
       camera.projectionMatrix.copy(this.savedProj);
       camera.projectionMatrixInverse.copy(this.savedProjInv);
+      if (this.lens) {
+        camera.position.copy(this.savedPos);
+        camera.updateMatrixWorld();
+      }
     }
 
     const prev = this.accum[this.cur];

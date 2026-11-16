@@ -1,7 +1,9 @@
 // Shader additions for part materials, patched into three's physical
 // material: procedural surface detail in part coordinates (bump, roughness
 // and colour variation), the dissolve used when a part is rebuilt, the scan
-// glow of the build-in reveal, and a flash for parts that just changed.
+// glow of the build-in reveal, a flash for parts that just changed (on the
+// surfaces that changed, when the view can tell them apart), and the ripple
+// that runs out from a click.
 
 import * as THREE from "three";
 import { Detail, type Appearance } from "./appearance";
@@ -26,6 +28,20 @@ export interface PartUniforms {
   uPly: { value: THREE.Vector4 };
   /** 1 when the part's mesh has threads to draw on their stand-in cylinders (its aThread attribute) */
   uThreads: { value: number };
+  /**
+   * A rebuilt part, told apart from its old shape: x is 0 when off, 1 for the new mesh (it glows only where it differs
+   * from the old one) and 2 for the old one (dropped where the new one matches it, dissolving elsewhere); y is how
+   * far apart two meshes of one surface can be, mm
+   */
+  uChange: { value: THREE.Vector4 };
+  /** the other mesh's depth as the view sees it (see ChangeDepth in scene.ts) */
+  tChange: { value: THREE.Texture | null };
+  /** 1 / its width, 1 / its height, the camera's near and far */
+  uChangeView: { value: THREE.Vector4 };
+  /** the click ripple: where it started (world) and how far it has run, mm */
+  uRipple: { value: THREE.Vector4 };
+  /** its strength (0: none) and the ring's width, mm */
+  uRippleAmt: { value: THREE.Vector2 };
 }
 
 export function partUniforms(): PartUniforms {
@@ -41,6 +57,11 @@ export function partUniforms(): PartUniforms {
     uEnvBoost: { value: 1 },
     uPly: { value: new THREE.Vector4(2, 0, 0, 0) },
     uThreads: { value: 0 },
+    uChange: { value: new THREE.Vector4() },
+    tChange: { value: null },
+    uChangeView: { value: new THREE.Vector4(1, 1, 1, 1000) },
+    uRipple: { value: new THREE.Vector4() },
+    uRippleAmt: { value: new THREE.Vector2(0, 1) },
   };
 }
 
@@ -121,6 +142,11 @@ uniform float uFlash;
 uniform float uEnvBoost;
 uniform vec4 uPly;
 uniform float uThreads;
+uniform vec4 uChange;
+uniform sampler2D tChange;
+uniform vec4 uChangeView;
+uniform vec4 uRipple;
+uniform vec2 uRippleAmt;
 varying vec3 vKObj;
 varying vec3 vKObjN;
 varying vec3 vKWorld;
@@ -128,6 +154,28 @@ flat varying float vThreadCode;
 varying vec3 vThread;
 ${NOISE}
 ${THREAD}
+
+float kViewZ(float d) {
+  return (uChangeView.z * uChangeView.w) / ((uChangeView.w - uChangeView.z) * d - uChangeView.w);
+}
+
+// 0 where this fragment lies on the other mesh's surface (as seen through this pixel or one beside it), 1 where it
+// is somewhere the other one isn't. The allowance grows where the surface is seen edge on, and with distance for the
+// depth buffer's steps.
+float kChangedHere(vec3 viewPos) {
+  float z = viewPos.z;
+  vec2 uv = gl_FragCoord.xy * uChangeView.xy;
+  vec2 o = uChangeView.xy;
+  float g = abs(z - kViewZ(texture2D(tChange, uv).x));
+  g = min(g, abs(z - kViewZ(texture2D(tChange, uv + vec2(o.x, 0.0)).x)));
+  g = min(g, abs(z - kViewZ(texture2D(tChange, uv - vec2(o.x, 0.0)).x)));
+  g = min(g, abs(z - kViewZ(texture2D(tChange, uv + vec2(0.0, o.y)).x)));
+  g = min(g, abs(z - kViewZ(texture2D(tChange, uv - vec2(0.0, o.y)).x)));
+  vec3 fn = normalize(cross(dFdx(viewPos), dFdy(viewPos)));
+  float facing = max(0.15, abs(dot(fn, normalize(viewPos))));
+  float tol = uChange.y / facing + z * z / (uChangeView.z * 16777216.0) * 4.0;
+  return smoothstep(tol, tol * 2.0, g);
+}
 
 // x: height (mm), y: pull toward the second tint, z: roughness change
 vec3 kDetail(vec3 p, vec3 n) {
@@ -267,6 +315,12 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
       .replace(
         "#include <clipping_planes_fragment>",
         `#include <clipping_planes_fragment>
+  float kChanged = 1.0;
+  if (uChange.x > 0.5) {
+    kChanged = kChangedHere(-vViewPosition);
+    // the old shape where the new one matches it: the new one is drawn there
+    if (uChange.x > 1.5 && kChanged < 0.5) discard;
+  }
   float kEdge = 0.0;
   if (uDissolve > 0.0) {
     float kn = kNoise(vKObj * uNoiseScale) * 0.65 + kNoise(vKObj * uNoiseScale * 3.1) * 0.35;
@@ -284,7 +338,13 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
-  totalEmissiveRadiance += uGlow * (kEdge * 3.0 + uFlash * 0.35);
+  // a new surface lights up from its rim (where it is seen edge on) inward; a whole rebuilt part just flashes
+  float kFres = 1.0 - abs(dot(normal, normalize(vViewPosition)));
+  totalEmissiveRadiance += uGlow * (kEdge * 3.0 + uFlash * (uChange.x > 0.5 ? kChanged * (0.7 + 1.6 * kFres * kFres) : 0.35));
+  if (uRippleAmt.x > 0.0) {
+    float kr = (distance(vKWorld, uRipple.xyz) - uRipple.w) / uRippleAmt.y;
+    totalEmissiveRadiance += uGlow * uRippleAmt.x * exp(-kr * kr);
+  }
   if (uScan.x > 0.5) {
     float kz = uScan.y - vKWorld.z;
     totalEmissiveRadiance += uGlow * 2.5 * step(0.0, kz) * (1.0 - smoothstep(0.0, uScan.z, kz));
@@ -293,7 +353,7 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
   (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-5";
+  mat.customProgramCacheKey = () => "kerf-part-6";
 }
 
 /** Copy an appearance into a material and its uniforms. */
