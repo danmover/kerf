@@ -14,6 +14,7 @@ import type { V3 } from "../../kernel/recipe";
 import type { CatalogPart, PinDef } from "../types";
 import { pinSpots } from "../boards3d/pins";
 import { FIELD_PLUGS } from "./fieldPlugs";
+import { DRONE_PLUGS } from "./dronePlugs";
 
 export type PlugKind =
   /** JST XH 2.50 mm: printer board headers, stepper and fan leads */
@@ -47,7 +48,9 @@ export type PlugKind =
   /** a stripped end in a lever connector (Wago 221) */
   | "lever"
   /** a stripped or tinned end clamped in a screw terminal, with no ferrule */
-  | "bare";
+  | "bare"
+  /** U.FL (IPEX MHF1) micro coax plug pressed onto its socket: antennas, a digital FPV camera's coax */
+  | "ufl";
 
 export interface PlugSpec {
   kind: PlugKind;
@@ -88,6 +91,7 @@ export const PITCH: Record<PlugKind, number> = {
   sh: 1.0,
   lever: 5.6,
   bare: 5.0,
+  ufl: 0,
 };
 
 /** Names shown when a plug is picked. */
@@ -106,9 +110,10 @@ export const PLUG_NAME: Record<PlugKind, string> = {
   lug: "soldered to the lug",
   barrel: "5.5 × 2.1 mm DC barrel plug",
   spade: "6.3 mm spade",
-  sh: "STEMMA QT plug (JST SH 1.0 mm)",
+  sh: "JST SH 1.0 mm plug (STEMMA QT, Qwiic)",
   lever: "stripped end in the lever connector",
   bare: "bare end in the screw terminal",
+  ufl: "U.FL coax plug",
 };
 
 const X: V3 = [1, 0, 0];
@@ -261,6 +266,7 @@ const NAU: PlugTable = { ...qtPlugs("QT1", [-12.65, 0.6, 3.1], NX, Y), ...qtPlug
 /** Plugs for catalog parts, by catalog id and pin (or spot) id. */
 export const PLUGS: Record<string, PlugTable> = {
   ...FIELD_PLUGS,
+  ...DRONE_PLUGS,
   esp32_devkitc: devkitcPins(),
   waveshare_st3215: BUS_SERVO,
   // Bus Servo Adapter (A) (42 × 33, top at 1.6): supply screw terminal on the -X edge, the UART header along the
