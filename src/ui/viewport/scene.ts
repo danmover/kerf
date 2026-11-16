@@ -22,6 +22,7 @@ import { buildShare } from "../../film/timeline";
 import { appearanceFor, Detail, type Appearance } from "./render/appearance";
 import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
+import { ChangeDepth } from "./render/changeDepth";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
@@ -43,6 +44,12 @@ const L_MARKS = 4;
 
 /** How many removed parts' materials are kept so their shaders stay compiled (see retire()). */
 const RETIRED_MAX = 48;
+/** How long a rebuilt part's new surfaces glow, and how long its lost ones take to dissolve, ms */
+const CHANGE_MS = 1100;
+const CHANGE_FADE_MS = 620;
+
+/** How far apart two meshes of one surface can lie, by the mesh's quality (src/kernel/build.ts meshes preview at 0.25 mm, the rest at 0.03). */
+const meshTolerance = (geoKey: string) => (geoKey.endsWith(":preview") ? 0.25 : 0.03);
 /** How many material-ball materials are kept */
 const SWATCH_MATS_MAX = 96;
 
@@ -81,6 +88,10 @@ interface PartObj {
   /** dissolve in after a rebuild, or out on removal */
   dissolve: { t0: number; dur: number; out: boolean } | null;
   flash: { t0: number; dur: number } | null;
+  /** rebuilt: its new surfaces glowing, told apart from the old ones by ChangeDepth */
+  change: { t0: number; dur: number } | null;
+  /** a ring of light running out from where it was clicked */
+  ripple: { t0: number; dur: number; reach: number } | null;
   removing: boolean;
   opacity: number;
   opacityTarget: number;
@@ -127,12 +138,18 @@ interface Decor {
 /** The previous geometry of a rebuilt part, dissolving away. */
 interface Ghost {
   group: THREE.Group;
+  mesh: THREE.Mesh;
   mat: THREE.MeshPhysicalMaterial;
   u: PartUniforms;
   edgeMat: THREE.LineBasicMaterial;
+  edgeAlpha: number;
   geoKey: string;
   t0: number;
+  /** how long it is kept, and how long it takes to dissolve (kept longer for the new mesh to test against) */
   dur: number;
+  fade: number;
+  /** only the surfaces the new mesh doesn't cover dissolve (see startChange) */
+  change: boolean;
 }
 
 /** What is under a point on screen: the part, and the spot on it in the part's own frame and in the assembly. */
@@ -203,6 +220,8 @@ export interface RenderSettings {
   photoreal: boolean;
   /** the app theme: a dark lighting set swaps to a pale backdrop in the light theme */
   theme?: "dark" | "light";
+  /** once the view is still, the parts in front of and behind the selection soften a little (on unless false) */
+  focusBlur?: boolean;
 }
 
 /** What the photoreal view is doing, for the viewport's status line. */
@@ -295,6 +314,12 @@ export class SceneController {
   private interGroup = new THREE.Group();
   private parts = new Map<string, PartObj>();
   private ghosts: Ghost[] = [];
+  private changeDepth: ChangeDepth | null = null;
+  /** where the camera is drawing back to, to keep a design's arriving parts in view (see growView) */
+  private growTo: { pos: THREE.Vector3; target: THREE.Vector3; at: number } | null = null;
+  /** depth of field on the selection (see focusLens), and the selection it was worked out for */
+  private lens: { radius: number; focus: number } | null = null;
+  private lensSel: ReadonlySet<string> | null = null;
   private geos = new Map<string, GeoEntry>();
   private seenHashByPart = new Map<string, string>();
   /** the meshes the parts were last set from, for switching a part between its drawn and real threads */
@@ -549,7 +574,11 @@ export class SceneController {
         const part = this.rayHit(e.clientX, e.clientY);
         const over = this.overlayHit(e.clientX, e.clientY, part?.distance);
         for (const o of this.overlays) o.pick?.(over?.o === o ? over.hit : null, additive);
-        if (!over) this.onPick(part?.object.userData.partId ?? null, additive);
+        if (!over) {
+          const id: string | null = part?.object.userData.partId ?? null;
+          if (part && id) this.startRipple(id, part.point);
+          this.onPick(id, additive);
+        }
       }
       else if (still && e.button === 2) this.onContext(this.hitAt(e.clientX, e.clientY), e.clientX, e.clientY);
       down = null;
@@ -595,6 +624,7 @@ export class SceneController {
     this.controls.dispose();
     for (const p of [...this.parts.values()]) this.disposePart(p);
     for (const g of [...this.ghosts]) this.disposeGhost(g);
+    this.changeDepth?.dispose();
     this.measure.clear();
     for (const g of this.geos.values()) {
       g.mesh.dispose();
@@ -839,6 +869,7 @@ export class SceneController {
   /** Swing the camera to a position and target (at once with reduced motion). */
   private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
     this.zoomGlide = null;
+    this.growTo = null;
     if (this.display.reduceMotion) {
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
@@ -854,7 +885,12 @@ export class SceneController {
 
   // ---------- parts ----------
 
-  setParts(parts: EvalPart[], meshes: Map<string, MeshEntry>) {
+  /**
+   * Show these parts with these meshes. While `building`, a part whose new shape has no mesh yet keeps showing its
+   * old one, so an edited part stays put until it can show what changed; once the build is over, one still without
+   * a mesh (its build failed) goes.
+   */
+  setParts(parts: EvalPart[], meshes: Map<string, MeshEntry>, opts: { building?: boolean } = {}) {
     this.lastMeshes = meshes;
     const want = new Set<string>();
     const now = performance.now();
@@ -864,7 +900,10 @@ export class SceneController {
     let fresh = 0;
     for (const part of parts) {
       const pick = pickMesh(meshes.get(part.hash), this.realThreads(part.id));
-      if (!pick) continue;
+      if (!pick) {
+        if (opts.building && this.parts.get(part.id)?.removing === false) want.add(part.id);
+        continue;
+      }
       const { data, quality } = pick;
       want.add(part.id);
       const geoKey = `${part.hash}:${quality}`;
@@ -884,9 +923,11 @@ export class SceneController {
           else this.startReveal(obj, now + Math.min(fresh++ * 45, 900));
         }
       } else if (obj.geoKey !== geoKey) {
-        if (motion && isNewGeometry) this.spawnGhost(obj, now);
+        const oldKey = obj.geoKey;
+        const ghost = motion && isNewGeometry ? this.spawnGhost(obj, now) : null;
         this.swapGeometry(obj, geoKey, data);
-        if (motion && isNewGeometry) this.startDissolveIn(obj, now);
+        if (ghost) this.startChange(obj, ghost, oldKey, now);
+        else if (motion && isNewGeometry) this.startDissolveIn(obj, now);
       }
       obj.part = part;
       obj.hash = part.hash;
@@ -902,6 +943,8 @@ export class SceneController {
       else {
         obj.removing = true;
         obj.reveal = null;
+        obj.change = null;
+        obj.u.uChange.value.x = 0;
         obj.dissolve = { t0: now, dur: 420, out: true };
         obj.mesh.castShadow = false;
         if (obj.decor) obj.decor.d.object.visible = false;
@@ -912,8 +955,27 @@ export class SceneController {
       this.hasFitted = true;
       this.fit("iso", false);
       this.onFirstFrame();
-    }
+    } else if (this.autoFit && this.parts.size) this.growView();
     this.changed = true;
+  }
+
+  /**
+   * While a design opens and the camera is still the app's: the first parts are framed as they come, and the camera
+   * draws back smoothly as more arrive, so none land out of view before the build finishes (settle() then frames it).
+   */
+  private growView() {
+    if (this.camAnim) return;
+    const { pos, target } = this.framing("current", this.camera.aspect);
+    const off = this.camera.position.distanceTo(this.controls.target);
+    const goal = this.growTo ?? { pos: this.camera.position, target: this.controls.target };
+    // not for a nudge
+    if (Math.abs(pos.distanceTo(target) - goal.pos.distanceTo(goal.target)) < off * 0.03 && target.distanceTo(goal.target) < off * 0.03) return;
+    if (this.display.reduceMotion) {
+      this.camera.position.copy(pos);
+      this.controls.target.copy(target);
+      this.controls.update();
+      this.growTo = null;
+    } else this.growTo = { pos, target, at: this.growTo?.at ?? performance.now() };
   }
 
   private geometry(key: string, data: MeshData): GeoEntry {
@@ -1004,6 +1066,8 @@ export class SceneController {
       reveal: null,
       dissolve: null,
       flash: null,
+      change: null,
+      ripple: null,
       removing: false,
       opacity: 1,
       opacityTarget: 1,
@@ -1125,9 +1189,9 @@ export class SceneController {
   }
 
   /** Keep the old geometry of a rebuilt part on screen, dissolving away. */
-  private spawnGhost(obj: PartObj, now: number) {
+  private spawnGhost(obj: PartObj, now: number): Ghost | null {
     const g = this.geos.get(obj.geoKey);
-    if (!g) return;
+    if (!g) return null;
     g.users++;
     const { mat, u } = this.newPartMaterial(obj.look);
     u.uNoiseScale.value = obj.u.uNoiseScale.value;
@@ -1145,7 +1209,87 @@ export class SceneController {
     group.matrix.copy(obj.group.matrix);
     group.add(mesh, edges);
     this.root.add(group);
-    this.ghosts.push({ group, mat, u, edgeMat, geoKey: obj.geoKey, t0: now, dur: 520 });
+    const ghost: Ghost = { group, mesh, mat, u, edgeMat, edgeAlpha: edgeMat.opacity, geoKey: obj.geoKey, t0: now, dur: 520, fade: 520, change: false };
+    this.ghosts.push(ghost);
+    return ghost;
+  }
+
+  /**
+   * A rebuilt part shows what changed: its new surfaces light up, the surfaces it lost dissolve away, and what stayed
+   * where it was stays still. Which is which is told per pixel, from the two meshes' depth (drawChangeDepth).
+   */
+  private startChange(obj: PartObj, ghost: Ghost, oldKey: string, now: number) {
+    const tol = (meshTolerance(oldKey) + meshTolerance(obj.geoKey)) * 1.3 + 0.02;
+    obj.reveal = null;
+    obj.u.uScan.value.x = 0;
+    obj.dissolve = null;
+    obj.u.uDissolve.value = 0;
+    obj.flash = null;
+    obj.change = { t0: now, dur: CHANGE_MS };
+    obj.u.uChange.value.set(1, tol, 0, 0);
+    obj.u.uFlash.value = 0;
+    ghost.change = true;
+    ghost.dur = CHANGE_MS;
+    ghost.fade = CHANGE_FADE_MS;
+    ghost.u.uChange.value.set(2, tol, 0, 0);
+  }
+
+  /** Before a sample, while parts show what changed: the depth their shaders test against. */
+  private drawChangeDepth() {
+    const news: PartObj[] = [];
+    for (const o of this.parts.values()) if (o.change) news.push(o);
+    const olds = this.ghosts.filter((g) => g.change);
+    if (!news.length && !olds.length) return;
+    this.changeDepth ??= new ChangeDepth(this.renderer);
+    const { width, height } = this.pipe;
+    const depth = this.changeDepth.draw(
+      this.camera,
+      width,
+      height,
+      olds.filter((g) => g.group.visible).map((g) => g.mesh),
+      news.filter((o) => o.group.visible && o.mesh.visible).map((o) => o.mesh),
+    );
+    const view = (u: PartUniforms, t: THREE.Texture) => {
+      u.tChange.value = t;
+      u.uChangeView.value.set(1 / width, 1 / height, this.camera.near, this.camera.far);
+    };
+    for (const o of news) view(o.u, depth.old);
+    for (const g of olds) view(g.u, depth.new);
+  }
+
+  /** End the change glows and ripples now (captures and films draw with buffers of their own). */
+  private finishEffects() {
+    for (const o of this.parts.values()) {
+      if (o.change) {
+        o.change = null;
+        o.u.uChange.value.x = 0;
+        o.u.uFlash.value = 0;
+      }
+      if (o.ripple) {
+        o.ripple = null;
+        o.u.uRippleAmt.value.x = 0;
+      }
+    }
+    for (const g of [...this.ghosts]) this.disposeGhost(g);
+  }
+
+  /** A ring of light runs out over the part from the spot clicked. */
+  private startRipple(id: string, at: THREE.Vector3) {
+    const obj = this.parts.get(id);
+    if (!obj || this.display.reduceMotion) return;
+    // it runs out to the part's farthest corner
+    const box = obj.mesh.geometry.boundingBox;
+    if (!box) return;
+    const c = new THREE.Vector3();
+    let reach = 1;
+    for (let k = 0; k < 8; k++) {
+      c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z).applyMatrix4(obj.group.matrixWorld);
+      reach = Math.max(reach, c.distanceTo(at));
+    }
+    obj.ripple = { t0: performance.now(), dur: 900, reach };
+    obj.u.uRipple.value.set(at.x, at.y, at.z, 0);
+    obj.u.uRippleAmt.value.set(0, Math.max(0.5, reach * 0.07));
+    this.changed = true;
   }
 
   private disposeGhost(g: Ghost) {
@@ -1731,6 +1875,32 @@ export class SceneController {
     }
   }
 
+  /**
+   * Depth of field on the selection while the view is still: the parts nearer and farther soften a little as the
+   * image refines, which reads as the camera pulling focus. The lens is sized so the selection itself stays sharp
+   * (its far side blurs by under a pixel). None in draft quality, under the photoreal view, or when turned off.
+   */
+  private focusLens(): { radius: number; focus: number } | null {
+    if (this.render$.focusBlur === false || this.render$.quality === "draft" || this.photoLookOn) return null;
+    const sel = this.display.selected;
+    if (!sel.size) return null;
+    const box = new THREE.Box3();
+    for (const id of sel) {
+      const o = this.parts.get(id);
+      if (o && !o.removing && o.group.visible) box.expandByObject(o.mesh);
+    }
+    if (box.isEmpty()) return null;
+    const sphere = box.getBoundingSphere(new THREE.Sphere());
+    const ahead = this.camera.getWorldDirection(new THREE.Vector3());
+    const focus = sphere.center.clone().sub(this.camera.position).dot(ahead);
+    if (focus <= this.camera.near * 4) return null;
+    const tanHalf = Math.tan(THREE.MathUtils.degToRad(this.camera.fov) / 2);
+    const d = Math.max(sphere.radius, 1e-3);
+    const sharp = (0.75 * 2 * focus * tanHalf * (focus + d)) / (d * Math.max(1, this.pipe.height));
+    const radius = Math.min(focus * 0.007, sharp);
+    return radius > focus * 1e-4 ? { radius, focus } : null;
+  }
+
   /** Called when a build completes: frames the whole model once, unless the user already moved the camera. */
   settle() {
     if (!this.autoFit || !this.parts.size) return;
@@ -1775,6 +1945,7 @@ export class SceneController {
   }
 
   fit(p: ViewPreset | "current" = "current", animate = true, box?: THREE.Box3, dir?: THREE.Vector3) {
+    this.growTo = null;
     const { pos, target } = this.framing(p, this.camera.aspect, box, dir);
     if (!animate || this.display.reduceMotion) {
       this.camera.position.copy(pos);
@@ -1803,6 +1974,7 @@ export class SceneController {
   /** The user has taken the camera: stop any move towards a view, the first framing and the turntable. */
   takeCamera() {
     this.camAnim = null;
+    this.growTo = null;
     this.autoFit = false;
     if (this.turntable) {
       this.turntable = false;
@@ -1952,6 +2124,16 @@ export class SceneController {
       this.controls.update();
       if (k >= 1) this.camAnim = null;
       moving = true;
+    } else if (this.growTo) {
+      const g = this.growTo;
+      // by the time passed, not the capped frame step: a design still building can hold frames up for a while
+      const k = rm ? 1 : 1 - Math.exp(-Math.min(1, (now - g.at) / 1000) * 3.2);
+      g.at = now;
+      this.camera.position.lerp(g.pos, k);
+      this.controls.target.lerp(g.target, k);
+      this.controls.update();
+      if (this.camera.position.distanceTo(g.pos) < 1e-3 * g.pos.distanceTo(g.target)) this.growTo = null;
+      moving = true;
     }
 
     if (this.playing) {
@@ -2039,6 +2221,27 @@ export class SceneController {
         if (k >= 1) obj.flash = null;
         moving = true;
       }
+      // new surfaces glow at once and cool off
+      if (obj.change) {
+        const k = (now - obj.change.t0) / obj.change.dur;
+        if (k >= 1) {
+          obj.change = null;
+          obj.u.uChange.value.x = 0;
+          obj.u.uFlash.value = 0;
+        } else obj.u.uFlash.value = Math.min(1, k * 8) * (1 - k) * (1 - k);
+        moving = true;
+      }
+      if (obj.ripple) {
+        const k = (now - obj.ripple.t0) / obj.ripple.dur;
+        if (k >= 1) {
+          obj.ripple = null;
+          obj.u.uRippleAmt.value.x = 0;
+        } else {
+          obj.u.uRipple.value.w = obj.ripple.reach * (1 - (1 - k) ** 2);
+          obj.u.uRippleAmt.value.x = 1.6 * Math.min(1, k * 10) * (1 - k) ** 1.5;
+        }
+        moving = true;
+      }
       // ghosting fades
       if (Math.abs(obj.opacity - obj.opacityTarget) > 1e-3) {
         obj.opacity = rm ? obj.opacityTarget : obj.opacity + (obj.opacityTarget - obj.opacity) * Math.min(1, dt * 12);
@@ -2109,9 +2312,15 @@ export class SceneController {
     if (asm && assemblyDone) this.assembly = null;
 
     for (const g of [...this.ghosts]) {
-      const k = (now - g.t0) / g.dur;
-      if (k >= 1) this.disposeGhost(g);
-      else g.u.uDissolve.value = easeInOut(k);
+      const age = now - g.t0;
+      if (age >= g.dur) this.disposeGhost(g);
+      else {
+        const f = Math.min(1, age / g.fade);
+        g.u.uDissolve.value = easeInOut(f);
+        g.edgeMat.opacity = g.edgeAlpha * (1 - f);
+        // gone, but still drawn into the depth the new mesh tests against
+        if (f >= 1) g.mesh.castShadow = false;
+      }
       moving = true;
     }
     return moving;
@@ -2158,6 +2367,15 @@ export class SceneController {
       this.maskDirty = true;
       restarted = true;
     }
+    // the selection in focus: worked out for each new view and each new selection; a change starts the image again
+    if (restarted || this.display.selected !== this.lensSel) {
+      this.lensSel = this.display.selected;
+      const lens = this.focusLens();
+      if (!sameLens(lens, this.lens)) {
+        this.lens = lens;
+        this.pipe.reset();
+      }
+    }
     if (this.photo && !this.render$.photoreal && now - this.photoOffAt > PHOTO_KEEP && !this.photo.busy) this.dropPhoto();
     let photo = this.photoActive();
     // while the model builds, the trace waits for its final meshes instead of restarting on each
@@ -2186,7 +2404,12 @@ export class SceneController {
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
     let rastered = false;
     if (this.pipe.samples < rasterMax) {
-      this.pipe.renderSample(this.scene, this.camera, (i) => this.placeKey(i));
+      this.pipe.lens = this.lens;
+      this.pipe.renderSample(this.scene, this.camera, (i) => {
+        this.placeKey(i);
+        this.drawChangeDepth();
+      });
+      this.pipe.lens = null;
       this.needComposite = true;
       rastered = true;
     }
@@ -2515,6 +2738,7 @@ export class SceneController {
     const out = new THREE.WebGLRenderTarget(opts.width, opts.height, { type: THREE.UnsignedByteType, depthBuffer: showOverlays });
     out.texture.colorSpace = THREE.SRGBColorSpace;
     // let pending reveal animations finish first
+    this.finishEffects();
     for (const o of this.parts.values()) {
       if (o.reveal) {
         o.reveal = null;
@@ -2705,6 +2929,7 @@ export class SceneController {
       fillOpacity: (this.sectionFill.material as THREE.MeshBasicMaterial).opacity,
     };
     // finish what was animating: a part still sweeping in, or fading
+    this.finishEffects();
     for (const o of this.parts.values()) {
       if (o.reveal) {
         o.reveal = null;
@@ -3232,4 +3457,9 @@ uniform float uHover;`,
   };
   m.customProgramCacheKey = () => "kerf-kept-mask-1";
   return m;
+}
+
+function sameLens(a: { radius: number; focus: number } | null, b: { radius: number; focus: number } | null): boolean {
+  if (!a || !b) return a === b;
+  return Math.abs(a.focus - b.focus) <= a.focus * 1e-3 && Math.abs(a.radius - b.radius) <= a.radius * 1e-2;
 }

@@ -529,6 +529,9 @@ function AppSettings() {
         <Row t="Edge lines" d="Outlines the sharp edges of every part.">
           <Toggle on={s.edges} onChange={(v) => updateSettings({ edges: v })} label="Edge lines" />
         </Row>
+        <Row t="Focus on the selection" d="Once the view is still, the parts in front of and behind what you selected soften a little, as a camera's focus would.">
+          <Toggle on={s.focusBlur} onChange={(v) => updateSettings({ focusBlur: v })} label="Focus on the selection" />
+        </Row>
       </Section>
       <Section title="Mouse and keys">
         <Row t="Mouse" d={MOUSE_SCHEMES[s.mouseScheme].d}>
