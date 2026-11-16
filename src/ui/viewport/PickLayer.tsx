@@ -188,7 +188,7 @@ export function recallSet(set: SelectionSet) {
 
 function currentMesh(part: EvalPart): MeshData | undefined {
   const e = meshes.get(part.hash);
-  return e?.final ?? e?.preview;
+  return e?.display ?? e?.final ?? e?.preview;
 }
 
 // ---------- picking in the view ----------

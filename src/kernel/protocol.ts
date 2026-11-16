@@ -1,7 +1,7 @@
 // Messages between the UI thread and the geometry kernel worker.
 
 import type { PartRecipe, Sel, V3, Xform } from "./recipe";
-import type { MeshData } from "./build";
+import type { MeshData, MeshQuality } from "./build";
 import type { GeoQuery } from "../lang/values";
 import type { ProcessProbe, ProcessResult } from "../mfg/types";
 import type { PickMeasure, PickRef, ViewRequest, ViewResult } from "./drawing";
@@ -155,7 +155,7 @@ export interface InspectResult {
 
 export type ToWorker =
   | { type: "init" }
-  | { type: "build"; jobId: number; items: BuildItem[]; quality: "preview" | "final" }
+  | { type: "build"; jobId: number; items: BuildItem[]; quality: MeshQuality }
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: ExportItem[] }
@@ -176,7 +176,7 @@ export type ToWorker =
 export type FromWorker =
   | { type: "ready"; ms: number }
   | { type: "init-error"; message: string }
-  | { type: "part"; jobId: number; hash: string; quality: "preview" | "final"; mesh: MeshData; volume: number; bbox: [V3, V3]; ms: number; warnings?: string[] }
+  | { type: "part"; jobId: number; hash: string; quality: MeshQuality; mesh: MeshData; volume: number; bbox: [V3, V3]; ms: number; warnings?: string[] }
   | { type: "part-error"; jobId: number; hash: string; message: string }
   | { type: "built"; jobId: number; ms: number; built: number; cached: number }
   | { type: "checks"; jobId: number; result: ChecksResult }

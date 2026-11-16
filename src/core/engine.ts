@@ -9,6 +9,7 @@ import { detailKernel, kernel, type KernelStatus, type PartResult } from "../ker
 import type { MeshData } from "../kernel/build";
 import type { Interference, ChecksResult } from "../kernel/protocol";
 import { hasDetail, type V3 } from "../kernel/recipe";
+import { displayBuilt, hasThreads } from "../kernel/threadMarks";
 import { assembleReport, buildChecksRequest, type CheckItem, type CheckReport } from "./checks";
 import { composeReport, registerReportPass, type ReportContext } from "./reportPasses";
 import type { Conflict } from "./feasibility";
@@ -28,6 +29,11 @@ import { splitTable } from "./splitGeom";
 
 export interface MeshEntry {
   preview?: MeshData;
+  /**
+   * What the 3D view shows for a part with threads: exact tolerance, with plain cylinders where the threads are and
+   * the threads drawn on them by the part shader. `final` has the real threads, for export, photoreal and close-ups.
+   */
+  display?: MeshData;
   final?: MeshData;
   volume: number;
   bbox: [V3, V3];
@@ -360,16 +366,22 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   });
 
   // refine: exact-tolerance meshes here; the detailed geometry (threads, knurls, cosmetic steps) in a worker of its
-  // own, so a slow detail build never holds up the next edit's preview and checks
-  const refine = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview && !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
-  if (refine.length) {
+  // own, so a slow detail build never holds up the next edit's preview and checks. A part with threads also gets a
+  // display mesh, which the 3D view shows: its threads drawn on plain cylinders rather than built, which is most of
+  // the triangles and most of the detail build's time in a design with many screws
+  const shown = [...byHash.values()].filter((p) => meshes.get(p.hash)?.preview);
+  const refine = shown.filter((p) => !meshes.get(p.hash)?.final && !detailFailed.has(p.hash));
+  const needDisplay = shown.filter((p) => !meshes.get(p.hash)?.display && hasDetail(p.recipe) && hasThreads(p.recipe));
+  if (refine.length || needDisplay.length) {
     const issues = new Map(get().detailIssues);
     const onPart = (r: PartResult) => {
       const prev = meshes.get(r.hash);
       if (prev) {
-        prev.final = r.mesh;
+        if (r.quality === "display") prev.display = r.mesh;
+        else prev.final = r.mesh;
         bumpMeshes();
       }
+      if (r.quality === "display") return;
       if (r.warnings?.length) issues.set(r.hash, r.warnings.join(" "));
       else issues.delete(r.hash);
     };
@@ -381,24 +393,42 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
       set({ detailIssues: new Map(get().detailIssues).set(hash, issues.get(hash)!) });
       refreshReport();
     };
+    // a display mesh that can't be made leaves the part as it is: its detailed build comes next and says why
+    const onDisplayError = () => undefined;
     const item = (p: EvalPart) => ({ hash: p.hash, recipe: p.recipe, label: p.label });
     const detailed = refine.filter((p) => hasDetail(p.recipe));
     const plain = refine.filter((p) => !hasDetail(p.recipe));
+    // display meshes of parts whose only detail is threads are their fast solid, already in the main worker
+    const displayFast = needDisplay.filter((p) => !displayBuilt(p.recipe));
+    const displayDetailed = needDisplay.filter((p) => displayBuilt(p.recipe));
     // the detail worker needs the imported STEP files that detailed parts build on
-    if (detailed.some((p) => recipeUsesImport(p.recipe)) && detailKernel.status !== "error") {
+    if ([...detailed, ...displayDetailed].some((p) => recipeUsesImport(p.recipe)) && detailKernel.status !== "error") {
       await detailImportsLoaded();
       if (get().rev !== rev) return;
     }
-    const jobs: ReturnType<typeof kernel.build>[] = [];
-    if (plain.length) jobs.push(kernel.build(plain.map(item), "final", onPart, onError));
-    if (detailed.length && detailKernel.status === "error") {
+    const jobs: Promise<{ cancelled: boolean }>[] = [];
+    const run = (job: ReturnType<typeof kernel.build>) => {
+      activeJobs.push(job);
+      return job.done;
+    };
+    if (displayFast.length) jobs.push(run(kernel.build(displayFast.map(item), "display", onPart, onDisplayError)));
+    if (plain.length) jobs.push(run(kernel.build(plain.map(item), "final", onPart, onError)));
+    if ((detailed.length || displayDetailed.length) && detailKernel.status === "error") {
       for (const p of detailed) issues.set(p.hash, `The detailed build is unavailable, so the simple shape is shown: ${detailKernel.error}`);
-    } else if (detailed.length) {
+    } else if (detailed.length || displayDetailed.length) {
       detailKernel.start();
-      jobs.push(detailKernel.build(detailed.map(item), "final", onPart, onError));
+      // the display meshes first: they are what the view shows, and they are quick without their threads
+      jobs.push(
+        (async () => {
+          if (displayDetailed.length) {
+            const r = await run(detailKernel.build(displayDetailed.map(item), "display", onPart, onDisplayError));
+            if (r.cancelled || get().rev !== rev) return { cancelled: true };
+          }
+          return detailed.length ? run(detailKernel.build(detailed.map(item), "final", onPart, onError)) : { cancelled: false };
+        })(),
+      );
     }
-    activeJobs.push(...jobs);
-    const results = await Promise.all(jobs.map((j) => j.done));
+    const results = await Promise.all(jobs);
     if (results.some((r) => r.cancelled) || get().rev !== rev) return;
     const live = new Set(byHash.keys());
     for (const h of [...issues.keys()]) if (!live.has(h)) issues.delete(h);

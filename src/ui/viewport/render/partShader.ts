@@ -24,6 +24,8 @@ export interface PartUniforms {
   uEnvBoost: { value: number };
   /** plywood: the part's thin axis (0 x, 1 y, 2 z), its grain axis, where the plies start along the thin axis and each ply's thickness (0: faces only) */
   uPly: { value: THREE.Vector4 };
+  /** 1 when the part's mesh has threads to draw on their stand-in cylinders (its aThread attribute) */
+  uThreads: { value: number };
 }
 
 export function partUniforms(): PartUniforms {
@@ -38,6 +40,7 @@ export function partUniforms(): PartUniforms {
     uFlash: { value: 0 },
     uEnvBoost: { value: 1 },
     uPly: { value: new THREE.Vector4(2, 0, 0, 0) },
+    uThreads: { value: 0 },
   };
 }
 
@@ -75,6 +78,37 @@ float kNoise(vec3 x) {
 }
 `;
 
+/**
+ * A thread drawn on the plain cylinder that stands in for it (see src/kernel/threadMarks.ts). Per vertex, aThread
+ * holds: x = hand × (form × 65536 + starts × 4096 + turns), the same over the whole face; y = pitches along the axis
+ * from the thread's start; zw = the cosine and sine of the angle round the axis, times the pitch. Returns the thread's
+ * height in mm (for the bump) and how deep in a root the point is (for a little shade); zero off a thread, and fading
+ * to zero where a pitch gets narrower than about two pixels.
+ */
+const THREAD = /* glsl */ `
+vec2 kThread() {
+  float ax = abs(vThreadCode);
+  float on = step(0.5, ax);
+  float form = floor(ax / 65536.0);
+  float starts = floor((ax - form * 65536.0) / 4096.0);
+  float turns = ax - form * 65536.0 - starts * 4096.0;
+  vec2 cs = on > 0.5 ? vThread.yz : vec2(1.0, 0.0);
+  float P = max(length(cs), 1e-4);
+  float ph = vThread.x + sign(vThreadCode) * starts * atan(cs.y, cs.x) * 0.15915494;
+  float fw = fwidth(vThread.x) + starts * (fwidth(cs.x) + fwidth(cs.y)) / (P * 6.2831853);
+  float fade = on * (1.0 - smoothstep(0.22, 0.5, fw));
+  // only between the thread's ends: a plain shank on the same axis stays plain
+  float inside = step(-0.02, vThread.x) * step(vThread.x, turns + 0.02);
+  float tri = 1.0 - abs(2.0 * fract(ph) - 1.0);
+  // the flats at crest and root, as parts of a pitch: ISO 1/8 and 1/4, trapezoid and buttress wider, square nearly all
+  vec2 flats = form < 0.5 ? vec2(0.125, 0.25) : form < 1.5 ? vec2(0.37, 0.37) : form < 2.5 ? vec2(0.47, 0.47) : vec2(0.15, 0.2);
+  float prof = clamp((tri - flats.y) / max(1e-3, 1.0 - flats.x - flats.y), 0.0, 1.0);
+  float depth = (form < 0.5 ? 0.541 : form < 2.5 ? 0.5 : 0.6) * P;
+  float k = fade * inside;
+  return vec2(prof * depth * k, (1.0 - prof) * k);
+}
+`;
+
 const DETAIL = /* glsl */ `
 uniform vec4 uDetail;
 uniform vec3 uTint2;
@@ -86,10 +120,14 @@ uniform vec3 uScan;
 uniform float uFlash;
 uniform float uEnvBoost;
 uniform vec4 uPly;
+uniform float uThreads;
 varying vec3 vKObj;
 varying vec3 vKObjN;
 varying vec3 vKWorld;
+flat varying float vThreadCode;
+varying vec3 vThread;
 ${NOISE}
+${THREAD}
 
 // x: height (mm), y: pull toward the second tint, z: roughness change
 vec3 kDetail(vec3 p, vec3 n) {
@@ -221,8 +259,8 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, u);
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vKObj;\nvarying vec3 vKObjN;\nvarying vec3 vKWorld;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvKObj = position;\nvKObjN = normal;")
+      .replace("#include <common>", "#include <common>\nvarying vec3 vKObj;\nvarying vec3 vKObjN;\nvarying vec3 vKWorld;\nattribute vec4 aThread;\nflat varying float vThreadCode;\nvarying vec3 vThread;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvKObj = position;\nvKObjN = normal;\nvThreadCode = aThread.x;\nvThread = aThread.yzw;")
       .replace("#include <project_vertex>", "#include <project_vertex>\nvKWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", "#include <common>\n" + DETAIL)
@@ -236,12 +274,13 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
     if (kn < kt) discard;
     kEdge = 1.0 - smoothstep(kt, kt + 0.045, kn);
   }
-  vec3 kd = kDetail(vKObj, normalize(vKObjN));`,
+  vec3 kd = kDetail(vKObj, normalize(vKObjN));
+  vec2 kThr = uThreads > 0.5 ? kThread() : vec2(0.0);`,
       )
-      .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uTint2, clamp(kd.y * uTintAmt, 0.0, 1.0));")
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uTint2, clamp(kd.y * uTintAmt, 0.0, 1.0));\n  diffuseColor.rgb *= 1.0 - 0.3 * kThr.y;")
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(roughnessFactor + kd.z, 0.03, 1.0);")
       .replace("#include <lights_fragment_maps>", "#include <lights_fragment_maps>\n  radiance *= uEnvBoost;")
-      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (uDetail.y > 0.0) normal = kPerturb(-vViewPosition, normal, kd.x, faceDirection);")
+      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(-vViewPosition, normal, (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x, faceDirection);")
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
@@ -252,7 +291,9 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
   }`,
       );
   };
-  mat.customProgramCacheKey = () => "kerf-part-4";
+  // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
+  (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0] };
+  mat.customProgramCacheKey = () => "kerf-part-5";
 }
 
 /** Copy an appearance into a material and its uniforms. */
