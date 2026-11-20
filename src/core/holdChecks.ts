@@ -206,7 +206,10 @@ function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p:
     const cat = catOf(p);
     return !!cat && SEATED_KINDS.has(cat.kind);
   };
-  const declared = (p: EvalPart) => modules.has(instance(p)) || !!p.flex?.length || !!p.spring || p.libKind === "belt" || thin(p) || seated(p);
+  // a part with travel of its own is kept in line by the guides it touches; what carries its weight along the
+  // travel is the gravity checks' to find
+  const guided = (p: EvalPart) => p.motion?.kind === "slide" && !p.motion.link && !!p.motion.travel;
+  const declared = (p: EvalPart) => modules.has(instance(p)) || !!p.flex?.length || !!p.spring || p.libKind === "belt" || thin(p) || seated(p) || guided(p);
   // a part that says how it is held (held: "glued") is taken at its word
   const says = (p: EvalPart) => !!p.held || !!(model.machine?.components ?? []).find((c) => c.name === p.name && c.held);
   // parts that are not built into the design: an external supply, an inline connector or fuse on its wires, and

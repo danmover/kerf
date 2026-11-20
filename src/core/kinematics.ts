@@ -187,17 +187,32 @@ function rollAngle(m: Motion, d: number): number {
   return sums[k] + cell(sg * k * ROLL_CELL, d);
 }
 
+/** A motion's own move at a drive angle already folded into its run, before what carries it. */
+function ownPose(m: Motion, d: number): Mat4 {
+  if (m.link && m.kind) {
+    const s = solveLink(m.link, d);
+    return m.kind === "rod" ? rodPose(m.link, s) : m.kind === "slide" ? translation(scl(unit(m.axis), s.x)) : rotation(m.origin, m.axis, s.x);
+  }
+  if (m.kind === "slide") return translation(scl(unit(m.axis), (m.rate ?? 0) * d));
+  if (m.kind === "roll") return rotation(m.origin, m.axis, rollAngle(m, d));
+  return rotation(m.origin, m.axis, (d * m.ratio * Math.PI) / 180);
+}
+
 /** Where a moving part is at a driver angle (degrees), as a matrix from where it is drawn. */
 export function motionPose(m: Motion, deg: number): Mat4 {
   const d = driveAngle(deg, m.range);
-  let own: Mat4;
-  if (m.link && m.kind) {
-    const s = solveLink(m.link, d);
-    own = m.kind === "rod" ? rodPose(m.link, s) : m.kind === "slide" ? translation(scl(unit(m.axis), s.x)) : rotation(m.origin, m.axis, s.x);
-  } else if (m.kind === "slide") own = translation(scl(unit(m.axis), (m.rate ?? 0) * d));
-  else if (m.kind === "roll") own = rotation(m.origin, m.axis, rollAngle(m, d));
-  else own = rotation(m.origin, m.axis, (d * m.ratio * Math.PI) / 180);
+  const own = ownPose(m, d);
   return m.parent ? mul(motionPose(m.parent, d), own) : own;
+}
+
+/**
+ * Where a part is with the motions in `live` at one drive angle and every other motion at another: what one
+ * drive does on its own while the rest of the design stays where it has got to. (The single drive angle only
+ * plays a design's drives together; each still carries its own load.)
+ */
+export function motionPoseSplit(m: Motion, deg: number, rest: number, live: ReadonlySet<Motion>): Mat4 {
+  const own = ownPose(m, driveAngle(live.has(m) ? deg : rest, m.range));
+  return m.parent ? mul(motionPoseSplit(m.parent, deg, rest, live), own) : own;
 }
 
 /**

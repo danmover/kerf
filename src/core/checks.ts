@@ -21,6 +21,7 @@ import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
 import { stashSweep, sweepChecks } from "./sweepChecks";
 import { stabilityChecks } from "./stability";
+import { gravityChecks } from "./gravityChecks";
 import { sheetChecks } from "./sheetChecks";
 import { chainChecks } from "./chainChecks";
 import { uciChecks } from "./uciChecks";
@@ -434,6 +435,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     if (inputs.sweepLater) stashSweep(sweep);
     else items.push(...sweepChecks(sweep.model, sweep.holds, sweep.kernel, sweep.mesh, sweep.ignore));
     items.push(...stabilityChecks(model, holds, kernel, inputs.mesh, volumeOf));
+    items.push(...gravityChecks(model, holds, kernel, inputs.mesh, volumeOf));
   }
   items.push(...sheetChecks(model));
   items.push(...chainChecks(model));

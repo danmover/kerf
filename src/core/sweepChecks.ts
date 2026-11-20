@@ -721,6 +721,96 @@ function rollItem(A: Body, B: Body, r: PairResult, why: Meant, overlapped: boole
   };
 }
 
+/**
+ * How long a moving group stays on something. At each of `angles` (the first is where it is drawn): is any part
+ * that moves with it within touching distance of a part that does not (of the parts `only` picks, when given).
+ * "never" when it touches none even as drawn, "always" when it stays on one all the way; else the drive angle
+ * at which it is first on nothing, and the last part it was on.
+ */
+export function contactRun(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, member: (p: EvalPart) => boolean, angles: number[], only?: (p: EvalPart) => boolean): "never" | "always" | { deg: number; last: EvalPart } {
+  const built = kernel.boxes;
+  if (!built || !angles.length) return "never";
+  // a part with its box as drawn; its surface is made only once something comes near it
+  interface Near {
+    p: EvalPart;
+    box: [V3, V3];
+    motion?: Motion;
+    body?: Body | null;
+  }
+  const mine: Near[] = [];
+  const others: Near[] = [];
+  for (const p of model.parts) {
+    if (p.hidden || (p.imported && p.imported.kind !== "solid") || !built[p.id] || p.band || p.libKind === "belt" || p.spring) continue;
+    const own = member(p);
+    if (!own && only && !only(p)) continue;
+    (own ? mine : others).push({ p, box: built[p.id] as [V3, V3], motion: motionOfPart(p, holds) });
+  }
+  if (!mine.length || !others.length) return "never";
+  const bodyOf = (n: Near): Body | null => {
+    if (n.body !== undefined) return n.body;
+    const md = mesh(n.p.hash);
+    const s = md && sweepSurface(md);
+    const X = xformMatrix(n.p.xf) as Mat4;
+    return (n.body = s ? { p: n.p, X, Xi: rigidInverse(X), s, motion: n.motion } : null);
+  };
+  // a part's box in the assembly at a drive angle
+  const boxAt = (n: Near, deg: number): [V3, V3] => {
+    if (!turns(n.motion)) return n.box;
+    const T = pose(n.motion, deg);
+    const lo: V3 = [Infinity, Infinity, Infinity];
+    const hi: V3 = [-Infinity, -Infinity, -Infinity];
+    for (let c = 0; c < 8; c++) {
+      const w = applyMat(T, [n.box[c & 1][0], n.box[(c >> 1) & 1][1], n.box[(c >> 2) & 1][2]]);
+      for (let k = 0; k < 3; k++) {
+        lo[k] = Math.min(lo[k], w[k]);
+        hi[k] = Math.max(hi[k], w[k]);
+      }
+    }
+    return [lo, hi];
+  };
+  const on = (deg: number, first?: Near): Near | null => {
+    const list = first ? [first, ...others.filter((o) => o !== first)] : others;
+    for (const a of mine) {
+      const ab = boxAt(a, deg);
+      for (const o of list) {
+        const ob = boxAt(o, deg);
+        if ([0, 1, 2].some((k) => ab[0][k] > ob[1][k] + ROLL_GAP || ob[0][k] > ab[1][k] + ROLL_GAP)) continue;
+        const A = bodyOf(a);
+        const B = bodyOf(o);
+        if (!A || !B) continue;
+        const L = mul(B.Xi, mul(mul(rigidInverse(pose(B.motion, deg)), pose(A.motion, deg)), A.X));
+        const r1 = probe(A.s, B.s, L, RUB_REST);
+        if (r1.depth > 0 || r1.gap < ROLL_GAP) return o;
+        const r2 = probe(B.s, A.s, rigidInverse(L), RUB_REST);
+        if (r2.depth > 0 || r2.gap < ROLL_GAP) return o;
+      }
+    }
+    return null;
+  };
+  let last = on(angles[0]);
+  if (!last) return "never";
+  for (let i = 1; i < angles.length; i++) {
+    const now = on(angles[i], last);
+    if (now) {
+      last = now;
+      continue;
+    }
+    // between the last angle it was on something and this one: close in on where it leaves
+    let a = angles[i - 1];
+    let b = angles[i];
+    for (let k = 0; k < 7; k++) {
+      const mid = (a + b) / 2;
+      const m = on(mid, last);
+      if (m) {
+        a = mid;
+        last = m;
+      } else b = mid;
+    }
+    return { deg: b, last: last.p };
+  }
+  return "always";
+}
+
 export interface SweepInputs {
   model: Model;
   holds: Holds;
