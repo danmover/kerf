@@ -799,12 +799,8 @@ const isSupplyPart = (p: NetPin) => p.part.kind === "battery" || p.part.kind ===
 const segName = (sg: NetSeg) => (sg.label && !sg.bus ? sg.label : `${sg.label ? `${sg.label}: ` : ""}${who(sg.a)} → ${who(sg.b)}`);
 const wireName = (sg: NetSeg) => `${fmtNum(sg.gauge!)} AWG${sg.insulation === "silicone" ? " silicone" : ""}`;
 
-/**
- * Every wire run against the current it carries, and every fuse against the wires it protects. Power,
- * motor and ground nets each have a source side (the supply, the driver output, the battery's negative);
- * a run carries what is on its far side. A `net` statement is a bus: each of its runs carries the bus total.
- */
-function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) => number, drawOf: (p: NetPin) => number, motorCurrent?: (comp: string) => number | undefined) {
+/** What each pin draws from its net, and the pins each net is fed from (the supply side of every run). */
+function pinLoads(c: Ctx, downstream: (p: NetPin) => number, drawOf: (p: NetPin) => number, motorCurrent?: (comp: string) => number | undefined) {
   // a motor lead carries the motor's working current, and at least what it can draw continuously (half stall)
   const leadA = (mp: NetPin) => Math.max(motorCurrent?.(mp.comp) ?? Number(mp.part.specs.i_free ?? 0.2), 0.5 * Number(mp.part.specs.i_stall ?? 0));
   const wired = (p: NetPin) => c.nl.netOf.has(p.key);
@@ -840,14 +836,53 @@ function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) =>
     if (outs.length) return outs;
     return n.pins.filter((p) => p.pin.type === "gnd" && isSupplyPart(p));
   };
+  return { pinLoad, sourcesFor };
+}
+
+/** Pins joined through a fuse, switch or mated connector on a net: once per pair. */
+function throughLinks(c: Ctx, n: Net): { a: NetPin; b: NetPin }[] {
+  return n.pins.flatMap((p) => {
+    if (p.pin.type !== "passive" || !p.pin.through) return [];
+    const o = c.nl.netOf.get(key(p.comp, p.index, p.pin.through)) === n ? n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through) : undefined;
+    // once per pair: a lever nut's C, D and E go through to A, with no pin going back to them
+    return o && (p.key < o.key || o.pin.through !== p.pin.id) ? [{ a: p, b: o }] : [];
+  });
+}
+
+/**
+ * What each pin draws from (or returns to) its net and where each net is fed from, with the same loads the wire
+ * checks use: for the cable card, which shows the current a wire carries against what it is rated for.
+ */
+export interface CurrentModel {
+  nl: Netlist;
+  /** amps a pin draws from its net (a part's power input, a motor terminal, a power ground's return) */
+  pinLoad: (p: NetPin, n: Net) => number;
+  /** the pins a net is fed from: supplies, driver outputs, a battery's negative */
+  sources: (n: Net) => NetPin[];
+  /** amps everything on a power net draws */
+  load: (n: Net) => number;
+  /** pins joined through a fuse, switch or mated connector on the net */
+  links: (n: Net) => { a: NetPin; b: NetPin }[];
+}
+
+export function currentModel(m: MachineData, motorCurrent?: (comp: string) => number | undefined): CurrentModel {
+  const nl = buildNetlist(m);
+  for (const n of nl.nets) n.v = netVoltage(n);
+  const c: Ctx = { nl, out: [], m };
+  const { load, downstream, drawOf } = loadModel(c, motorCurrent);
+  const { pinLoad, sourcesFor } = pinLoads(c, downstream, drawOf, motorCurrent);
+  return { nl, pinLoad, sources: sourcesFor, load, links: (n) => throughLinks(c, n) };
+}
+
+/**
+ * Every wire run against the current it carries, and every fuse against the wires it protects. Power,
+ * motor and ground nets each have a source side (the supply, the driver output, the battery's negative);
+ * a run carries what is on its far side. A `net` statement is a bus: each of its runs carries the bus total.
+ */
+function wireChecks(c: Ctx, load: (n: Net) => number, downstream: (p: NetPin) => number, drawOf: (p: NetPin) => number, motorCurrent?: (comp: string) => number | undefined) {
+  const { pinLoad, sourcesFor } = pinLoads(c, downstream, drawOf, motorCurrent);
   // pins joined through a fuse, switch or mated connector
-  const links = (n: Net) =>
-    n.pins.flatMap((p) => {
-      if (p.pin.type !== "passive" || !p.pin.through) return [];
-      const o = c.nl.netOf.get(key(p.comp, p.index, p.pin.through)) === n ? n.pins.find((q) => q.comp === p.comp && q.index === p.index && q.pin.id === p.pin.through) : undefined;
-      // once per pair: a lever nut's C, D and E go through to A, with no pin going back to them
-      return o && (p.key < o.key || o.pin.through !== p.pin.id) ? [{ a: p, b: o }] : [];
-    });
+  const links = (n: Net) => throughLinks(c, n);
   // pins reached from `from` without crossing the skipped run or link (nor, with stop, the links through those parts)
   const reach = (n: Net, from: NetPin[], skip?: { a: NetPin; b: NetPin }, stop?: Set<string>) => {
     const same = (e: { a: NetPin; b: NetPin }) => !!skip && e.a.key === skip.a.key && e.b.key === skip.b.key;
