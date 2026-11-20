@@ -23,6 +23,7 @@ import { materialDensity } from "../library/standards";
 import { materialRecord, pricePerKg } from "../library/materialDb";
 import type { BandInfo, Brief, BriefUse, ConfigRow, ConfigTable, SchematicLayout, DepNode, EvalDecision, EvalParam, EvalPart, EvalRequirement, FlexInfo, FrameInfo, FrameMemberInfo, GearInfo, InsertInfo, Link, Model, Motion, SplitRecord } from "../core/model";
 import { absRate } from "../core/model";
+import { finishDrive } from "../core/kinematics";
 import { BandError, RUBBERS, bandLabel, bandRecipe, freeLength, layoutBand, rubberOf, sectionOf, type BandCord, type BandLayout, type HookIn } from "../library/bands";
 import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
@@ -161,8 +162,8 @@ const LIB_ARGS: Record<string, string[]> = {
   step: ["file", "origin"],
 };
 
-const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "swings", "links", "pins", "held", "label", "mass", "explode", "split", "decal"];
-const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "swings", "links", "pins", "held", "color", "group", "material", "finish", "label", "explode", "decal"];
+const PART_PROPS = ["color", "material", "finish", "process", "group", "at", "rotate", "turns_with", "spin", "axis", "axis_at", "rides", "slides", "travel", "per_turn", "swings", "links", "pins", "rolls_on", "touch", "held", "label", "mass", "explode", "split", "decal"];
+const COMP_PROPS = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides", "slides", "travel", "per_turn", "swings", "links", "pins", "rolls_on", "touch", "held", "color", "group", "material", "finish", "label", "explode", "decal"];
 
 /** Fields of the brief block, by the type of value each takes. */
 const BRIEF_TEXT = ["purpose", "setting", "look", "process", "material"] as const;
@@ -1576,7 +1577,7 @@ class Evaluator {
       } else if (it.k === "flag") {
         if (it.name !== "locked" && it.name !== "hidden" && it.name !== "removable") throw new EvalError(`Unknown flag "${it.name}". Components accept locked, hidden and removable.`, it.span);
         flags.add(it.name);
-      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, rides:, slides:, swings:, links:, pins:, held:, explode:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
+      } else throw new EvalError("Components only take properties (at:, axis:, facing:, rotate:, spin:, mesh:, turns_with:, rides:, slides:, travel:, per_turn:, swings:, links:, pins:, rolls_on:, touch:, held:, explode:, color:, group:, material:, finish:) and flags (locked, hidden, removable)", it.span);
     }
     this.checkMaterial(props, propSpans);
     checkHeld(props.held, propSpans.held);
@@ -1639,11 +1640,18 @@ class Evaluator {
       const other = this.motionOf(turnsV, propSpans.turns_with);
       motion = key === "spur_gear" || key === "bearing" ? { origin: at0, axis, ratio: other?.ratio ?? 0, ...(other?.parent ? { parent: other.parent } : {}) } : other;
     }
+    const driven = props.spin !== undefined || meshV !== undefined || props.chain !== undefined || turnsV !== undefined;
     if (carrier) motion = motion ? { ...motion, parent: carrier } : carrier;
-    const linked = this.linkedMotion(s.name, props, propSpans, at0);
+    const lift = this.travelMotion(props, propSpans, carrier);
+    const linked = lift ?? this.linkedMotion(s.name, props, propSpans, at0);
     if (linked) {
       if (multi) throw new EvalError("slides:, swings: and links: need a single position, not a list", propSpans.slides ?? propSpans.swings ?? propSpans.links);
       motion = linked;
+    }
+    const rolling = this.rollsOn(s.name, props, propSpans, { motion, carrier, axis, origin: at0, driven });
+    if (rolling.motion) {
+      if (multi) throw new EvalError("rolls_on: with touch: needs a single position, not a list: write each wheel as its own component", propSpans.rolls_on);
+      motion = rolling.motion;
     }
 
     const libArgs: LibArgs = {
@@ -1897,6 +1905,7 @@ class Evaluator {
           span: s.span,
           deps: [],
           motion: spins && motion ? (multi ? { ...motion, origin: atList[idx] } : motion) : undefined,
+          ...(rolling.rollsOn ? { rollsOn: rolling.rollsOn } : {}),
           ...(typeof props.held === "string" ? { held: props.held.trim() } : {}),
           ...(explodeDir !== undefined ? { explode: explodeDir } : {}),
           gear: sd.suffix ? undefined : gear,
@@ -2624,6 +2633,8 @@ class Evaluator {
     if (!which.length) return undefined;
     if (which.length > 1) throw new EvalError(`${which[0]}: and ${which[1]}: together: a part either slides, swings or is the rod that drives one`, spans[which[1]]);
     const k = which[0];
+    // a slide with travel of its own is a lift, a carriage or a gate: travelMotion's
+    if (k === "slides" && props.travel !== undefined) return undefined;
     const other = ["spin", "mesh", "turns_with", "rides"].find((p) => props[p] !== undefined);
     if (other) throw new EvalError(`${other}: with ${k}: a part on a connecting rod takes its motion from the rod alone`, spans[other]);
     if (k !== "links") {
@@ -2637,6 +2648,7 @@ class Evaluator {
     const fname = ends[1] instanceof Ref ? ends[1].name : String((ends[1] as Obj).fields.name);
     if (!driver || !fm) throw new EvalError("links: both parts must move", spans.links);
     if (fm.kind !== "slide" && fm.kind !== "swing") throw new EvalError(`links: "${fname}" needs slides: (an axis) or swings: (an axis, about axis_at:) for the rod to drive it`, spans.links);
+    if (fm.travel) throw new EvalError(`links: "${fname}" already moves by its own travel:; leave travel: out for a rod to drive it`, spans.links);
     if (fm.link) throw new EvalError(`links: "${fname}" is already driven by ${fm.link.name}`, spans.links);
     const pins = props.pins;
     if (!Array.isArray(pins) || pins.length !== 2) throw new EvalError("pins: [(x, y, z), (x, y, z)]: the rod's pin on the driver and its pin on the follower, where they are drawn", spans.pins ?? spans.links);
@@ -2647,6 +2659,75 @@ class Evaluator {
     const link: Link = { id: name, name, driver, p0, w0, length, follower: { name: fname, kind: fm.kind, axis: fm.axis, at: fm.origin } };
     fm.link = link;
     return { origin: p0, axis: driver.axis, ratio: 0, kind: "rod", link };
+  }
+
+  /**
+   * A part with travel of its own: slides: (its direction) with travel: (how far, mm) is a lift, a carriage, a gate
+   * or a drawer. It runs from where it is drawn to the end of its travel and back, the drive turning back with it.
+   * per_turn: is how far it goes for each turn of the drive (a screw's lead, a pinion's or a drum's circumference).
+   */
+  travelMotion(props: Record<string, Value>, spans: Record<string, Span>, carrier: Motion | undefined): Motion | undefined {
+    if (props.travel === undefined) {
+      if (props.per_turn !== undefined) throw new EvalError("per_turn: goes with slides: and travel: (how far a lift or carriage moves for each turn of the drive)", spans.per_turn);
+      return undefined;
+    }
+    if (props.slides === undefined) throw new EvalError("travel: needs slides: (the direction it moves), like slides: Z  travel: 400", spans.travel);
+    const other = ["spin", "mesh", "turns_with", "swings", "links", "pins", "chain"].find((p) => props[p] !== undefined);
+    if (other) throw new EvalError(`${other}: with travel: a part that slides by its own travel takes no other motion (rides: carries it on a moving part)`, spans[other]);
+    const travel = this.num(props.travel, spans.travel, "travel");
+    if (!Number.isFinite(travel) || Math.abs(travel) < 1e-6) throw new EvalError("travel: how far it moves along slides:, in mm (negative goes the other way)", spans.travel);
+    let perTurn: number | undefined;
+    if (props.per_turn !== undefined) {
+      perTurn = this.num(props.per_turn, spans.per_turn, "per_turn");
+      if (!(perTurn > 0) || !Number.isFinite(perTurn)) throw new EvalError("per_turn: mm of travel for each turn of the drive, more than 0 (a lead screw's lead, π × a pinion's or drum's diameter)", spans.per_turn);
+    }
+    const axis = vnorm(toV3(props.slides, this.ctx(), "slides (its axis)"));
+    return { origin: [0, 0, 0], axis, ratio: 0, kind: "slide", travel, ...(perTurn !== undefined ? { perTurn } : {}), ...(carrier ? { parent: carrier } : {}) };
+  }
+
+  /**
+   * rolls_on: the part or parts this one runs on (a wheel on its track, a roller on a tower, a disc a tyre turns).
+   * Their contact is then meant, and the checks hold it to what rolling needs. With no turn of its own (no spin:,
+   * mesh: or turns_with:) and touch: (where the two surfaces meet, as drawn), the part turns about its axis by
+   * whatever keeps it from slipping there, however it or the other part is carried or turns.
+   */
+  rollsOn(
+    name: string,
+    props: Record<string, Value>,
+    spans: Record<string, Span>,
+    own: { motion: Motion | undefined; carrier: Motion | undefined; axis: V3; origin: V3; driven: boolean },
+  ): { motion?: Motion; rollsOn?: { names: string[]; touch?: V3 } } {
+    if (props.rolls_on === undefined) {
+      if (props.touch !== undefined) throw new EvalError("touch: goes with rolls_on: (the point where this part's surface meets the one it runs on)", spans.touch);
+      return {};
+    }
+    const list = Array.isArray(props.rolls_on) ? props.rolls_on : [props.rolls_on];
+    if (!list.length) throw new EvalError("rolls_on: the part it runs on, or a list of them", spans.rolls_on);
+    const targets = list.map((v) => {
+      if (v instanceof Ref && v.what === "part") return { name: v.name, motion: this.partMotion.get(v.name) };
+      if (v instanceof Obj && v.kind === "component") {
+        const n = String(v.fields.name);
+        const c = this.comps.get(n);
+        if (c) return { name: n, motion: c.motion };
+      }
+      throw new EvalError("rolls_on: expected a part or component defined above (the track, rail, tower or wheel this one runs on)", spans.rolls_on);
+    });
+    if (targets.some((t) => t.name === name)) throw new EvalError("rolls_on: a part cannot roll on itself", spans.rolls_on);
+    const ctx = this.ctx();
+    const touch = props.touch !== undefined ? toV3(props.touch, ctx, "touch") : undefined;
+    const rollsOn = { names: targets.map((t) => t.name), ...(touch ? { touch } : {}) };
+    // a wheel with its own drive (a motor's tyre), or a part moved some other way that something runs along: the contact is declared, its motion stays
+    const linked = ["slides", "swings", "links"].find((p) => props[p] !== undefined);
+    if (own.driven || linked) return { rollsOn };
+    if (!touch) throw new EvalError(`rolls_on: give touch: (x, y, z), the point where ${name} meets ${targets[0].name} as drawn, so Kerf can work out how it turns; or give it spin: when a motor turns it`, spans.rolls_on);
+    const axis = vnorm(own.axis);
+    const d = vsub(touch, own.origin);
+    const along = vdot(d, axis);
+    const r = Math.hypot(d[0] - along * axis[0], d[1] - along * axis[1], d[2] - along * axis[2]);
+    if (r < 1e-3) throw new EvalError(`touch: ${fmtNum(touch[0])}, ${fmtNum(touch[1])}, ${fmtNum(touch[2])} is on ${name}'s own axis: give the point on its rim where it meets ${targets[0].name} (and axis_at: a point on the axis it turns about)`, spans.touch ?? spans.rolls_on);
+    const on = targets[0].motion;
+    const motion: Motion = { origin: own.origin, axis, ratio: 0, kind: "roll", roll: { ...(on ? { on } : {}), onName: targets[0].name, at: touch, r }, ...(own.carrier ? { parent: own.carrier } : {}) };
+    return { motion, rollsOn };
   }
 
   motionOf(v: Value, span: Span, prop = "turns_with"): Motion | undefined {
@@ -2723,9 +2804,19 @@ class Evaluator {
       const origin = state.props.axis_at !== undefined ? toV3(state.props.axis_at, ctx, "axis_at") : ([0, 0, 0] as V3);
       motion = { origin, axis, ratio };
     }
+    const driven = state.props.spin !== undefined || state.props.turns_with !== undefined;
     if (carrier) motion = motion ? { ...motion, parent: carrier } : carrier;
-    const linked = this.linkedMotion(s.name, state.props, state.propSpans, state.props.axis_at !== undefined ? toV3(state.props.axis_at, ctx, "axis_at") : [0, 0, 0]);
+    const lift = this.travelMotion(state.props, state.propSpans, carrier);
+    const linked = lift ?? this.linkedMotion(s.name, state.props, state.propSpans, state.props.axis_at !== undefined ? toV3(state.props.axis_at, ctx, "axis_at") : [0, 0, 0]);
     if (linked) motion = linked;
+    const rolling = this.rollsOn(s.name, state.props, state.propSpans, {
+      motion,
+      carrier,
+      axis: state.props.axis !== undefined ? toV3(state.props.axis, ctx, "axis") : [0, 0, 1],
+      origin: state.props.axis_at !== undefined ? toV3(state.props.axis_at, ctx, "axis_at") : [0, 0, 0],
+      driven,
+    });
+    if (rolling.motion) motion = rolling.motion;
     if (motion) this.partMotion.set(s.name, motion);
     checkHeld(state.props.held, state.propSpans.held);
     const massV = state.props.mass;
@@ -2792,6 +2883,7 @@ class Evaluator {
       span: s.span,
       deps: [],
       motion,
+      ...(rolling.rollsOn ? { rollsOn: rolling.rollsOn } : {}),
       ...(typeof state.props.held === "string" ? { held: state.props.held.trim() } : {}),
       ...(explodeDir !== undefined ? { explode: explodeDir } : {}),
       ...(typeof massV === "number" ? { mass: massV } : {}),
@@ -4407,6 +4499,9 @@ class Evaluator {
     // the brief's "how it's made" is the default for every custom part
     const b = this.brief;
     if (b) applyDefaultProcess(model, b.processSpec ?? null, { buildVolume: b.buildVolume, material: b.material });
+    // a part with travel of its own makes the whole drive run out and back
+    const run = finishDrive(model.parts);
+    if (run) model.driveRange = run;
     return model;
   }
 }
@@ -4666,14 +4761,17 @@ export function moveParts(parts: EvalPart[], moves: Map<string, BodyMove>) {
     if (p.bearing) p.bearing = { ...p.bearing, center: pt(p.bearing.center), axis: dir(p.bearing.axis) };
     if (p.spring) p.spring = { ...p.spring, center: pt(p.spring.center), axis: dir(p.spring.axis) };
     if (p.fastener) p.fastener = { ...p.fastener, headTop: pt(p.fastener.headTop), outward: dir(p.fastener.outward) };
-    if (p.motion && !remap.has(p.motion)) remap.set(p.motion, { ...p.motion, origin: pt(p.motion.origin), axis: dir(p.motion.axis) });
+    if (p.motion && !remap.has(p.motion)) remap.set(p.motion, { ...p.motion, origin: pt(p.motion.origin), axis: dir(p.motion.axis), ...(p.motion.roll ? { roll: { ...p.motion.roll, at: pt(p.motion.roll.at) } } : {}) });
+    if (p.rollsOn?.touch) p.rollsOn = { ...p.rollsOn, touch: pt(p.rollsOn.touch) };
   }
   if (!remap.size) return;
   const fix = (m: Motion | undefined): Motion | undefined => {
     if (!m) return m;
     const r = remap.get(m) ?? m;
     const parent = fix(r.parent);
-    return parent !== r.parent ? { ...r, parent } : r;
+    const on = fix(r.roll?.on);
+    if (parent === r.parent && on === r.roll?.on) return r;
+    return { ...r, ...(parent ? { parent } : {}), ...(r.roll ? { roll: { ...r.roll, ...(on ? { on } : {}) } } : {}) };
   };
   for (const p of parts) p.motion = fix(p.motion);
 }

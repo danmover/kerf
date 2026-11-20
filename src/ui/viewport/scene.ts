@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
-import { motionPose } from "../../core/kinematics";
+import { driveAngle, motionPose } from "../../core/kinematics";
 import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explode";
 import { ChainLinks } from "./chainLinks";
 import type { MeshEntry } from "../../core/engine";
@@ -1232,6 +1232,12 @@ export class SceneController {
    * A chain shows its solid at the start of the motion and its moving links
    * once the drive turns. True when what is drawn changed.
    */
+  /** Degrees the design's drive runs before it turns back, when a part's travel ends (every motion carries the same figure). */
+  private driveRange(): number | undefined {
+    for (const o of this.parts.values()) if (o.part.motion?.range) return o.part.motion.range;
+    return undefined;
+  }
+
   private chainLinks(obj: PartObj): boolean {
     const info = obj.part.chain!;
     let changed = false;
@@ -1253,7 +1259,8 @@ export class SceneController {
       changed = true;
     }
     for (const m of obj.links.meshes) m.layers.mask = obj.mesh.layers.mask;
-    if (on && obj.links.update(this.angle)) changed = true;
+    // a design whose travel ends runs its drive out and back: the chain follows its sprockets
+    if (on && obj.links.update(driveAngle(this.angle, this.driveRange()))) changed = true;
     return changed;
   }
 

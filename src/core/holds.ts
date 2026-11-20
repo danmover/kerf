@@ -610,12 +610,15 @@ function motionKey(m: Motion | undefined): string {
   if (!m) return "";
   // a part on a connecting rod moves as its rod says: one motion per rod and role
   if (m.link) return `${m.kind}:${m.link.id}`;
+  // a lift moves as far as its travel says, along its direction; a wheel turns as what it runs on says
+  if (m.kind === "slide") return `slide:${vscale(m.axis, m.travel ?? 0).map(r4).join(",")}|${r4(m.perTurn ?? 0)}|${motionKey(m.parent)}`;
+  const rollKey = m.roll ? `|roll:${m.roll.onName}:${m.roll.at.map(r4).join(",")}` : "";
   // one direction for the line, flipping the rate with it
   const k = m.axis.findIndex((x) => Math.abs(x) > 1e-6);
   const sg = k >= 0 && m.axis[k] < 0 ? -1 : 1;
   const a = vscale(m.axis, sg);
   const foot = vsub(m.origin, vscale(a, vdot(m.origin, a)));
-  return `${foot.map((x) => Math.round(x * 20) || 0).join(",")}|${a.map(r4).join(",")}|${r4(sg * m.ratio)}|${motionKey(m.parent)}`;
+  return `${foot.map((x) => Math.round(x * 20) || 0).join(",")}|${a.map(r4).join(",")}|${r4(sg * m.ratio)}${rollKey}|${motionKey(m.parent)}`;
 }
 
 /**

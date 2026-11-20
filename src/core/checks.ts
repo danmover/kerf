@@ -7,6 +7,7 @@ import type { Span } from "../lang/ast";
 import type { ChecksRequest, ChecksResult, PlacedItem } from "../kernel/protocol";
 import { applyXforms, frameFor, vdot, vsub, vlen, type V2, type V3 } from "../kernel/recipe";
 import { preloadOverlap } from "./preload";
+import { rollSqueeze } from "./rolling";
 import { centerDistance, densify, gearOutline, maxPenetration, tipDiameter } from "../library/gears";
 import { materialDensity } from "../library/standards";
 import { isPrinted } from "../library/materials";
@@ -289,7 +290,41 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         });
         continue;
       }
+      // a rubber tyre drawn pressed onto what it runs on (rolls_on:), by no more than rubber gives
+      const sq = rollSqueeze(i, (id) => partsById.get(id));
+      if (sq && sq.allowed > 0 && sq.depth > 0 && sq.depth <= sq.allowed + 0.1) {
+        items.push({
+          id: `int:${i.a}|${i.b}`,
+          category: "interference",
+          status: "pass",
+          title: `${label(sq.wheel.id)} is pressed onto ${label(sq.track.id)}`,
+          detail: `They are drawn ${fmtNum(sq.depth, 1)} mm into each other where ${label(sq.wheel.id)} runs on ${label(sq.track.id)}: the squeeze that gives a rubber tyre its grip (rubber of this size gives about ${fmtNum(sq.allowed, 1)} mm), not a clash`,
+          parts: [i.a, i.b],
+          span: sq.wheel.span,
+          basis: "geometry",
+        });
+        continue;
+      }
       clashes++;
+      if (sq) {
+        const deep = Number.isFinite(sq.depth) ? `${fmtNum(sq.depth, 1)} mm` : `${fmtNum(i.volume, 1)} mm³`;
+        items.push({
+          id: `int:${i.a}|${i.b}`,
+          category: "interference",
+          status: "fail",
+          title: `${label(sq.wheel.id)} is drawn ${deep} into ${label(sq.track.id)}`,
+          detail: sq.allowed > 0 ? `${label(sq.wheel.id)} runs on ${label(sq.track.id)}, and rubber of this size gives about ${fmtNum(sq.allowed, 1)} mm: drawn ${deep} in, it jams or tears` : `${label(sq.wheel.id)} runs on ${label(sq.track.id)}, but neither is rubber, so nothing gives: drawn ${deep} into each other they jam`,
+          fix:
+            sq.allowed > 0
+              ? `Move ${sq.wheel.name} at least ${fmtNum(Math.max(0.1, sq.depth - sq.allowed), 1)} mm away from ${sq.track.name} (a tyre pressed in 0.5 to ${fmtNum(Math.max(0.5, sq.allowed), 1)} mm grips well).`
+              : `Place ${sq.wheel.name} so its rim just touches ${sq.track.name} (move it ${Number.isFinite(sq.depth) ? fmtNum(sq.depth, 1) : "the overlap's depth in"} mm away), or give it a rubber tyre (material: "TPU" or "Natural rubber") to be pressed in.`,
+          parts: [i.a, i.b],
+          span: sq.wheel.span,
+          margin: -i.volume,
+          basis: "geometry",
+        });
+        continue;
+      }
       items.push({
         id: `int:${i.a}|${i.b}`,
         category: "interference",

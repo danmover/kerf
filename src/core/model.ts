@@ -27,11 +27,41 @@ export interface Motion {
   /** the moving part this one rides on (`rides:`): its own turn is about an axis carried round by the parent's motion */
   parent?: Motion;
   /**
-   * moved by a connecting rod instead of turning at a fixed rate: a part that slides along `axis` (a piston), one
-   * that swings about `axis` through `origin` (a rocker, a pirate ship), or the rod itself; `link` says how
+   * not a turn at a fixed rate. Moved by a connecting rod (`link` says how): a part that slides along `axis` (a
+   * piston), one that swings about `axis` through `origin` (a rocker, a pirate ship), or the rod itself. Or moving
+   * on its own: a "slide" with `travel` (a lift, a carriage, a gate), or a "roll" whose turn about `axis` through
+   * `origin` comes from the surface it runs on (`roll` says which and where).
    */
-  kind?: "slide" | "swing" | "rod";
+  kind?: "slide" | "swing" | "rod" | "roll";
   link?: Link;
+  /** a slide that moves on its own (`travel:`): how far it goes along `axis` from where it is drawn (mm, signed) */
+  travel?: number;
+  /** mm a self-moving slide travels per turn of the drive, as written (`per_turn:`); left out, its whole travel takes the drive's whole run */
+  perTurn?: number;
+  /** mm a self-moving slide travels along `axis` per degree of the drive: filled in once the whole design is known */
+  rate?: number;
+  /**
+   * A design with travel that ends (a lift's top, a carriage's end stop) runs its drive this many degrees and then
+   * back, as its motor would: every motion in the design carries the same figure, and motionPose folds the driver
+   * angle into it.
+   */
+  range?: number;
+  roll?: Roll;
+}
+
+/**
+ * Rolling without slipping (`rolls_on:` with `touch:`): a wheel on a track, a roller on a cam or a tower, a disc
+ * turned by a tyre pressed on its rim. The part turns about its own axis by whatever keeps its surface from sliding
+ * on the other's where they touch, however either of them is carried or turns.
+ */
+export interface Roll {
+  /** the motion of the part it runs on; left out when that part stays still */
+  on?: Motion;
+  onName: string;
+  /** where the two surfaces meet, as drawn (world) */
+  at: V3;
+  /** the rolling radius: from the axis to `at` */
+  r: number;
 }
 
 /** A connecting rod: a pin on a moving part (the driver) and a pin on a part that slides or swings (the follower). */
@@ -72,7 +102,7 @@ export function absRate(m: Motion | undefined, axis: V3): number {
 }
 
 /** Whether a motion turns at all, itself or by what it rides on. */
-export const turns = (m: Motion | undefined): boolean => !!m && (Math.abs(m.ratio) > 1e-12 || !!m.link || turns(m.parent));
+export const turns = (m: Motion | undefined): boolean => !!m && (Math.abs(m.ratio) > 1e-12 || !!m.link || !!m.travel || turns(m.parent) || turns(m.roll?.on));
 
 export interface GearInfo {
   m: number;
@@ -234,6 +264,12 @@ export interface EvalPart {
   span: Span;
   deps: string[];
   motion?: Motion;
+  /**
+   * The parts this one is meant to run on (`rolls_on:`): a wheel on its track, a tyre on the disc it drives. The
+   * checks hold that contact to what rolling needs (it stays on the surface, it does not dig in) instead of
+   * reading it as a collision. `touch` is where they meet as drawn, when given.
+   */
+  rollsOn?: { names: string[]; touch?: V3 };
   gear?: GearInfo;
   bearing?: BearingInfo;
   fastener?: FastenerInfo;
@@ -549,6 +585,8 @@ export interface Model {
   geoQueries: GeoQuery[];
   /** engineering drawings defined in the source */
   drawings: DrawingSpec[];
+  /** degrees the drive runs before it turns back, when a part's travel ends (see Motion.range) */
+  driveRange?: number;
   evalMs: number;
   /** purchased parts, wiring, calculations, firmware and tests (designs that use catalog parts) */
   machine?: MachineData;

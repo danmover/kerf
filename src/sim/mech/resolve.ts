@@ -35,6 +35,11 @@ const unit = (a: V3): V3 => scl(a, 1 / (len(a) || 1));
 function lineKey(m: Motion): string {
   if (m.link) return `${m.kind}:${m.link.id}`;
   const a = unit(m.axis);
+  // a lift: its direction and travel (wherever it is), and what carries it
+  if (m.kind === "slide") {
+    const key = `slide:${a.map((x) => Math.round(x * (m.travel ?? 0) * 100)).join(",")}`;
+    return m.parent ? `${key}<${lineKey(m.parent)}` : key;
+  }
   const c = sub(m.origin, scl(a, dot(m.origin, a)));
   const key = [...a.map((x) => Math.round(Math.abs(x) * 1e4)), ...c.map((x) => Math.round(x * 100)), Math.round(m.ratio * 1e6) * Math.sign(a[0] + a[1] * 1e-3 + a[2] * 1e-6 || 1)].join(",");
   return m.parent ? `${key}<${lineKey(m.parent)}` : key;
@@ -333,7 +338,9 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (!g) {
         let id = p.name;
         for (let k = 2; named.has(id) || groups.some((x) => x.id === id); k++) id = `${p.name}_${k}`;
-        g = { id, members: [], parts: [], auto: true, joint: { k: "pivot", name: id, what: [], on: null, at: o, axis: a } };
+        // a part with travel of its own slides between its two ends; everything else here turns on its shaft
+        const lift = p.motion.kind === "slide" && p.motion.travel ? p.motion.travel : 0;
+        g = { id, members: [], parts: [], auto: true, joint: lift ? { k: "slider", name: id, what: [], on: null, at: o, axis: a, limits: [Math.min(0, lift), Math.max(0, lift)] } : { k: "pivot", name: id, what: [], on: null, at: o, axis: a } };
         lines.set(key, g);
         groups.push(g);
         if (p.motion.parent) parentOf.set(g, lineKey(p.motion.parent));
@@ -381,7 +388,12 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (carrier && carrier !== g) g.joint!.on = carrier.id;
     }
     const autos = [...lines.values()];
-    if (autos.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${autos.map((g) => g.members.join(" + ") + (g.joint!.on ? ` (on ${g.joint!.on})` : "")).join("; ")}`);
+    const lifted = (g: Group) => g.parts.some((p) => p.motion?.kind === "slide" && !p.motion.link && !!p.motion.travel);
+    const turning = autos.filter((g) => !lifted(g));
+    const sliding = autos.filter(lifted);
+    const list = (gs: Group[]) => gs.map((g) => g.members.join(" + ") + (g.joint!.on ? ` (on ${g.joint!.on})` : "")).join("; ");
+    if (turning.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${list(turning)}`);
+    if (sliding.length) notes.push(`Sliding between the ends of their travel (from slides: with travel:): ${list(sliding)}`);
   }
   // screws, nuts and washers move with the part they clamp (not one they are its pivot), and parts bolted to a
   // turning part turn with it

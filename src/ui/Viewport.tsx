@@ -6,7 +6,7 @@ import { SceneController, type PhotoStatus } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
-import { turns } from "../core/model";
+import { turns, type Motion } from "../core/model";
 import { findHolds } from "../core/holds";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
@@ -771,6 +771,14 @@ function PhotoPill({ s }: { s: PhotoStatus }) {
   );
 }
 
+/** How a moving part moves, in a line: a lift by its travel, a wheel by what it rolls on, the rest by their rate. */
+function motionLine(m: Motion): string {
+  if (m.kind === "slide" && m.travel) return `travels ${fmtNum(Math.abs(m.travel), 1)} mm and back${m.perTurn ? `, ${fmtNum(m.perTurn, 2)} mm per turn of the drive` : ""}`;
+  if (m.kind === "roll" && m.roll) return `rolls on ${m.roll.onName} without slipping (rolling radius ${fmtNum(m.roll.r, 1)} mm)`;
+  if (m.link && m.kind) return m.kind === "rod" ? "a connecting rod" : `${m.kind === "slide" ? "slides" : "swings"}, driven by ${m.link.name}`;
+  return `turns at ${fmtNum(Math.abs(m.ratio), 3)}× the input`;
+}
+
 function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
   const model = useDesign((s) => s.model);
   const report = useDesign((s) => s.report);
@@ -822,7 +830,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
             {gap.distance < 1e-4 ? " · touching or overlapping" : ` · Δ ${gap.b.map((v, k) => fmtNum(Math.abs(v - gap.a[k]), 2)).join(", ")}`}
           </div>
         )}
-        {p.motion && parts.length === 1 && <div>turns at {fmtNum(Math.abs(p.motion.ratio), 3)}× the input</div>}
+        {p.motion && parts.length === 1 && <div>{motionLine(p.motion)}</div>}
       </div>
       <MaterialButton parts={parts} />
       {issues.length > 0 && (
