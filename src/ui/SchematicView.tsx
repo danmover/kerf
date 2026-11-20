@@ -12,6 +12,8 @@ import type { MachineData } from "../machine/types";
 import { GRID, labelSvg, schematicSheet, symbolSvg, type P2, type SchematicSheet, type SchPin, type SchSymbol } from "../machine/schematic";
 import { placesOf, withConnection, withoutPin, withoutStatements, withSchematic, type Place } from "../machine/schematicEdit";
 import { Icon } from "./icons";
+import { useHarness } from "../machine/harness/runtime";
+import { showWire } from "./wiringView";
 
 const INK = "#1b1f24";
 /** selection and the wire being drawn, on white paper */
@@ -236,6 +238,7 @@ export function SchematicView({ model, m }: { model: Model; m: MachineData }) {
   const v = view ?? { x: sheet.origin[0], y: sheet.origin[1], k: 1 };
   const selSym = sel?.k === "symbol" ? symbolOf.get(sel.key) : undefined;
   const selWire = sel?.k === "wire" ? sheet.wires[sel.i] : undefined;
+  const cable = useCableFor(selWire?.a, selWire?.b);
   const selPin = sel?.k === "pin" ? pinOf.get(sel.ref) : undefined;
   const hovered = hover ? pinOf.get(hover) : undefined;
   const netOf = (p?: SchPin) => (p?.net !== undefined ? sheet.nets.find((n) => n.id === p.net) : undefined);
@@ -343,6 +346,11 @@ export function SchematicView({ model, m }: { model: Model; m: MachineData }) {
                 <Icon.Code size={12} /> Code
               </button>
             )}
+            {cable && (
+              <button className="btn sm" onClick={() => showWire(cable)} data-tip="The cable in 3D: where each end plugs in, how, and what it carries">
+                <Icon.Plug size={12} /> Cable {cable}
+              </button>
+            )}
           </>
         ) : info ? (
           <>
@@ -378,4 +386,14 @@ function SymbolG({ s, selected, moving }: { s: SchSymbol; selected: boolean; mov
       <g dangerouslySetInnerHTML={{ __html: html }} pointerEvents="none" />
     </g>
   );
+}
+
+/** The harness cable a schematic wire is made as: the one between its two pins, else one on either pin. */
+function useCableFor(a?: string, b?: string): string | null {
+  const wires = useHarness((s) => s.harness?.wires);
+  return useMemo(() => {
+    if (!a || !b || !wires) return null;
+    const at = (w: NonNullable<typeof wires>[number], r: string) => w.ends.some((e) => `${e.comp}.${e.pin}` === r);
+    return (wires.find((w) => at(w, a) && at(w, b)) ?? wires.find((w) => at(w, b)) ?? wires.find((w) => at(w, a)))?.id ?? null;
+  }, [a, b, wires]);
 }

@@ -21,6 +21,8 @@ import { Overview, OverviewGlyph } from "./Overview";
 import { BIcon } from "./briefIcons";
 import { briefData, openAssumptions } from "../core/brief";
 import { MachinePanel } from "./MachinePanel";
+import { WiringTab } from "./wiring/WiringTab";
+import { useHarness } from "../machine/harness/runtime";
 import { SimPanel } from "./sim/SimPanel";
 import { MakePanel } from "./make/MakePanel";
 import { useSim } from "../sim/runtime";
@@ -88,6 +90,17 @@ function useBuildBadge() {
 
 const useIsMachine = () => useDesign((s) => !!s.model?.machine);
 
+/** the wiring tab shows for a machine with wires */
+const useHasWires = () => useDesign((s) => !!s.model?.machine && s.model.machine.wires.length + s.model.machine.nets.length > 0);
+
+/** what the wiring checks found on the cables and plugs */
+function useWiringBadge() {
+  const cables = useHarness((s) => s.harness?.wires.length ?? 0);
+  const fails = useDesign((s) => s.report?.items.filter((i) => i.id.startsWith("wiring:") && i.status === "fail").length ?? 0);
+  if (fails) return { count: fails, tone: "fail" as const };
+  return cables ? { count: cables } : null;
+}
+
 function useSimBadge() {
   const scenarios = useDesign((s) => s.model?.scenarios?.length ?? 0);
   const fails = useDesign((s) => s.report?.items.filter((i) => i.category === "simulation" && i.status === "fail").length ?? 0);
@@ -138,6 +151,7 @@ export const DOCK_TABS: DockTabDef[] = [
   { id: "brief", label: "brief", icon: <BIcon.Brief size={13} />, useBadge: useBriefBadge, Body: BriefPanel },
   { id: "checks", label: "checks", icon: <Icon.Shield size={13} />, useBadge: useChecksBadge, Body: ChecksPanel },
   { id: "analysis", label: "analysis", icon: <AnalysisIcon />, useBadge: useAnalysisBadge, Body: AnalysisPanel },
+  { id: "wiring", label: "wiring", icon: <Icon.Plug size={13} />, useBadge: useWiringBadge, useShown: useHasWires, Body: WiringTab },
   { id: "build", label: "build", icon: <Icon.Wrench size={13} />, useBadge: useBuildBadge, useShown: useIsMachine, Body: MachinePanel },
   { id: "sim", label: "simulate", icon: <SimIcon />, useBadge: useSimBadge, useShown: useHasSims, Body: SimPanel },
   { id: "apps", label: "apps", icon: <AppGlyph size={13} />, useBadge: useAppsBadge, useShown: useHasApps, Body: AppsPanel },

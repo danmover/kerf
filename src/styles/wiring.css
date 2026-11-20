@@ -193,3 +193,344 @@
 .wr-check.fail svg {
   color: var(--fail);
 }
+
+/* The cable card: what a cable is, where each end goes and how it plugs in. */
+.wr-card.cc {
+  width: 316px;
+  padding: 0;
+  max-height: calc(100% - 196px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.cc-head {
+  display: flex;
+  align-items: flex-start;
+  gap: 9px;
+  padding: 11px 12px 9px;
+  border-bottom: 1px solid var(--line);
+  background: linear-gradient(180deg, rgb(var(--accent-rgb) / 0.07), transparent);
+}
+.cc-head .wr-swatches {
+  margin-top: 2px;
+}
+.cc-title {
+  flex: 1;
+  min-width: 0;
+}
+.cc-sub {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  margin-top: 3px;
+  font-size: 11px;
+  color: var(--text-3);
+  min-width: 0;
+}
+.cc-sub > span:last-child {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-kind {
+  flex: none;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  color: var(--k);
+  background: color-mix(in srgb, var(--k) 14%, transparent);
+  border: 1px solid color-mix(in srgb, var(--k) 38%, transparent);
+}
+.cc-body {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding: 0 12px 4px;
+  scrollbar-width: thin;
+}
+.cc-sec {
+  padding: 9px 0;
+  border-top: 1px solid var(--line);
+}
+.cc-load + .cc-sec {
+  border-top: 0;
+}
+.cc-label {
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--text-4);
+  margin-bottom: 4px;
+}
+.cc-load {
+  padding: 10px 0 9px;
+}
+.cc-load-top {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.cc-big {
+  font-family: var(--mono);
+  font-size: 17px;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+.cc-load-of {
+  font-size: 11px;
+  color: var(--text-3);
+  margin-left: auto;
+  text-align: right;
+}
+.cc-bar {
+  position: relative;
+  height: 6px;
+  margin-top: 8px;
+  border-radius: 999px;
+  background: rgb(var(--ink-rgb) / 0.08);
+  overflow: visible;
+}
+.cc-bar > span {
+  position: absolute;
+  inset: 0 auto 0 0;
+  border-radius: 999px;
+  background: var(--pass);
+  box-shadow: 0 0 10px rgb(var(--pass-rgb) / 0.5);
+}
+.cc-bar.warn > span {
+  background: var(--warn);
+  box-shadow: 0 0 10px rgb(var(--warn-rgb) / 0.5);
+}
+.cc-bar.fail > span {
+  background: var(--fail);
+  box-shadow: 0 0 12px rgb(var(--fail-rgb) / 0.6);
+}
+.cc-bar > i {
+  position: absolute;
+  right: 0;
+  top: 9px;
+  font-style: normal;
+  font-family: var(--mono);
+  font-size: 10px;
+  color: var(--text-3);
+}
+.cc-end-head {
+  min-width: 0;
+}
+.cc-pin {
+  color: var(--accent-2);
+  font-weight: 500;
+}
+.cc-plug {
+  display: grid;
+  grid-template-columns: 132px 1fr;
+  gap: 10px;
+  margin-top: 8px;
+  align-items: start;
+}
+.cc-shot {
+  position: relative;
+  width: 132px;
+  height: 92px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: radial-gradient(120% 90% at 50% 20%, rgb(var(--accent-rgb) / 0.12), transparent 70%), var(--bg-0);
+  border: 1px solid var(--line-2);
+  display: grid;
+  place-items: center;
+}
+.cc-shot img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  animation: cc-in 0.35s var(--out, ease-out);
+}
+@keyframes cc-in {
+  from {
+    opacity: 0;
+    transform: scale(1.04);
+  }
+}
+.cc-plug-text {
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-2);
+  min-width: 0;
+}
+.cc-conn {
+  color: var(--text);
+  font-weight: 500;
+}
+.cc-fw {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-top: 3px;
+  padding: 1px 6px;
+  border-radius: 5px;
+  font-size: 10.5px;
+  color: var(--cyan);
+  background: rgb(var(--cyan-rgb) / 0.1);
+  border: 1px solid rgb(var(--cyan-rgb) / 0.25);
+  max-width: 100%;
+}
+.cc-fw .mono {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.cc-face {
+  margin-top: 8px;
+}
+.cc-face svg {
+  display: block;
+}
+.cc-face-body {
+  fill: rgb(var(--ink-rgb) / 0.06);
+  stroke: var(--line-3);
+  stroke-width: 1;
+}
+.cc-cav {
+  fill: var(--bg-0);
+  stroke: var(--line-2);
+  stroke-width: 1;
+}
+.cc-cav.mine {
+  stroke: var(--accent);
+  stroke-width: 1.6;
+  fill: rgb(var(--accent-rgb) / 0.12);
+}
+.cc-dot {
+  stroke: rgb(var(--ink-rgb) / 0.35);
+  stroke-width: 0.8;
+  opacity: 0.55;
+}
+.cc-dot.mine {
+  opacity: 1;
+  stroke: #fff;
+  stroke-width: 1.2;
+}
+.cc-pin1 {
+  fill: #ffcf4a;
+}
+.cc-face-labels {
+  display: grid;
+  gap: 0;
+  padding: 0 4px;
+  margin-top: 2px;
+  font-family: var(--mono);
+  font-size: 9.5px;
+  color: var(--text-3);
+  text-align: center;
+}
+.cc-face-labels span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  padding: 0 1px;
+}
+.cc-face-labels .mine {
+  color: var(--accent-2);
+  font-weight: 600;
+}
+.cc-face-labels .empty {
+  opacity: 0.5;
+}
+.cc-more {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  margin-top: 8px;
+  padding: 2px 0;
+  border: 0;
+  background: none;
+  font: inherit;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-2);
+  cursor: pointer;
+}
+.cc-more:hover {
+  color: var(--accent-2);
+}
+.cc-more > span {
+  display: inline-grid;
+  transition: transform 0.18s var(--out, ease-out);
+}
+.cc-sec > .cc-more:first-child {
+  margin-top: 0;
+}
+.cc-guide {
+  display: grid;
+  grid-template-columns: 44px 1fr;
+  gap: 4px 8px;
+  margin: 6px 0 0;
+  font-size: 11px;
+  line-height: 1.5;
+  overflow: hidden;
+}
+.cc-guide dt {
+  color: var(--text-4);
+  font-size: 10px;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  padding-top: 1px;
+}
+.cc-guide dd {
+  margin: 0;
+  color: var(--text-2);
+}
+.cc-facts {
+  font-size: 11px;
+  line-height: 1.75;
+  color: var(--text-2);
+}
+.cc-facts b {
+  color: var(--text);
+  font-weight: 600;
+}
+.cc-steps {
+  margin: 6px 0 0;
+  padding-left: 18px;
+  font-size: 11px;
+  line-height: 1.55;
+  color: var(--text-2);
+}
+.cc-steps li + li {
+  margin-top: 3px;
+}
+.cc-issues {
+  padding: 8px 0;
+  border-top: 1px solid var(--line);
+  font-size: 11px;
+  color: var(--text-2);
+  display: grid;
+  gap: 4px;
+}
+.cc-actions {
+  display: flex;
+  gap: 6px;
+  padding: 9px 12px 10px;
+  border-top: 1px solid var(--line);
+  background: rgb(var(--bg-2-rgb) / 0.35);
+}
+.cc-actions .btn.on {
+  border-color: var(--accent);
+  color: var(--accent-2);
+  background: var(--accent-soft);
+}
+.cc-actions .icon-btn:first-of-type {
+  margin-left: auto;
+}
+.wr-tip-sub {
+  display: block;
+  margin-top: 2px;
+  font-family: var(--sans, inherit);
+  color: var(--text-3);
+  font-size: 10.5px;
+}

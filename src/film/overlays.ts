@@ -4,7 +4,7 @@
 // the viewport's layers then add them to the 3D view. What was on before the
 // film is put back after it.
 
-import { toggleWiring, useWiringView } from "../ui/wiringView";
+import { setWiringLook, toggleWiring, useWiringView } from "../ui/wiringView";
 import { updateSettings, useSettings } from "../app/settings";
 import { showAirflow, useAirflow } from "../analysis/aeroRuntime";
 import { showResults, useAnalysis } from "../analysis/runtime";
@@ -14,6 +14,7 @@ import type { OverlayNeed } from "./timeline";
 export interface SavedOverlays {
   wiring: boolean;
   wiringSolid: boolean;
+  wiringLook: "ghost" | "solid" | "see" | undefined;
   airflow: string | null;
   airflowLines: boolean;
   results: string | null;
@@ -25,6 +26,7 @@ export function saveOverlays(): SavedOverlays {
   return {
     wiring: useWiringView.getState().on,
     wiringSolid: !!useSettings.getState().wiringSolid,
+    wiringLook: useSettings.getState().wiringLook,
     airflow: useAirflow.getState().shown,
     airflowLines: useAirflow.getState().lines,
     results: useAnalysis.getState().shown,
@@ -48,7 +50,7 @@ export async function setOverlay(need: OverlayNeed | null) {
   if (need?.kind !== "sim" && useSim.getState().view) useSim.setState({ view: false, playing: false });
   switch (need?.kind) {
     case "wiring":
-      updateSettings({ wiringSolid: false });
+      setWiringLook("see");
       toggleWiring(true);
       break;
     case "airflow":
@@ -67,7 +69,7 @@ export async function setOverlay(need: OverlayNeed | null) {
 
 export async function restoreOverlays(s: SavedOverlays) {
   await setOverlay(null);
-  updateSettings({ wiringSolid: s.wiringSolid });
+  updateSettings({ wiringSolid: s.wiringSolid, wiringLook: s.wiringLook });
   if (s.wiring) toggleWiring(true);
   if (s.airflow) {
     showAirflow(s.airflow);
