@@ -12,13 +12,15 @@ export interface LabelSpec {
   draw: (g: CanvasRenderingContext2D, mm: (v: number) => number, W: number, H: number) => void;
   /** transparent where nothing is drawn (moulded lettering), else a full label */
   clear?: boolean;
+  /** pixels per mm, for small print that must stay sharp close up (default 12) */
+  ppm?: number;
 }
 
 const FONT = '"IBM Plex Sans", "Segoe UI", Arial, sans-serif';
 
-/** Paint a label at about 12 px per mm (at most 1024 px a side). */
+/** Paint a label at about 12 px per mm, or its own `ppm` (at most 1024 px a side). */
 export function labelTexture(spec: LabelSpec): THREE.CanvasTexture {
-  const ppm = Math.min(12, 1024 / Math.max(spec.w, spec.h));
+  const ppm = Math.min(spec.ppm ?? 12, 1024 / Math.max(spec.w, spec.h));
   const W = Math.max(8, Math.round(spec.w * ppm));
   const H = Math.max(8, Math.round(spec.h * ppm));
   const c = document.createElement("canvas");
@@ -214,6 +216,53 @@ export function moulded(w: number, h: number, lines: string[], ink: string): Lab
         fitText(g, l, W / 2, (H * (i + 0.5)) / n, W * 0.9);
       });
       void mm;
+    },
+  };
+}
+
+/**
+ * A bearing's rubber seal seen face on, as a square `od` across: the code moulded round it twice between
+ * `ri` and `ro`, and the fine rings by its lip and its rim.
+ */
+export function bearingSeal(od: number, ri: number, ro: number, text: string, base: string, ink: string): LabelSpec {
+  return {
+    w: od,
+    h: od,
+    ppm: 40,
+    draw: (g, mm, W, H) => {
+      g.fillStyle = base;
+      g.fillRect(0, 0, W, H);
+      const cx = W / 2;
+      const cy = H / 2;
+      const band = ro - ri;
+      const rText = mm((ri + ro) / 2);
+      g.fillStyle = ink;
+      g.textAlign = "center";
+      g.textBaseline = "middle";
+      g.font = font(600, mm(band * 0.42));
+      // the code twice, half a turn apart, letters standing up from the centre
+      const letters = `${text}   `.split("");
+      const step = mm(band * 0.42) * 0.62;
+      for (const half of [0, Math.PI]) {
+        let a = half - ((letters.length - 1) * step) / rText / 2 - Math.PI / 2;
+        for (const ch of letters) {
+          g.save();
+          g.translate(cx + Math.cos(a) * rText, cy + Math.sin(a) * rText);
+          g.rotate(a + Math.PI / 2);
+          g.fillText(ch, 0, 0);
+          g.restore();
+          a += step / rText;
+        }
+      }
+      // the lip: a fine moulded ring just outside the inner race
+      g.strokeStyle = ink;
+      g.lineWidth = Math.max(1, mm(0.12));
+      g.beginPath();
+      g.arc(cx, cy, mm(ri + band * 0.12), 0, Math.PI * 2);
+      g.stroke();
+      g.beginPath();
+      g.arc(cx, cy, mm(ro - band * 0.1), 0, Math.PI * 2);
+      g.stroke();
     },
   };
 }

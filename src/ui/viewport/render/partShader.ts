@@ -6,7 +6,7 @@
 // that runs out from a click.
 
 import * as THREE from "three";
-import { Detail, type Appearance } from "./appearance";
+import { Detail, Make, type Appearance } from "./appearance";
 
 export interface PartUniforms {
   /** kind, amplitude (mm), period (mm), roughness variation */
@@ -42,6 +42,33 @@ export interface PartUniforms {
   uRipple: { value: THREE.Vector4 };
   /** its strength (0: none) and the ring's width, mm */
   uRippleAmt: { value: THREE.Vector2 };
+  /** how round the part's edges are, mm (its rounded-edge bands, see bevel.ts; 0: sharp) */
+  uBevelR: { value: number };
+  /** shared by every part: the size of a pixel per mm of distance from the camera, and the fewest pixels a round is drawn across */
+  uBevelPx: { value: THREE.Vector2 };
+  /** how the part was made (Make), and that process's value (FDM layer height, mm; 0 for its default) */
+  uMake: { value: THREE.Vector2 };
+  /** the part's box in its own frame: where it sat on the build plate, its lathe axis, its parting line */
+  uKBox0: { value: THREE.Vector3 };
+  uKBox1: { value: THREE.Vector3 };
+  /** shared by every part: the set's fill light without its shadow-casting panels (StudioEnvironments.fill), and whether to use it */
+  tFillEnv: { value: THREE.Texture | null };
+  uFillOn: { value: number };
+}
+
+/** One for all parts (see PartUniforms.uBevelPx): the view sets it when its size or lens changes. */
+export const BEVEL_PX = { value: new THREE.Vector2(0.002, 0.7) };
+
+/**
+ * One for all parts: the diffuse light from the set without the panels that light the model through shadow-casting
+ * lights. Off (uFillOn 0) the whole environment lights it, as three.js does.
+ */
+export const FILL_ENV = { value: null as THREE.Texture | null };
+export const FILL_ON = { value: 0 };
+
+/** Set BEVEL_PX for a perspective camera drawing `heightPx` device pixels high. */
+export function setBevelPixel(camera: THREE.PerspectiveCamera, heightPx: number) {
+  BEVEL_PX.value.x = (2 * Math.tan(THREE.MathUtils.degToRad(camera.fov) / 2)) / Math.max(1, heightPx * camera.zoom);
 }
 
 export function partUniforms(): PartUniforms {
@@ -62,6 +89,13 @@ export function partUniforms(): PartUniforms {
     uChangeView: { value: new THREE.Vector4(1, 1, 1, 1000) },
     uRipple: { value: new THREE.Vector4() },
     uRippleAmt: { value: new THREE.Vector2(0, 1) },
+    uBevelR: { value: 0 },
+    uBevelPx: BEVEL_PX,
+    uMake: { value: new THREE.Vector2() },
+    uKBox0: { value: new THREE.Vector3(-1, -1, -1) },
+    uKBox1: { value: new THREE.Vector3(1, 1, 1) },
+    tFillEnv: FILL_ENV,
+    uFillOn: FILL_ON,
   };
 }
 
@@ -147,9 +181,22 @@ uniform sampler2D tChange;
 uniform vec4 uChangeView;
 uniform vec4 uRipple;
 uniform vec2 uRippleAmt;
+uniform vec2 uMake;
+uniform vec3 uKBox0;
+uniform vec3 uKBox1;
 varying vec3 vKObj;
 varying vec3 vKObjN;
+// 1 on a rounded-edge band (bevel.ts)
+varying float vKBand;
 varying vec3 vKWorld;
+// the part's own axes as the view sees them, for the grain's direction
+varying vec3 vKX;
+varying vec3 vKY;
+varying vec3 vKZ;
+// which way the surface's marks run (part frame): highlights stretch across them
+vec3 kGrain = vec3(1.0, 0.0, 0.0);
+// how much the marks darken the colour (a cut edge's oxide, a parting line)
+float kShade = 1.0;
 flat varying float vThreadCode;
 varying vec3 vThread;
 ${NOISE}
@@ -186,6 +233,14 @@ vec3 kDetail(vec3 p, vec3 n) {
   vec3 an = abs(n);
   if (kind == ${Detail.Layers}) {
     // FDM layer lines, printed along the part's Z
+    if (uMake.y > 0.0) sc = uMake.y;
+    if (n.z < -0.97 && p.z < uKBox0.z + sc * 0.5) {
+      // the face that lay on the textured build plate: a fine pebbled grain, duller than the rest
+      vec3 g = p / 0.11;
+      float gfade = 1.0 - smoothstep(0.35, 0.9, length(fwidth(g)));
+      float pe = kNoise(g) * 0.6 + kNoise(g * 2.3 + 5.1) * 0.4;
+      return vec3(amp * 0.6 * pe * gfade, 0.15 * (1.0 - pe) * gfade, 0.12 + (pe - 0.5) * rv * gfade);
+    }
     float q = p.z / sc;
     float fade = 1.0 - smoothstep(0.3, 0.75, fwidth(q));
     float w = 0.5 + 0.5 * cos(6.2831853 * q);
@@ -197,11 +252,37 @@ vec3 kDetail(vec3 p, vec3 n) {
     float tf = 1.0 - smoothstep(0.3, 0.75, fwidth(d));
     float tw = 0.5 + 0.5 * cos(6.2831853 * d);
     float h = side * w * fade + top * tw * tf * 0.35;
-    return vec3(amp * h, side * (1.0 - w) * fade + top * (1.0 - tw) * tf * 0.3, (h - 0.5 * (side * fade + top * tf * 0.35)) * rv);
+    // the seam down the back, where each layer's outer wall starts and ends: a small blob per layer, wandering a little
+    vec2 cxy = 0.5 * (uKBox0.xy + uKBox1.xy);
+    vec2 rxy = p.xy - cxy;
+    float ang = atan(rxy.y, rxy.x) - 1.5707963;
+    ang = abs(ang - 6.2831853 * floor(ang / 6.2831853 + 0.5));
+    float sd = ang * length(rxy) + (kHash(vec3(floor(q), 4.0, 2.0)) - 0.5) * 0.35;
+    float sw = max(0.18, length(fwidth(p.xy)) * 1.5);
+    float seam = side * fade * (1.0 - smoothstep(sw, sw * 2.2, sd)) * (0.18 / sw) * (0.55 + 0.45 * w);
+    h += seam * 1.6;
+    return vec3(amp * h, side * (1.0 - w) * fade + top * (1.0 - tw) * tf * 0.3, (h - 0.5 * (side * fade + top * tf * 0.35)) * rv - seam * 0.12);
+  }
+  if (kind == ${Detail.Machined} && an.z > 0.97) {
+    // a face cut by a face mill: every tooth leaves an arc, the passes step across the face, each a shade apart
+    float R = clamp(0.25 * max(uKBox1.x - uKBox0.x, uKBox1.y - uKBox0.y), 6.0, 32.0);
+    float stepv = R * 1.4;
+    float j = floor(p.y / stepv + 0.5);
+    float dv = p.y - j * stepv;
+    float dx = sqrt(max(R * R - dv * dv, 0.0));
+    float ph = (p.x - dx) / (sc * 4.0);
+    float fade = 1.0 - smoothstep(0.3, 0.8, fwidth(ph));
+    float m = 0.5 + 0.5 * cos(6.2831853 * ph);
+    float tone = kHash(vec3(j, 1.0, 2.0)) - 0.5;
+    kGrain = vec3(-dv, dx, 0.0) / max(R, 1e-3);
+    return vec3(amp * m * fade, 0.0, ((m - 0.5) * fade + tone * 0.5) * rv);
   }
   if (kind == ${Detail.Brushed} || kind == ${Detail.Machined}) {
     float stretch = kind == ${Detail.Brushed} ? 90.0 : 10.0;
     // streaks run along the axis that lies in the face
+    kGrain = an.x > 0.8 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
+    // a milled wall: the cutter's steps run round it
+    if (kind == ${Detail.Machined} && an.z < 0.3) kGrain = normalize(vec3(-n.y, n.x, 0.0) + 1e-5);
     vec3 q = an.x > 0.8 ? vec3(p.y / stretch, p.z, p.x) : vec3(p.x / stretch, p.y, p.z);
     q /= sc;
     float fade = 1.0 - smoothstep(0.4, 1.2, length(fwidth(q.yz)));
@@ -227,6 +308,10 @@ vec3 kDetail(vec3 p, vec3 n) {
     vec2 cell = floor(uv);
     vec2 f = fract(uv);
     bool warp = mod(cell.x + cell.y, 4.0) < 2.0;
+    // each tow's fibres run along it: its sheen stretches across
+    vec3 ua = an.z >= max(an.x, an.y) ? vec3(1.0, 0.0, 0.0) : (an.x >= an.y ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0));
+    vec3 va = an.z >= max(an.x, an.y) ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0);
+    kGrain = warp ? ua : va;
     float across = warp ? f.y : f.x;
     float along = warp ? uv.x : uv.y;
     float bulge = sin(3.14159 * across);
@@ -289,6 +374,76 @@ vec3 kDetail(vec3 p, vec3 n) {
   return vec3(0.0);
 }
 
+// The marks of how the part was made, on top of its finish (Make): x height (mm), y pull toward the second tint, z
+// roughness change. Lines finer than a pixel fade out, keeping their average.
+vec3 kMake(vec3 p, vec3 n) {
+  int mk = int(uMake.x + 0.5);
+  vec3 an = abs(n);
+  vec3 c = 0.5 * (uKBox0 + uKBox1);
+  vec3 ext = uKBox1 - uKBox0;
+  if (mk == ${Make.Turned}) {
+    // turned about Z: rings on the ends, fine feed lines round the sides, and the sheen runs round with them
+    vec2 r2 = p.xy - c.xy;
+    float r = length(r2);
+    kGrain = r > 1e-4 ? vec3(-r2.y, r2.x, 0.0) / r : vec3(1.0, 0.0, 0.0);
+    float ph = (an.z > 0.9 ? r : p.z) / 0.07;
+    float fade = 1.0 - smoothstep(0.3, 0.8, fwidth(ph));
+    float m = 0.5 + 0.5 * cos(6.2831853 * ph);
+    float chatter = kNoise(vec3(r * 0.4, p.z * 0.4, 3.0)) - 0.5;
+    return vec3(0.0015 * m * fade, 0.0, (m - 0.5) * 0.14 * fade + chatter * 0.05);
+  }
+  if (mk == ${Make.Moulded}) {
+    // the parting line round its middle: a hair-thin ridge where the mould halves met
+    float side = 1.0 - smoothstep(0.6, 0.9, an.z);
+    float zp = c.z;
+    float lw = max(0.05, fwidth(p.z) * 1.5);
+    float line = side * (1.0 - smoothstep(lw, lw * 2.0, abs(p.z - zp))) * (0.05 / lw);
+    // ejector pins underneath: faint rings on a grid, a touch glossier inside
+    float pin = 0.0;
+    float inner = 0.0;
+    if (n.z < -0.97 && p.z < uKBox0.z + 0.05) {
+      float pitch = clamp(min(ext.x, ext.y) * 0.5, 8.0, 30.0);
+      vec2 g = mod(p.xy - c.xy + pitch * 0.5, pitch) - pitch * 0.5;
+      float rr = length(g);
+      float pr = clamp(pitch * 0.12, 1.0, 3.0);
+      float pw = max(0.06, length(fwidth(p.xy)) * 1.5);
+      pin = (1.0 - smoothstep(pw, pw * 2.0, abs(rr - pr))) * (0.06 / pw);
+      inner = 1.0 - smoothstep(pr - pw, pr, rr);
+    }
+    kShade *= 1.0 - 0.25 * clamp(line + pin, 0.0, 1.0);
+    return vec3(0.02 * line - 0.004 * pin, 0.0, -0.08 * line - 0.12 * inner);
+  }
+  if (mk == ${Make.Sheet}) {
+    // a flat part cut from sheet: the cut edges show the beam's striations, slightly dark from the heat
+    float t = min(ext.x, min(ext.y, ext.z));
+    float mid = ext.x + ext.y + ext.z - t - max(ext.x, max(ext.y, ext.z));
+    if (t > 0.25 * mid) return vec3(0.0);
+    vec3 ta = ext.x <= min(ext.y, ext.z) ? vec3(1.0, 0.0, 0.0) : (ext.y <= ext.z ? vec3(0.0, 1.0, 0.0) : vec3(0.0, 0.0, 1.0));
+    float across = abs(dot(n, ta));
+    if (across > 0.3) return vec3(0.0);
+    vec3 along = normalize(cross(ta, n) + 1e-5);
+    float depth = dot(p - uKBox0, ta) / max(t, 1e-3);
+    // the lines lag toward the beam's exit side
+    float sCoord = dot(p, along) + depth * depth * 0.12;
+    float fade = 1.0 - smoothstep(0.3, 0.9, fwidth(sCoord * 6.0));
+    float st = kNoise(vec3(sCoord * 6.0, depth * 0.6, 1.7)) * 0.7 + kNoise(vec3(sCoord * 17.0, depth, 4.2)) * 0.3;
+    kGrain = ta;
+    kShade *= 0.8 - 0.1 * depth;
+    return vec3(0.01 * st * fade, 0.0, 0.16 + (st - 0.5) * 0.2 * fade);
+  }
+  return vec3(0.0);
+}
+
+// The tangent frame anisotropic highlights use, from the grain (three.js builds it from UVs, which parts have none of)
+mat3 kTangentFrame(vec3 n) {
+  vec3 g = vKX * kGrain.x + vKY * kGrain.y + vKZ * kGrain.z;
+  g -= n * dot(n, g);
+  float l = length(g);
+  g = l > 1e-4 ? g / l : normalize(cross(n, abs(n.y) < 0.9 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0)));
+  // roughest across the grain (tbn[0]), smooth along it
+  return mat3(cross(n, g), g, n);
+}
+
 // Bump from a height in mm (Mikkelsen, unnormalised so the slope stays true at every zoom)
 vec3 kPerturb(vec3 pos, vec3 n, float h, float faceDir) {
   vec3 sx = dFdx(pos);
@@ -302,14 +457,72 @@ vec3 kPerturb(vec3 pos, vec3 n, float h, float faceDir) {
 }
 `;
 
+/** three's normal_fragment_begin, with the tangent frame for anisotropy taken from the part's grain instead of UVs. */
+const NORMAL_BEGIN = (() => {
+  const src = THREE.ShaderChunk.normal_fragment_begin;
+  const out = src.replace(/mat3 tbn = getTangentFrame\( - vViewPosition, normal,[\s\S]*?\);/, "mat3 tbn = kTangentFrame( normal );");
+  if (out === src) throw new Error("three's normal_fragment_begin changed: update partShader's NORMAL_BEGIN");
+  return out;
+})();
+
+/** Diffuse light from the set's fill map (FILL_ENV), the same lookup three.js makes in the full one. */
+const FILL_PARS = /* glsl */ `
+uniform sampler2D tFillEnv;
+uniform float uFillOn;
+vec3 kFillIrradiance(const in vec3 normal) {
+  #if defined( USE_ENVMAP ) && defined( ENVMAP_TYPE_CUBE_UV )
+    if (uFillOn < 0.5) return getIBLIrradiance(normal);
+    vec3 worldNormal = inverseTransformDirection(normal, viewMatrix);
+    return PI * textureCubeUV(tFillEnv, envMapRotation * worldNormal, 1.0).rgb * envMapIntensity;
+  #else
+    return vec3(0.0);
+  #endif
+}
+`;
+
+/** three's lights_fragment_maps with the diffuse part taken from the fill map. */
+const LIGHTS_MAPS = (() => {
+  const src = THREE.ShaderChunk.lights_fragment_maps;
+  const out = src.replace("iblIrradiance += getIBLIrradiance( geometryNormal );", "iblIrradiance += kFillIrradiance( geometryNormal );");
+  if (out === src) throw new Error("three's lights_fragment_maps changed: update partShader's LIGHTS_MAPS");
+  return out;
+})();
+
 /** Patch a part material once; its uniforms come from `u` so animations can drive them. */
 export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUniforms) {
   mat.onBeforeCompile = (shader) => {
     Object.assign(shader.uniforms, u);
     shader.vertexShader = shader.vertexShader
-      .replace("#include <common>", "#include <common>\nvarying vec3 vKObj;\nvarying vec3 vKObjN;\nvarying vec3 vKWorld;\nattribute vec4 aThread;\nflat varying float vThreadCode;\nvarying vec3 vThread;")
-      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvKObj = position;\nvKObjN = normal;\nvThreadCode = aThread.x;\nvThread = aThread.yzw;")
-      .replace("#include <project_vertex>", "#include <project_vertex>\nvKWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+      .replace(
+        "#include <common>",
+        "#include <common>\nvarying vec3 vKObj;\nvarying vec3 vKObjN;\nvarying float vKBand;\nvarying vec3 vKWorld;\nvarying vec3 vKX;\nvarying vec3 vKY;\nvarying vec3 vKZ;\nattribute vec4 aThread;\nflat varying float vThreadCode;\nvarying vec3 vThread;\nattribute vec4 aBevel;\nuniform float uBevelR;\nuniform vec2 uBevelPx;",
+      )
+      .replace(
+        "#include <begin_vertex>",
+        `#include <begin_vertex>
+  // a rounded-edge band (bevel.ts): its inner side moves into the face by the round's width, never under a fraction of
+  // a pixel (so far edges still catch the light) and never past what the face allows
+  if (aBevel.w > 0.5) {
+    float kL = length(aBevel.xyz);
+    if (kL > 0.0 && uBevelR > 0.0) {
+      float kDist = max(0.0, -(modelViewMatrix * vec4(transformed, 1.0)).z);
+      transformed += aBevel.xyz * (min(kL, max(uBevelR, kDist * uBevelPx.x * uBevelPx.y)) / kL);
+    }
+  }
+vKObj = transformed;
+vKObjN = normal;
+vKBand = aBevel.w;
+vKX = normalize(normalMatrix * vec3(1.0, 0.0, 0.0));
+vKY = normalize(normalMatrix * vec3(0.0, 1.0, 0.0));
+vKZ = normalize(normalMatrix * vec3(0.0, 0.0, 1.0));
+vThreadCode = aThread.x;
+vThread = aThread.yzw;`,
+      )
+      .replace(
+        "#include <project_vertex>",
+        // the band lies on its face: drawn a hair nearer so the face never shows through it
+        "#include <project_vertex>\nvKWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;\nif (aBevel.w > 0.5) gl_Position.z -= 2e-6 * gl_Position.w;",
+      );
     shader.fragmentShader = shader.fragmentShader
       .replace("#include <common>", "#include <common>\n" + DETAIL)
       .replace(
@@ -328,12 +541,21 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
     if (kn < kt) discard;
     kEdge = 1.0 - smoothstep(kt, kt + 0.045, kn);
   }
-  vec3 kd = kDetail(vKObj, normalize(vKObjN));
+  // a rounded edge carries its face's pattern: the pattern follows the flat face, not the round's turned normal
+  vec3 kN = normalize(vKObjN);
+  if (vKBand > 0.5) {
+    vec3 kF = cross(dFdx(vKObj), dFdy(vKObj));
+    if (dot(kF, kF) > 1e-20) kN = normalize(kF) * sign(dot(kF, kN) + 1e-9);
+  }
+  vec3 kd = kDetail(vKObj, kN);
+  if (uMake.x > 0.5) kd += kMake(vKObj, kN);
   vec2 kThr = uThreads > 0.5 ? kThread() : vec2(0.0);`,
       )
-      .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uTint2, clamp(kd.y * uTintAmt, 0.0, 1.0));\n  diffuseColor.rgb *= 1.0 - 0.3 * kThr.y;")
+      .replace("#include <color_fragment>", "#include <color_fragment>\n  diffuseColor.rgb = mix(diffuseColor.rgb, uTint2, clamp(kd.y * uTintAmt, 0.0, 1.0));\n  diffuseColor.rgb *= (1.0 - 0.3 * kThr.y) * kShade;")
+      .replace("#include <normal_fragment_begin>", NORMAL_BEGIN)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(roughnessFactor + kd.z, 0.03, 1.0);")
-      .replace("#include <lights_fragment_maps>", "#include <lights_fragment_maps>\n  radiance *= uEnvBoost;")
+      .replace("#include <envmap_physical_pars_fragment>", "#include <envmap_physical_pars_fragment>\n" + FILL_PARS)
+      .replace("#include <lights_fragment_maps>", LIGHTS_MAPS + "\n  radiance *= uEnvBoost;")
       .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(-vViewPosition, normal, (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x, faceDirection);")
       .replace(
         "#include <emissivemap_fragment>",
@@ -352,8 +574,8 @@ export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUnifor
       );
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
-  (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-6";
+  (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0], aBevel: [0, 0, 0, 0] };
+  mat.customProgramCacheKey = () => "kerf-part-10";
 }
 
 /** Copy an appearance into a material and its uniforms. */
@@ -377,6 +599,21 @@ export function applyAppearance(mat: THREE.MeshPhysicalMaterial, u: PartUniforms
   u.uTint2.value.set(a.tint2);
   u.uTintAmt.value = a.tintAmt;
   u.uEnvBoost.value = a.envBoost;
+  u.uBevelR.value = a.bevel;
+  mat.anisotropy = a.aniso;
+}
+
+/**
+ * The marks of how a part was made (Make, with its value) and its box in its own frame. A turned part's sheen runs
+ * round its axis whatever its finish.
+ */
+export function applyMake(mat: THREE.MeshPhysicalMaterial, u: PartUniforms, a: Appearance, make: Make, value: number, box: THREE.Box3 | null) {
+  u.uMake.value.set(make, value);
+  if (box) {
+    u.uKBox0.value.copy(box.min);
+    u.uKBox1.value.copy(box.max);
+  }
+  mat.anisotropy = make === Make.Turned ? Math.max(a.aniso, 0.55) : a.aniso;
 }
 
 /** Section caps: the part colour with a fine hatch, glowing while a part is being revealed. */
