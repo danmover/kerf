@@ -690,7 +690,8 @@ function rollItem(A: Body, B: Body, r: PairResult, why: Meant, overlapped: boole
       fix: `Make ${t} reach the whole way ${w} travels, shorten the travel so ${w} stays on it, or move ${w} to where ${t} always is.`,
     };
   }
-  const reach = share > 0.97 ? "through the whole motion" : share < 0.03 ? `as it passes, about ${when(A, r.gapDeg)}` : `for ${fmtNum(share * 100, 0)}% of the motion`;
+  // a pair Kerf worked out to be rolling was swept as a possible collision, with no count of where it touches
+  const reach = !n ? `at about ${when(A, r.gapDeg)}` : share > 0.97 ? "through the whole motion" : share < 0.03 ? `as it passes, about ${when(A, r.gapDeg)}` : `for ${fmtNum(share * 100, 0)}% of the motion`;
   const pressed = depth > 0.05 ? `, pressed in ${fmtNum(depth, 1)} mm at most${soft ? ` (rubber of this size gives about ${fmtNum(allowed, 1)} mm)` : ""}` : "";
   // how the two surfaces pass each other where they meet
   const at = depth > 0 && moving ? { deg: r.deg, p: r.at } : r.gapAt ? { deg: r.gapDeg, p: r.gapAt } : r.restAt ? { deg: 0, p: r.restAt } : null;
