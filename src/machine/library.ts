@@ -40,6 +40,7 @@ const GROUPS: Record<CatalogKind, string> = {
   lead_screw: "Motion",
   pulley: "Motion",
   belt: "Motion",
+  rope: "Motion",
   coupler: "Motion",
   seal: "Seals",
   resistor: "Circuit board",
@@ -87,6 +88,7 @@ const KIND_DOC: Partial<Record<CatalogKind, string>> = {
   lead_screw: "Screw along `axis`, `at` is one end. Args: length (required), travel (nut position). Fields: nut_face, nut_bottom, nut_holes, end.",
   pulley: "Pulley on `axis`, `at` is the hub-side face. Fields: belt_center, end, pd, groove_w (contact_d for smooth idlers).",
   belt: "Timing belt round pulleys: see Belts below. No at: or axis: (the path places it).",
+  rope: "Rope or cable from a drum over sheaves to where it is tied: see Ropes below. No at: or axis: (the path places it).",
   coupler: "Shaft coupler along `axis`, `at` is the bore1 end. Fields: end, center.",
   hotend: "`at` is the nozzle tip, `axis` points up toward the mount. Fields: nozzle, mount_top, groove, sink_center.",
   extruder: "Filament drive bolted to a NEMA 17 face: `at` is the motor-side face centre, `axis` is the motor axis. Fields: filament_in, filament_out, top, holes (where three M3 screws go in on the back face, through it and into the motor).",
@@ -377,6 +379,21 @@ const BELT: LibEntry = {
   },
 };
 
+/** lib.rope: placed by its path, so the evaluator lays it out (machine/ropes.ts) instead of make(). */
+const ROPE: LibEntry = {
+  signature: 'lib.rope("wire_rope_7x19_3mm", path: [drum, top_sheave, (0, 0, 420)], lifts: car)',
+  doc: `A rope or cable from a winch drum, over sheaves, to where it is tied: see Ropes below. path: what the rope meets, in order. A wheel at either end is a drum with turns of rope on it; wheels between are sheaves; a point (x, y, z) at either end is where the rope is tied, to whatever part is drawn there. Wheels are lib.drum, lib.sheave, lib.pulley or lib.bearing components, or any round part of your own (the rope sits on the lowest stretch of its outside: a barrel between flanges, the bottom of a groove). flip: [sheave]: sheaves the rope passes on the far side of. wind: "under" leads it off the bottom of the drum instead of over the top. wraps: turns of rope on the drum as drawn (default: three, plus what the travel pays out). lifts: the part it raises, whose travel per turn of the drum Kerf then works out (no per_turn: needed). pull: the pull on it in newtons when no weight on a moving part gives it. Ids: ${catalogOfKind("rope")
+    .map((p) => p.id)
+    .join(", ")}.`,
+  positional: ["id"],
+  params: ["id", "path", "flip", "wind", "wraps", "lifts", "pull"],
+  group: "Motion",
+  machine: true,
+  make() {
+    throw new Error("lib.rope is laid out from its path");
+  },
+};
+
 export const MACHINE_LIBRARY: Record<string, LibEntry> = {
   part: {
     signature: 'lib.part("id") { at: (x, y, z) }',
@@ -390,6 +407,7 @@ export const MACHINE_LIBRARY: Record<string, LibEntry> = {
   },
   ...Object.fromEntries(CATALOG_KINDS.map((k) => [k, kindEntry(k)])),
   belt: BELT,
+  rope: ROPE,
   ...VALUED,
   potentiometer: VALUED.pot,
 };

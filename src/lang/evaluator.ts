@@ -29,8 +29,10 @@ import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { connOf, findConn, findPin, wiringNames } from "../machine/catalog/conns";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
-import { emptyMachine, type BeltDef, type CatalogPart, type LeadDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
+import { emptyMachine, type BeltDef, type RopeDef, type CatalogPart, type LeadDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
 import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
+import { DEAD_WRAPS, RopeError, layoutRope, ropeCutLength, ropeRecipe, ropeSpec, ropeState, ropeTaken, squareTo, wheelOf, type RopeIn, type RopePoint } from "../machine/ropes";
+import { recipeBounds } from "../analysis/fits/geometry";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
 import { APP_FNS, buildApp, finishApps } from "../apps/lang";
@@ -1667,6 +1669,7 @@ class Evaluator {
     };
     let def: CompDef;
     let belt: BeltDef | undefined;
+    let rope: RopeDef | undefined;
     let band: BandInfo | undefined;
     let chainInfo: ChainInfo | undefined;
     let imported: { ref: ImportRef; origin: ImportOrigin } | undefined;
@@ -1686,6 +1689,12 @@ class Evaluator {
       const made = this.belt(s, args);
       def = made.def;
       belt = made.belt;
+    } else if (key === "rope") {
+      const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "on", "side", "load", "slides", "travel"].find((k) => props[k] !== undefined);
+      if (placed) throw new EvalError(`A rope follows its path: leave out ${placed}:`, propSpans[placed]);
+      const made = this.rope(s, args);
+      def = made.def;
+      rope = made.rope;
     } else if (key === "chain") {
       const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides"].find((k) => props[k] !== undefined);
       if (placed) throw new EvalError(`A chain follows its path: leave out ${placed}:`, propSpans[placed]);
@@ -1855,6 +1864,11 @@ class Evaluator {
           belt.label = mc.label;
           this.machine.belts.push(belt);
           this.machine.calcs.push({ ...beltTrace(belt), name: s.name, span: s.span });
+        }
+        if (rope) {
+          rope.role = mc.role;
+          rope.label = mc.label;
+          this.machine.ropes.push(rope);
         }
         if (onBoard && def.board) {
           if (mc.ref && this.machine.components.some((o) => o !== mc && o.ref === mc.ref)) throw new EvalError(`ref: "${mc.ref}" is already used`, propSpans.ref);
@@ -2100,6 +2114,7 @@ class Evaluator {
     }
     this.machine.boards.push(...machine.boards);
     this.machine.belts.push(...machine.belts);
+    this.machine.ropes.push(...machine.ropes);
     for (const h of inner.mateQueries ?? []) this.mateQueries.add(h);
     this.splitQueries.push(...(inner.splitQueries ?? []));
     this.inserts.push({
@@ -2461,6 +2476,205 @@ class Evaluator {
       catalog: { id: part.id, length: layout.open ? bd.cutLength : undefined },
     };
     return { def, belt: bd };
+  }
+
+  /**
+   * lib.rope: resolve the path to a drum, sheaves and tie points, lay it out and draw it. With lifts:, the part it
+   * raises takes its travel per turn from the drum and the way the rope is reeved, when the design gives it none.
+   */
+  rope(s: Extract<Stmt, { k: "component" }>, args: Args): { def: CompDef; rope?: RopeDef } {
+    const ctx = this.ctx();
+    const id = args.str("id");
+    const part = catalogPart(id);
+    if (!part || part.kind !== "rope") throw new EvalError(`"${id}" is not a rope. Ropes: ${catalogOfKind("rope").map((p) => p.id).join(", ")}`, s.call.span);
+    const spec = ropeSpec(part);
+    const argSpan = (name: string) => s.call.args.find((a) => a.name === name)?.span ?? s.call.span;
+    const pathV = args.value("path");
+    if (!Array.isArray(pathV)) throw new EvalError("lib.rope() needs path: what the rope meets, in order: a drum, any sheaves, and the point it is tied at, like path: [drum, top_sheave, (0, 0, 400)]", argSpan("path"));
+    const label = part.name;
+    const bom = { description: label, standard: part.mpn ? `${part.maker ?? ""} ${part.mpn}`.trim() : undefined, catalogId: part.id };
+    const scalars0 = { d: spec.d, breaking_load: spec.mbl, working_load: Math.round(spec.mbl / spec.factor) };
+    // a design checked without geometry (solving params) has no shapes to read drums and sheaves from
+    if (this.opts.skipGeometry) return { def: { kind: "rope", label, placement: "free", solids: [], fields: { scalars: { ...scalars0, length: 0, cut_length: 0, wraps: 0 } }, bom, catalog: { id: part.id } } };
+
+    const nameOf = (v: Obj) => String(v.fields.name) + (typeof v.fields.index === "number" ? `[${v.fields.index}]` : "");
+    const partName = (v: Value): string | undefined => (v instanceof Ref && v.what === "part" ? v.name : v instanceof Obj && v.kind === "part" ? String(v.fields.name) : undefined);
+    const num = (v: Value | undefined) => (typeof v === "number" ? v : undefined);
+    const r1 = (x: number) => Math.round(x * 10) / 10;
+    const last = pathV.length - 1;
+    const motions: (Motion | undefined)[] = [];
+    const nodes: RopeIn[] = pathV.map((v, i): RopeIn => {
+      if (v instanceof Vec) {
+        motions.push(undefined);
+        return { k: "tie", p: toV3(v, ctx, `path: item ${i + 1}`) };
+      }
+      const end = i === 0 || i === last;
+      if (v instanceof Obj && v.kind === "component") {
+        const name = nameOf(v);
+        if (typeof v.fields.count === "number") throw new EvalError(`path: "${name}" is a pattern of ${v.fields.count}: pick one, like ${name}.all[0]`, argSpan("path"));
+        this.current?.add(String(v.fields.name));
+        const f = v.fields;
+        const vec = (k: string) => (f[k] instanceof Vec ? toV3(f[k], ctx, k) : undefined);
+        const axis = vec("axis");
+        motions.push(this.comps.get(String(f.name))?.motion);
+        const cp = typeof f.catalog_id === "string" ? catalogPart(f.catalog_id) : undefined;
+        let c: V3 | undefined;
+        let rootD: number | undefined;
+        let width: number | undefined;
+        let flange: number | undefined;
+        let what = "";
+        if (f.kind === "bearing") {
+          c = vec("center");
+          rootD = num(f.od);
+          width = num(f.width);
+          flange = 0;
+          what = `${String(f.code)} bearing`;
+        } else if (f.kind === "sheave" || f.kind === "drum") {
+          c = vec("center");
+          rootD = num(f.root_d);
+          width = num(f.kind === "drum" ? f.width : f.groove_w);
+          flange = num(f.flange);
+          what = f.kind === "drum" ? "drum" : `${fmtNum(rootD ?? 0, 0)} mm sheave`;
+        } else if (cp?.kind === "pulley") {
+          c = vec("belt_center");
+          rootD = num(f.contact_d) ?? num(f.pd);
+          width = num(f.groove_w);
+          flange = rootD !== undefined && num(f.od) !== undefined ? Math.max(0, (num(f.od)! - rootD) / 2) : undefined;
+          what = cp.specs.smooth === true ? "smooth idler" : "toothed pulley";
+        } else throw new EvalError(`path: "${name}" is not something a rope runs on. Use a lib.drum, lib.sheave, lib.pulley or lib.bearing, a round part of your own, or a tie point like (x, y, z)`, argSpan("path"));
+        if (!c || !axis || !(rootD !== undefined && rootD > 0)) throw new EvalError(`path: "${name}" has no position or size the rope can use`, argSpan("path"));
+        return { k: "wheel", name, label: end && f.kind !== "drum" ? `drum (${what})` : what, c, axis, rootD, width, flange };
+      }
+      const pn = partName(v);
+      if (pn !== undefined) {
+        this.current?.add(pn);
+        const p = this.parts.find((q) => q.name === pn && q.kind === "part") ?? this.parts.find((q) => q.name === pn);
+        if (!p) throw new EvalError(`path: "${pn}" must be defined above the rope`, argSpan("path"));
+        const w = wheelOf(p.recipe, p.xf, spec.d);
+        if (!w) throw new EvalError(`path: ${pn} has no round shape for the rope to run on. Build its barrel or its groove with cylinder(), tube() or revolve() first in the part, or use lib.drum or lib.sheave; a tie point is written (x, y, z)`, argSpan("path"));
+        motions.push(this.partMotion.get(pn));
+        return { k: "wheel", name: pn, label: end ? "drum" : "sheave", c: w.c, axis: w.axis, rootD: w.rootD, width: w.width, flange: w.flange };
+      }
+      throw new EvalError(`path: item ${i + 1} should be a drum or a sheave (a component or a round part) or a tie point like (x, y, z), got ${typeName(v)}`, argSpan("path"));
+    });
+
+    const listed = (arg: string, what: string): string[] => {
+      const v = args.value(arg);
+      if (v === undefined) return [];
+      return (Array.isArray(v) ? v : [v]).map((x) => {
+        const n = x instanceof Obj && x.kind === "component" ? nameOf(x) : partName(x);
+        if (n === undefined) throw new EvalError(`${arg}: ${what}`, argSpan(arg));
+        return n;
+      });
+    };
+    const flip = new Set(listed("flip", "the sheaves the rope passes on the far side of, like flip: [guide]"));
+    for (const n of flip) if (!nodes.some((nd, i) => nd.k === "wheel" && nd.name === n && i > 0 && i < last)) throw new EvalError(`flip: ${n} should be one of the sheaves between the ends of path: (wind: "under" turns a drum's rope round)`, argSpan("flip"));
+    const wind = args.has("wind") ? args.str("wind") : "over";
+    if (wind !== "over" && wind !== "under") throw new EvalError('wind: "over" (the rope leaves over the top of the drum, the default) or "under"', argSpan("wind"));
+    const wrapsV = args.value("wraps");
+    if (wrapsV !== undefined && !(typeof wrapsV === "number" && wrapsV >= 0 && wrapsV <= 500)) throw new EvalError("wraps: the turns of rope on the drum where it is drawn, like wraps: 8", argSpan("wraps"));
+    const pullV = args.value("pull");
+    if (pullV !== undefined && !(typeof pullV === "number" && pullV >= 0 && Number.isFinite(pullV))) throw new EvalError("pull: the pull on the rope in newtons, like pull: 200N", argSpan("pull"));
+    const lifts = listed("lifts", "the part the rope raises (one with slides: and travel:), like lifts: car");
+    for (const n of lifts) this.current?.add(n);
+
+    const lay = (wraps: number) => {
+      try {
+        return layoutRope(nodes, spec, { flip, wind, wraps });
+      } catch (e) {
+        if (e instanceof RopeError) throw new EvalError(e.message, argSpan("path"));
+        throw e;
+      }
+    };
+    let layout = lay(typeof wrapsV === "number" ? wrapsV : DEAD_WRAPS);
+
+    // lifts: how much rope the path takes for each millimetre the lift moves, with the nodes that go with it
+    let perTurn: number | undefined;
+    let extra = 0;
+    const drums = layout.nodes.map((nd, i) => ({ nd, i })).filter((x) => x.nd.kind === "drum");
+    for (const name of lifts) {
+      const lm = this.partMotion.get(name) ?? this.comps.get(name)?.motion;
+      if (!lm || lm.kind !== "slide" || lm.link || !lm.travel) throw new EvalError(`lifts: ${name} should be a part that travels on its own (slides: Z  travel: 400), defined above the rope`, argSpan("lifts"));
+      // what goes with the lift: a node that rides it, or one drawn inside or against it
+      const boxes = this.parts.filter((q) => q.name === name).map((q) => {
+        const b = q.recipe ? recipeBounds(q.recipe) : null;
+        if (!b) return null;
+        const lo: V3 = [Infinity, Infinity, Infinity];
+        const hi: V3 = [-Infinity, -Infinity, -Infinity];
+        for (let k = 0; k < 8; k++) {
+          const w = applyXforms([b[k & 1][0], b[(k >> 1) & 1][1], b[(k >> 2) & 1][2]], q.xf);
+          for (let j = 0; j < 3; j++) {
+            lo[j] = Math.min(lo[j], w[j]);
+            hi[j] = Math.max(hi[j], w[j]);
+          }
+        }
+        return { lo, hi };
+      });
+      const inBox = (p: V3) => boxes.some((b) => !!b && p.every((x, j) => x >= b.lo[j] - 2 && x <= b.hi[j] + 2));
+      const rides = (m: Motion | undefined) => {
+        for (let x = m; x; x = x.parent) if (x === lm) return true;
+        return false;
+      };
+      let moves = nodes.map((nd, i) => rides(motions[i]) || (!motions[i] && inBox(nd.k === "tie" ? nd.p : nd.c)));
+      // with no shape to go by, the rope's tied end is on what it lifts
+      if (!moves.some(Boolean) && boxes.every((b) => !b)) moves = nodes.map((nd) => nd.k === "tie");
+      if (!moves.some(Boolean)) continue;
+      const a = vnorm(lm.axis);
+      const at = (shift: number) => {
+        const pts: RopePoint[] = layout.nodes.map((nd, i) => ({ c: moves[i] ? vadd(nd.c, vscale(a, shift)) : nd.c, axis: nd.axis, r: nd.r, dir: nd.dir }));
+        return { pts, st: ropeState(pts, pts.map((q) => (q.axis ? squareTo(q.axis) : undefined))) };
+      };
+      const lo = at(-0.5);
+      const hi = at(0.5);
+      const take = ropeTaken(hi.pts, lo.st, hi.st);
+      if (Math.abs(take) < 1e-6) continue;
+      // rope the lift's whole travel takes from where it is drawn: paid out from the drum when the path gets longer
+      const drum = drums.length === 1 ? drums[0] : undefined;
+      if (drum) extra = Math.max(extra, (take * lm.travel) / (2 * Math.PI * drum.nd.r));
+      const dm = drum ? motions[drum.i] : undefined;
+      if (drum && dm && !dm.kind && !dm.link && Math.abs(dm.ratio) > 1e-9 && lm.perTurn === undefined) {
+        lm.perTurn = (Math.abs(dm.ratio) * 2 * Math.PI * drum.nd.r) / Math.abs(take);
+        perTurn = lm.perTurn;
+      }
+    }
+    if (typeof wrapsV !== "number" && extra > 1e-6) layout = lay(Math.ceil((DEAD_WRAPS + extra) * 4) / 4);
+
+    const cut = ropeCutLength(layout, spec);
+    const rd: RopeDef = {
+      name: s.name,
+      catalogId: part.id,
+      label,
+      rope: { d: spec.d, kind: spec.kind, construction: spec.construction, mbl: spec.mbl, mass: spec.mass, ea: spec.ea, bend: spec.bend, bendMin: spec.bendMin, factor: spec.factor },
+      nodes: layout.nodes,
+      spans: layout.spans,
+      length: Math.round(layout.length * 1000) / 1000,
+      cutLength: cut,
+      lifts,
+      wrapsGiven: typeof wrapsV === "number",
+      ...(typeof pullV === "number" ? { pull: pullV } : {}),
+      span: s.span,
+    };
+    let recipe;
+    try {
+      recipe = ropeRecipe(layout, spec);
+    } catch (e) {
+      if (e instanceof RopeError) throw new EvalError(e.message, argSpan("path"));
+      throw e;
+    }
+    const drum = drums[0]?.nd;
+    const def: CompDef = {
+      kind: "rope",
+      label,
+      placement: "free",
+      solids: [{ suffix: "", label: `${s.name} (${cut} mm)`, recipe, color: part.geom.color ?? "#b9bfc7", material: part.geom.material ?? "Steel" }],
+      fields: {
+        scalars: { ...scalars0, length: r1(layout.length), cut_length: cut, wraps: drum?.wraps ?? 0, ...(perTurn !== undefined ? { per_turn: Math.round(perTurn * 1000) / 1000 } : {}) },
+        points: { start: layout.line[0], end: layout.line[layout.line.length - 1] },
+      },
+      bom: { ...bom, description: `${label}, cut to ${cut} mm`, length: cut },
+      catalog: { id: part.id, length: cut },
+    };
+    return { def, rope: rd };
   }
 
   /** lib.band: lay an O-ring round the parts it wraps and onto its hooks, and work out how it pulls. */
