@@ -1643,6 +1643,10 @@ export function buildGeometry(p: CatalogPart, a: GeomArgs): GeomResult {
     case "belt":
       throw new Error(`${p.name} follows the pulleys it runs round: use lib.belt("${p.id}", path: [...])`);
 
+    // rope: laid out from its path by lib.rope (machine/ropes.ts), never from the catalog alone
+    case "rope":
+      throw new Error(`${p.name} follows the drum and sheaves it runs over: use lib.rope("${p.id}", path: [...])`);
+
     // plate: heated bed or build plate. w × d × t, `at` is the bottom centre;
     // holes from `holes`.
     case "plate": {

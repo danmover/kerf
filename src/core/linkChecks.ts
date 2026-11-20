@@ -25,7 +25,7 @@ export function linkChecks(model: Model): CheckItem[] {
   const seen = new Set<string>();
   for (const p of model.parts) {
     const m = p.motion;
-    if (!m || (m.kind !== "slide" && m.kind !== "swing") || m.link || seen.has(p.name)) continue;
+    if (!m || (m.kind !== "slide" && m.kind !== "swing") || m.link || m.travel || seen.has(p.name)) continue;
     seen.add(p.name);
     out.push({
       id: `link:none:${p.name}`,
@@ -33,7 +33,7 @@ export function linkChecks(model: Model): CheckItem[] {
       status: "fail",
       title: `${p.name} ${m.kind === "slide" ? "slides" : "swings"} but no rod drives it`,
       detail: `${p.name} has ${m.kind === "slide" ? "slides:" : "swings:"}, so it moves only as a connecting rod pushes it, and none does: it stays put while the rest turns.`,
-      fix: `Add the rod: a part with links: [<the turning part>, ${p.name}] and pins: [<its pin on the turning part>, <its pin on ${p.name}>], both where they are drawn.`,
+      fix: `Add the rod: a part with links: [<the turning part>, ${p.name}] and pins: [<its pin on the turning part>, <its pin on ${p.name}>], both where they are drawn.${m.kind === "slide" ? ` Or, when a screw, belt, rack, rope or cylinder moves it instead (a lift, a carriage), give ${p.name} travel: (how far it goes, mm).` : ""}`,
       parts: [p.id],
       span: p.span,
       basis: "geometry",

@@ -162,16 +162,29 @@ function rideItems(model: Model, holds: Holds): CheckItem[] {
   return out;
 }
 
+/** A group of parts fastened to each other but to nothing that stands on the floor. */
+export interface Unheld {
+  /** it touches nothing ("float"), only sits on something ("rests"), or only touches at the side or from below ("falls") */
+  why: "float" | "rests" | "falls";
+  /** every part of the group, and the ones a finding names (fasteners and removable parts left out) */
+  members: EvalPart[];
+  shown: EvalPart[];
+  /** the parts it sits on, every part it touches, and the moving parts among them or in it */
+  on: EvalPart[];
+  others: EvalPart[];
+  movers: EvalPart[];
+}
+
 /**
  * Every part held in place: joined (screws, inserts, fits, pivots, threads, bands, solder) to the parts that stand
  * on the floor, or declared held. Parts that only touch rest where gravity leaves them; parts touching nothing float.
  */
-function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p: EvalPart) => number | undefined): CheckItem[] {
+export function unheldParts(model: Model, holds: Holds, kernel: ChecksResult, volume: (p: EvalPart) => number | undefined): { unheld: Unheld[]; parts: EvalPart[] } | null {
   const contacts = kernel.contacts;
   const boxes = kernel.boxes;
-  if (!contacts || !boxes) return [];
+  if (!contacts || !boxes) return null;
   const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && boxes[p.id]);
-  if (parts.length < 2) return [];
+  if (parts.length < 2) return null;
   const byId = new Map(parts.map((p) => [p.id, p]));
   const idx = new Map(parts.map((p, i) => [p.id, i]));
   const root = parts.map((_, i) => i);
@@ -206,7 +219,10 @@ function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p:
     const cat = catOf(p);
     return !!cat && SEATED_KINDS.has(cat.kind);
   };
-  const declared = (p: EvalPart) => modules.has(instance(p)) || !!p.flex?.length || !!p.spring || p.libKind === "belt" || thin(p) || seated(p);
+  // a part with travel of its own is kept in line by the guides it touches; what carries its weight along the
+  // travel is the gravity checks' to find
+  const guided = (p: EvalPart) => p.motion?.kind === "slide" && !p.motion.link && !!p.motion.travel;
+  const declared = (p: EvalPart) => modules.has(instance(p)) || !!p.flex?.length || !!p.spring || p.libKind === "belt" || p.libKind === "rope" || thin(p) || seated(p) || guided(p);
   // a part that says how it is held (held: "glued") is taken at its word
   const says = (p: EvalPart) => !!p.held || !!(model.machine?.components ?? []).find((c) => c.name === p.name && c.held);
   // parts that are not built into the design: an external supply, an inline connector or fuse on its wires, and
@@ -234,7 +250,7 @@ function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p:
     if (ground.has(r)) continue;
     clusters.set(r, [...(clusters.get(r) ?? []), p]);
   }
-  const out: CheckItem[] = [];
+  const unheld: Unheld[] = [];
   const moves = (p: EvalPart) => turns(motionOfPart(p, holds));
   for (const members of clusters.values()) {
     // fasteners on their own are reported by the screw checks (loose screws hold nothing)
@@ -242,11 +258,25 @@ function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p:
     if (!shown.length) continue;
     const ids = new Set(members.map((p) => p.id));
     const touches = members.flatMap((p) => (touchesOf.get(p.id) ?? []).filter((t) => !ids.has(t.other)));
+    const others = [...new Set(touches.map((t) => t.other))].map((id) => byId.get(id)!);
+    const on = [...new Set(touches.filter((t) => t.under).map((t) => t.other))].map((id) => byId.get(id)!);
+    const movers = members.some(moves) ? shown.filter(moves) : others.filter(moves);
+    unheld.push({ why: !touches.length ? "float" : on.length ? "rests" : "falls", members, shown, on, others, movers });
+  }
+  return { unheld, parts };
+}
+
+function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p: EvalPart) => number | undefined): CheckItem[] {
+  const found = unheldParts(model, holds, kernel, volume);
+  if (!found) return [];
+  const { unheld, parts } = found;
+  const out: CheckItem[] = [];
+  for (const { why, shown, on, others, movers } of unheld) {
     const names = listOf(shown.map((p) => p.name));
     const one = shown.length === 1;
     const span = shown[0].span;
     const partIds = shown.map((p) => p.id);
-    if (!touches.length) {
+    if (why === "float") {
       out.push({
         id: `held:float:${shown[0].id}`,
         category: "assembly",
@@ -260,11 +290,8 @@ function heldItems(model: Model, holds: Holds, kernel: ChecksResult, volume: (p:
       });
       continue;
     }
-    const others = [...new Set(touches.map((t) => t.other))].map((id) => byId.get(id)!);
-    const on = [...new Set(touches.filter((t) => t.under).map((t) => t.other))].map((id) => byId.get(id)!);
-    const movers = members.some(moves) ? shown.filter(moves) : others.filter(moves);
     const moving = movers.length > 0;
-    if (on.length) {
+    if (why === "rests") {
       out.push({
         id: `held:rests:${shown[0].id}`,
         category: "assembly",

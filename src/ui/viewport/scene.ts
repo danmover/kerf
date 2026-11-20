@@ -7,7 +7,7 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
-import { motionPose } from "../../core/kinematics";
+import { driveAngle, motionPose } from "../../core/kinematics";
 import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explode";
 import { ChainLinks } from "./chainLinks";
 import type { MeshEntry } from "../../core/engine";
@@ -1232,6 +1232,12 @@ export class SceneController {
    * A chain shows its solid at the start of the motion and its moving links
    * once the drive turns. True when what is drawn changed.
    */
+  /** Degrees the design's drive runs before it turns back, when a part's travel ends (every motion carries the same figure). */
+  private driveRange(): number | undefined {
+    for (const o of this.parts.values()) if (o.part.motion?.range) return o.part.motion.range;
+    return undefined;
+  }
+
   private chainLinks(obj: PartObj): boolean {
     const info = obj.part.chain!;
     let changed = false;
@@ -1253,7 +1259,8 @@ export class SceneController {
       changed = true;
     }
     for (const m of obj.links.meshes) m.layers.mask = obj.mesh.layers.mask;
-    if (on && obj.links.update(this.angle)) changed = true;
+    // a design whose travel ends runs its drive out and back: the chain follows its sprockets
+    if (on && obj.links.update(driveAngle(this.angle, this.driveRange()))) changed = true;
     return changed;
   }
 
@@ -1570,6 +1577,18 @@ export class SceneController {
   setPose(offsets: Map<string, [number, number, number] | THREE.Matrix4> | null) {
     if (!offsets && !this.pose) return;
     this.pose = offsets;
+    this.changed = true;
+  }
+
+  private fallen: Map<string, THREE.Matrix4> | null = null;
+
+  /**
+   * Where "let go" has taken parts from where they are drawn (a motion in world space, by part id; null: as
+   * designed). Kept apart from setPose, so a drag or an overlay that poses the machine does not put them back.
+   */
+  setLetGo(poses: Map<string, THREE.Matrix4> | null) {
+    if (!poses && !this.fallen) return;
+    this.fallen = poses;
     this.changed = true;
   }
 
@@ -2382,7 +2401,10 @@ export class SceneController {
       const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z).multiply(po) : new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
       // its own motion or the one it is fastened to (a screw turns with the part it holds), riding on its carrier
       const mo = turns(obj.part.motion) ? obj.part.motion : this.carried?.get(obj.part.id)?.motion;
-      if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
+      // let go, gravity has it: where the run put it, not where the drive would
+      const fell = this.fallen?.get(obj.part.id);
+      if (fell) m.multiply(fell);
+      else if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
       // a loose screw, nut or washer rattles along its axis as the parts move
       const lo = this.loose?.get(obj.part.id);
       if (lo && Math.abs(this.angle) > 1e-9) {
@@ -3161,7 +3183,9 @@ export class SceneController {
         const po = this.pose?.get(o.part.id);
         const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(p.x, p.y, p.z).multiply(po) : new THREE.Matrix4().makeTranslation(p.x + (po?.[0] ?? 0), p.y + (po?.[1] ?? 0), p.z + (po?.[2] ?? 0));
         const mo = turns(o.part.motion) ? o.part.motion : this.carried?.get(o.part.id)?.motion;
-        if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
+        const fell = this.fallen?.get(o.part.id);
+        if (fell) m.multiply(fell);
+        else if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
         const lo = this.loose?.get(o.part.id);
         if (lo && Math.abs(s.angle) > 1e-9) {
           const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(s.angle * 8));
