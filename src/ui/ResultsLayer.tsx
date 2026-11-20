@@ -14,6 +14,7 @@ import { modeWords } from "../analysis/dynamics";
 import { followers } from "../analysis/carried";
 import { meshes, useDesign } from "../core/engine";
 import { useSettings } from "../app/settings";
+import { reduceMotionNow } from "../app/motion";
 import { useView } from "../app/view";
 import { useTheme } from "../app/theme";
 import { degC, duration } from "../analysis/thermalSummary";
@@ -163,11 +164,15 @@ export function ResultsLayer({ scene }: { scene: SceneController }) {
 
   // rebuilt on a theme change, as its markers and labels are drawn in the theme's colours; the parts the analysed ones
   // carry (a number clicked into a bracket) move with them
+  const swept = useRef<typeof result | null>(null);
   useEffect(() => {
     if (!result) return;
     const design = useDesign.getState().model;
     const carried = design ? followers(design, result, (p) => meshes.get(p.hash)?.bbox) : [];
     const o = new ResultsOverlay(result, theme, carried.length ? { followers: carried, pose: (m) => scene.setPose(m) } : undefined);
+    // a new result sweeps up over the model as it lands (not again for a change of theme)
+    if (swept.current !== result && !reduceMotionNow()) o.sweepIn();
+    swept.current = result;
     ov.current = o;
     scene.addOverlay(o);
     return () => {
