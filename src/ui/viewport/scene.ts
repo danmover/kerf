@@ -20,7 +20,9 @@ import type { ViewPreset } from "../../app/view";
 import type { FilmLayout, FilmShot, FilmView } from "../../app/viewportApi";
 import { buildShare } from "../../film/timeline";
 import { appearanceFor, Detail, type Appearance } from "./render/appearance";
-import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
+import { applyAppearance, capMaterial, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
+import { ARRIVE_MS, DROP_LAND, arrivalKind, dropHeight, fillAt, fillAxis, screwLeft, screwTravel, traceAt, traceOrder } from "./arrival";
+import { edgeSweep, editSweep, type Sweep } from "./editSweep";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { ChangeDepth } from "./render/changeDepth";
 import { ContactShadow } from "./render/contactShadow";
@@ -50,6 +52,17 @@ const FRAME_FAILS = 20;
 /** How long a rebuilt part's new surfaces glow, and how long its lost ones take to dissolve, ms */
 const CHANGE_MS = 1100;
 const CHANGE_FADE_MS = 620;
+/** A change that sweeps through its part: how long it shows, and how long its front takes to cross, ms */
+const SWEEP_MS = 1350;
+const SWEEP_FRONT_MS = 720;
+/** Most parts one edit works a sweep out for from their edges (the rest show their change without one) */
+const EDGE_SWEEPS_MAX = 4;
+/** How long a check's result pulses on its parts, ms */
+const PULSE_MS = 950;
+/** A change the camera goes to see: how long it takes to get there, stays, and comes back, ms */
+const VISIT_GO_MS = 650;
+const VISIT_STAY_MS = 1100;
+const VISIT_BACK_MS = 800;
 
 /** How far apart two meshes of one surface can lie, by the mesh's quality (src/kernel/build.ts meshes preview at 0.25 mm, the rest at 0.03). */
 const meshTolerance = (geoKey: string) => (geoKey.endsWith(":preview") ? 0.25 : 0.03);
@@ -59,6 +72,8 @@ const SWATCH_MATS_MAX = 96;
 interface GeoEntry {
   mesh: THREE.BufferGeometry;
   edges: THREE.BufferGeometry;
+  /** (first point, point count, edge id) per B-rep edge, for the order the outline draws in (see traceOrder) */
+  edgeGroups?: Int32Array;
   users: number;
 }
 
@@ -87,12 +102,17 @@ interface PartObj {
   /** local-space centre, for the explode direction */
   center: THREE.Vector3;
   explode: Spring;
-  reveal: { t0: number; dur: number; zMin: number; zMax: number; plane: THREE.Plane } | null;
+  /** a new part made in place: its outline traces, then it fills along dir (world) from sMin to sMax */
+  reveal: { t0: number; dur: number; sMin: number; sMax: number; dir: THREE.Vector3; plane: THREE.Plane } | null;
+  /** a bought part dropping in, or a screw spinning down its thread (in assembly coordinates) */
+  arrive: { t0: number; dur: number; kind: "drop" | "screw"; travel: number; axis: THREE.Vector3; pivot: THREE.Vector3; turns: number; landed: boolean } | null;
   /** dissolve in after a rebuild, or out on removal */
   dissolve: { t0: number; dur: number; out: boolean } | null;
   flash: { t0: number; dur: number } | null;
-  /** rebuilt: its new surfaces glowing, told apart from the old ones by ChangeDepth */
-  change: { t0: number; dur: number } | null;
+  /** rebuilt: its new surfaces glowing, told apart from the old ones by ChangeDepth; swept through it when it has a sweep (part frame) */
+  change: { t0: number; dur: number; sweep: Sweep | null; ghost: Ghost } | null;
+  /** a check's result landing on it */
+  pulse: { t0: number; dur: number } | null;
   /** a ring of light running out from where it was clicked */
   ripple: { t0: number; dur: number; reach: number } | null;
   removing: boolean;
@@ -153,6 +173,8 @@ interface Ghost {
   fade: number;
   /** only the surfaces the new mesh doesn't cover dissolve (see startChange) */
   change: boolean;
+  /** they go as the change's front passes instead (see the part shader's uSweep) */
+  sweep: boolean;
 }
 
 /** What is under a point on screen: the part, and the spot on it in the part's own frame and in the assembly. */
@@ -273,7 +295,6 @@ export interface AppearanceOverride {
   color: string;
 }
 
-const ease = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : 1 - Math.pow(1 - k, 3));
 const easeInOut = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
 
 export class SceneController {
@@ -320,6 +341,9 @@ export class SceneController {
   private changeDepth: ChangeDepth | null = null;
   /** where the camera is drawing back to, to keep a design's arriving parts in view (see growView) */
   private growTo: { pos: THREE.Vector3; target: THREE.Vector3; at: number } | null = null;
+  /** while Claude builds: the camera goes to see a change out of view and comes back (see visitChange) */
+  private followChanges = false;
+  private visit: { home: { pos: THREE.Vector3; target: THREE.Vector3 }; box: THREE.Box3; backAt: number; back: boolean } | null = null;
   /** depth of field on the selection (see focusLens), and the selection it was worked out for */
   private lens: { radius: number; focus: number } | null = null;
   private lensSel: ReadonlySet<string> | null = null;
@@ -950,10 +974,11 @@ export class SceneController {
     this.changed = true;
   }
 
-  /** Swing the camera to a position and target (at once with reduced motion). */
-  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
+  /** Swing the camera to a position and target (at once with reduced motion). Ends a visit to a change, unless it is one. */
+  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number, visiting = false) {
     this.zoomGlide = null;
     this.growTo = null;
+    if (!visiting) this.visit = null;
     if (this.display.reduceMotion) {
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
@@ -981,7 +1006,10 @@ export class SceneController {
     // a part's real threads may have just arrived while the camera is close to it
     if (!this.lodDue) this.lodDue = now + 200;
     const motion = !this.display.reduceMotion;
-    let fresh = 0;
+    // new parts arrive in turn: the made ones first, then what is bought, then the screws that hold them
+    const fresh = { make: 0, drop: 0, screw: 0 };
+    let edgeSweeps = 0;
+    const seen = new THREE.Box3();
     for (const part of parts) {
       const pick = pickMesh(meshes.get(part.hash), this.realThreads(part.id));
       if (!pick) {
@@ -1004,14 +1032,30 @@ export class SceneController {
         obj.placement.fromArray(xformMatrix(part.xf));
         if (motion && isNewGeometry) {
           if (prevHash) this.startDissolveIn(obj, now);
-          else this.startReveal(obj, now + Math.min(fresh++ * 45, 900));
+          else {
+            const kind = arrivalKind(part);
+            const n = fresh[kind]++;
+            const delay = kind === "make" ? Math.min(n * 45, 900) : kind === "drop" ? 220 + Math.min(n * 40, 700) : 480 + Math.min(n * 35, 600);
+            this.startReveal(obj, now + delay);
+          }
+          if (this.followChanges) seen.union(this.worldBox(obj));
         }
       } else if (obj.geoKey !== geoKey) {
         const oldKey = obj.geoKey;
         const ghost = motion && isNewGeometry ? this.spawnGhost(obj, now) : null;
+        const oldEdges = ghost ? this.geos.get(oldKey)?.edges.getAttribute("position")?.array : undefined;
+        const was = obj.part;
         this.swapGeometry(obj, geoKey, data);
-        if (ghost) this.startChange(obj, ghost, oldKey, now);
-        else if (motion && isNewGeometry) this.startDissolveIn(obj, now);
+        if (ghost) {
+          // which way the change sweeps through it: from its recipe, else from where its edges moved
+          let sweep = editSweep(was.recipe, part.recipe, this.localBox(ghost.mesh.geometry), this.localBox(obj.mesh.geometry));
+          if (!sweep && oldEdges && edgeSweeps < EDGE_SWEEPS_MAX) {
+            edgeSweeps++;
+            sweep = edgeSweep(oldEdges, data.edges);
+          }
+          this.startChange(obj, ghost, oldKey, now, sweep);
+          if (this.followChanges) seen.union(this.worldBox(obj));
+        } else if (motion && isNewGeometry) this.startDissolveIn(obj, now);
       }
       obj.part = part;
       obj.hash = part.hash;
@@ -1026,7 +1070,8 @@ export class SceneController {
       if (!motion) this.disposePart(obj);
       else {
         obj.removing = true;
-        obj.reveal = null;
+        this.endReveal(obj);
+        obj.arrive = null;
         obj.change = null;
         obj.u.uChange.value.x = 0;
         obj.dissolve = { t0: now, dur: 420, out: true };
@@ -1040,8 +1085,73 @@ export class SceneController {
       this.fit("iso", false);
       this.onFirstFrame();
     } else if (this.autoFit && this.parts.size) this.growView();
+    else if (!seen.isEmpty()) this.visitChange(seen);
     this.changed = true;
   }
+
+  /** A part's mesh box in its own frame. */
+  private localBox(g: THREE.BufferGeometry): { min: [number, number, number]; max: [number, number, number] } {
+    g.boundingBox ?? g.computeBoundingBox();
+    const b = g.boundingBox!;
+    return { min: [b.min.x, b.min.y, b.min.z], max: [b.max.x, b.max.y, b.max.z] };
+  }
+
+  /** Where a part sits in the assembly, as a box. */
+  private worldBox(obj: PartObj): THREE.Box3 {
+    obj.mesh.geometry.boundingBox ?? obj.mesh.geometry.computeBoundingBox();
+    return obj.mesh.geometry.boundingBox!.clone().applyMatrix4(obj.placement);
+  }
+
+  /** Claude is building: changes out of view, or too small to see, are shown and the camera comes back. */
+  setFollowChanges(on: boolean) {
+    this.followChanges = on;
+  }
+
+  /**
+   * Go and see a change (a box in the assembly) when it is out of view or too small to see from here: the camera
+   * turns to it the way it already looks, stays a moment, and goes back (see animate). Moving the camera stops it
+   * (takeCamera).
+   */
+  private visitChange(box: THREE.Box3) {
+    if (this.display.reduceMotion || this.sketching || this.filming) return;
+    const now = performance.now();
+    if (this.visit) {
+      // more while it is there (or on its way back): frame it all, and stay a while longer
+      this.visit.box = this.visit.back ? box.clone() : this.visit.box.union(box);
+    } else {
+      if (this.camAnim || this.growTo || this.zoomGlide) return;
+      this.camera.updateMatrixWorld();
+      const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse));
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      const dist = Math.max(1e-6, sphere.center.distanceTo(this.camera.position));
+      const share = sphere.radius / (dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));
+      // in view and big enough to make out: nothing to go and see
+      if (share > 0.05 && this.boxInView(box, frustum)) return;
+      this.visit = { home: { pos: this.camera.position.clone(), target: this.controls.target.clone() }, box: box.clone(), backAt: 0, back: false };
+    }
+    const v = this.visit;
+    v.back = false;
+    v.backAt = now + VISIT_GO_MS + VISIT_STAY_MS;
+    const sphere = v.box.getBoundingSphere(new THREE.Sphere());
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    const fitDist = (sphere.radius * 1.4) / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    // close enough to make it out, but never farther than the view was
+    const homeDist = v.home.pos.distanceTo(v.home.target);
+    const d = Math.min(homeDist, Math.max(fitDist, homeDist * 0.2, this.camera.near * 4));
+    this.moveCamera(sphere.center.clone().addScaledVector(dir, d), sphere.center.clone(), VISIT_GO_MS, true);
+  }
+
+  /** Whether every corner of a box is in view. */
+  private boxInView(box: THREE.Box3, frustum: THREE.Frustum): boolean {
+    const c = new THREE.Vector3();
+    for (let k = 0; k < 8; k++) {
+      c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z);
+      if (!frustum.containsPoint(c)) return false;
+    }
+    return true;
+  }
+
+
 
   /**
    * While a design opens and the camera is still the app's: the first parts are framed as they come, and the camera
@@ -1077,7 +1187,7 @@ export class SceneController {
       mesh.computeBoundingSphere();
       const edges = new THREE.BufferGeometry();
       edges.setAttribute("position", new THREE.BufferAttribute(data.edges, 3));
-      g = { mesh, edges, users: 0 };
+      g = { mesh, edges, edgeGroups: data.edgeGroups, users: 0 };
       this.geos.set(key, g);
     }
     g.users++;
@@ -1114,6 +1224,7 @@ export class SceneController {
     const { mat, u } = this.newPartMaterial(look);
     const cap$ = capMaterial();
     const edgeMat = new THREE.LineBasicMaterial({ color: this.preset.edge.color, transparent: true, opacity: this.preset.edge.alpha, depthWrite: false });
+    patchEdgeMaterial(edgeMat, u);
     const mesh = new THREE.Mesh(g.mesh, mat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -1148,9 +1259,11 @@ export class SceneController {
       center,
       explode: { pos: new THREE.Vector3(), vel: new THREE.Vector3(), hold: 0 },
       reveal: null,
+      arrive: null,
       dissolve: null,
       flash: null,
       change: null,
+      pulse: null,
       ripple: null,
       removing: false,
       opacity: 1,
@@ -1170,6 +1283,8 @@ export class SceneController {
     g.mesh.boundingBox!.getCenter(obj.center);
     obj.u.uNoiseScale.value = 7 / Math.max(g.mesh.boundingSphere!.radius * 2, 1);
     obj.u.uThreads.value = g.mesh.getAttribute("aThread") ? 1 : 0;
+    // refined while it is still drawing itself in
+    if (obj.u.uTrace.value.y > 0) this.traceOrderFor(geoKey);
   }
 
   /** Real threads for photoreal (the path tracer draws geometry, not the shader's threads), films and close-ups. */
@@ -1293,7 +1408,7 @@ export class SceneController {
     group.matrix.copy(obj.group.matrix);
     group.add(mesh, edges);
     this.root.add(group);
-    const ghost: Ghost = { group, mesh, mat, u, edgeMat, edgeAlpha: edgeMat.opacity, geoKey: obj.geoKey, t0: now, dur: 520, fade: 520, change: false };
+    const ghost: Ghost = { group, mesh, mat, u, edgeMat, edgeAlpha: edgeMat.opacity, geoKey: obj.geoKey, t0: now, dur: 520, fade: 520, change: false, sweep: false };
     this.ghosts.push(ghost);
     return ghost;
   }
@@ -1302,20 +1417,40 @@ export class SceneController {
    * A rebuilt part shows what changed: its new surfaces light up, the surfaces it lost dissolve away, and what stayed
    * where it was stays still. Which is which is told per pixel, from the two meshes' depth (drawChangeDepth).
    */
-  private startChange(obj: PartObj, ghost: Ghost, oldKey: string, now: number) {
+  private startChange(obj: PartObj, ghost: Ghost, oldKey: string, now: number, sweep: Sweep | null = null) {
     const tol = (meshTolerance(oldKey) + meshTolerance(obj.geoKey)) * 1.3 + 0.02;
-    obj.reveal = null;
-    obj.u.uScan.value.x = 0;
+    this.endReveal(obj);
+    this.endArrival(obj);
     obj.dissolve = null;
     obj.u.uDissolve.value = 0;
     obj.flash = null;
-    obj.change = { t0: now, dur: CHANGE_MS };
+    obj.change = { t0: now, dur: sweep ? SWEEP_MS : CHANGE_MS, sweep, ghost };
     obj.u.uChange.value.set(1, tol, 0, 0);
     obj.u.uFlash.value = 0;
     ghost.change = true;
-    ghost.dur = CHANGE_MS;
+    ghost.sweep = !!sweep;
+    ghost.dur = obj.change.dur;
     ghost.fade = CHANGE_FADE_MS;
     ghost.u.uChange.value.set(2, tol, 0, 0);
+    for (const u of [obj.u, ghost.u]) {
+      u.uSweep.value.w = 0;
+      u.uSweepFront.value.set(0, 0.12);
+    }
+    if (sweep) this.placeSweep(obj);
+  }
+
+  /** The change's sweep where the part is now (world), for its shader and its old shape's. */
+  private placeSweep(obj: PartObj) {
+    const sw = obj.change?.sweep;
+    if (!sw) return;
+    const m = obj.group.matrix;
+    const o = new THREE.Vector3(...sw.origin).applyMatrix4(m);
+    const d = new THREE.Vector3(...sw.dir).transformDirection(m);
+    const mode = sw.mode === "out" ? 2 : 1;
+    for (const u of [obj.u, obj.change!.ghost.u]) {
+      u.uSweep.value.set(o.x, o.y, o.z, mode);
+      u.uSweepDir.value.set(d.x, d.y, d.z, sw.range);
+    }
   }
 
   /** Before a sample, while parts show what changed: the depth their shaders test against. */
@@ -1341,20 +1476,77 @@ export class SceneController {
     for (const g of olds) view(g.u, depth.new);
   }
 
-  /** End the change glows and ripples now (captures and films draw with buffers of their own). */
+  /**
+   * End every effect now: parts arriving, changes sweeping, ripples and pulses (captures and films draw with buffers
+   * of their own, and Esc skips them). A part fading out on its way out stays on its way.
+   */
   private finishEffects() {
     for (const o of this.parts.values()) {
       if (o.change) {
         o.change = null;
         o.u.uChange.value.x = 0;
         o.u.uFlash.value = 0;
+        o.u.uSweep.value.w = 0;
       }
       if (o.ripple) {
         o.ripple = null;
         o.u.uRippleAmt.value.x = 0;
       }
+      this.endReveal(o);
+      this.endArrival(o);
+      if (o.pulse) {
+        o.pulse = null;
+        o.u.uPulse.value.w = 0;
+      }
+      if (o.dissolve && !o.removing) {
+        o.dissolve = null;
+        o.u.uDissolve.value = 0;
+      }
+      if (o.flash) {
+        o.flash = null;
+        o.u.uFlash.value = 0;
+      }
     }
     for (const g of [...this.ghosts]) this.disposeGhost(g);
+  }
+
+  /** Whether any part is still arriving, changing, rippling or pulsing. */
+  effectsRunning(): boolean {
+    if (this.ghosts.length) return true;
+    for (const o of this.parts.values()) if (o.reveal || o.arrive || o.change || o.ripple || o.pulse || o.flash || (o.dissolve && !o.removing)) return true;
+    return false;
+  }
+
+  /** Skip what is playing (Esc): every effect jumps to its end, and a camera gone to see a change comes back at once. */
+  skipEffects(): boolean {
+    const any = this.effectsRunning() || !!this.visit;
+    if (!any) return false;
+    this.finishEffects();
+    if (this.visit) {
+      const v = this.visit;
+      this.visit = null;
+      this.camAnim = null;
+      this.camera.position.copy(v.home.pos);
+      this.controls.target.copy(v.home.target);
+      this.controls.update();
+    }
+    this.changed = true;
+    return true;
+  }
+
+  /** A check's result lands on these parts: one pulse, red for a new failure, green for one put right. */
+  pulseParts(ids: Iterable<string>, kind: "fail" | "fixed") {
+    if (this.display.reduceMotion) return;
+    const c = kind === "fail" ? new THREE.Color(0xff4d5e).multiplyScalar(1.8) : new THREE.Color(0x3ddc97).multiplyScalar(1.4);
+    const now = performance.now();
+    let i = 0;
+    for (const id of ids) {
+      const o = this.parts.get(id);
+      if (!o || o.removing) continue;
+      o.pulse = { t0: now + Math.min(i++ * 30, 300), dur: PULSE_MS };
+      o.u.uPulse.value.set(c.r, c.g, c.b, 0);
+    }
+    this.changed = true;
   }
 
   /** A ring of light runs out over the part from the spot clicked. */
@@ -1384,16 +1576,85 @@ export class SceneController {
     this.ghosts = this.ghosts.filter((x) => x !== g);
   }
 
+  /** A new part arrives: made in place (its outline traces, then it fills the way it is made), dropped in, or screwed in. */
   private startReveal(obj: PartObj, t0: number) {
-    const box = new THREE.Box3().setFromBufferAttribute(obj.mesh.geometry.getAttribute("position") as THREE.BufferAttribute).applyMatrix4(obj.placement);
-    const pad = Math.max(0.5, (box.max.z - box.min.z) * 0.02);
-    obj.reveal = { t0, dur: 760, zMin: box.min.z - pad, zMax: box.max.z + pad, plane: new THREE.Plane(new THREE.Vector3(0, 0, -1), box.min.z - pad) };
-    obj.u.uScan.value.set(1, box.min.z - pad, Math.max(0.6, (box.max.z - box.min.z) * 0.06));
-    this.updateClipping(obj);
+    const kind = arrivalKind(obj.part);
+    if (kind !== "make") return this.startArrival(obj, t0, kind);
+    const geo = obj.mesh.geometry;
+    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    geo.boundingBox ?? geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    const fill = fillAxis(obj.part, geo.index ? { positions: pos.array, indices: geo.index.array } : null, { min: bb.min.toArray(), max: bb.max.toArray() });
+    const dir = new THREE.Vector3(...fill.axis);
+    if (fill.frame === "part") dir.transformDirection(obj.placement);
+    // how far the part reaches along that way: D·(M p) = (Mᵀ D)·p + D·t
+    const e = obj.placement.elements;
+    const ax = dir.x * e[0] + dir.y * e[1] + dir.z * e[2];
+    const ay = dir.x * e[4] + dir.y * e[5] + dir.z * e[6];
+    const az = dir.x * e[8] + dir.y * e[9] + dir.z * e[10];
+    const a0 = dir.x * e[12] + dir.y * e[13] + dir.z * e[14];
+    const P = pos.array;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i + 2 < P.length; i += 3) {
+      const v = ax * P[i] + ay * P[i + 1] + az * P[i + 2];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!Number.isFinite(lo)) return;
+    lo += a0;
+    hi += a0;
+    const pad = Math.max(0.5, (hi - lo) * 0.02);
+    obj.reveal = { t0, dur: ARRIVE_MS.make, sMin: lo - pad, sMax: hi + pad, dir, plane: new THREE.Plane(dir.clone().negate(), lo - pad) };
+    obj.u.uScan.value.set(1, lo - pad, Math.max(0.6, (hi - lo) * 0.06));
+    // a printed part's band shows its layers, coarser than they are when they would be too fine to make out
+    obj.u.uScanDir.value.set(dir.x, dir.y, dir.z, fill.layer > 0 ? Math.max(fill.layer, (hi - lo) / 36) : 0);
+    // the outline draws itself in first
+    this.traceOrderFor(obj.geoKey);
+    obj.u.uTrace.value.set(-0.01, 1, lo - pad, hi - lo + 2 * pad);
+    this.applyMaterial(obj);
+  }
+
+  /** A bought part drops into place; a screw spins down its thread. Both fade in as they come. */
+  private startArrival(obj: PartObj, t0: number, kind: "drop" | "screw") {
+    const box = this.worldBox(obj);
+    const f = obj.part.fastener;
+    if (kind === "screw" && f) {
+      const { travel, turns } = screwTravel(f.length, f.headD);
+      obj.arrive = { t0, dur: ARRIVE_MS.screw, kind, travel, axis: new THREE.Vector3(...f.outward).normalize(), pivot: new THREE.Vector3(...f.headTop), turns, landed: false };
+    } else {
+      const size = box.getSize(new THREE.Vector3()).length();
+      obj.arrive = { t0, dur: ARRIVE_MS.drop, kind: "drop", travel: Math.min(120, Math.max(10, size * 0.9)), axis: new THREE.Vector3(0, 0, 1), pivot: new THREE.Vector3(), turns: 0, landed: false };
+    }
+    obj.dissolve = { t0, dur: kind === "screw" ? 220 : 280, out: false };
+    obj.u.uDissolve.value = 1;
+    obj.edgeMat.opacity = 0;
+  }
+
+  /** The order a mesh's outline draws in, worked out the first time one of its parts arrives. */
+  private traceOrderFor(key: string) {
+    const g = this.geos.get(key);
+    if (!g || g.edges.getAttribute("aOrder")) return;
+    const E = g.edges.getAttribute("position") as THREE.BufferAttribute | undefined;
+    if (E) g.edges.setAttribute("aOrder", new THREE.BufferAttribute(traceOrder(E.array, g.edgeGroups), 1));
+  }
+
+  private endReveal(obj: PartObj) {
+    if (!obj.reveal && obj.u.uTrace.value.y === 0) return;
+    obj.reveal = null;
+    obj.u.uScan.value.x = 0;
+    obj.u.uTrace.value.y = 0;
+    this.applyMaterial(obj);
+  }
+
+  private endArrival(obj: PartObj) {
+    if (!obj.arrive) return;
+    obj.arrive = null;
+    this.applyMaterial(obj);
   }
 
   private startDissolveIn(obj: PartObj, now: number) {
-    obj.reveal = null;
+    this.endReveal(obj);
     obj.dissolve = { t0: now + 90, dur: 620, out: false };
     obj.u.uDissolve.value = 1;
     obj.flash = { t0: now + 300, dur: 1100 };
@@ -1439,10 +1700,12 @@ export class SceneController {
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
     const visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     obj.group.visible = visible;
-    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered) && !obj.links?.object.visible;
+    // the outline of a part being made shows whatever the edges setting is: it draws the part in
+    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered || obj.u.uTrace.value.y > 0) && !obj.links?.object.visible;
     obj.mesh.layers.set(0);
     if (visible && obj.opacityTarget >= 1 && !obj.removing) {
-      obj.mesh.layers.enable(L_OPAQUE);
+      // a part still arriving leaves no contact shadow where it hasn't got to yet
+      if (!obj.reveal && !obj.arrive) obj.mesh.layers.enable(L_OPAQUE);
       if (selected) obj.mesh.layers.enable(L_SEL);
       if (hovered && !selected) obj.mesh.layers.enable(L_HOVER);
     }
@@ -1465,7 +1728,7 @@ export class SceneController {
     }
     obj.mat.opacity = o;
     obj.mat.depthWrite = !transparent;
-    obj.mesh.castShadow = !transparent && !obj.removing;
+    obj.mesh.castShadow = !transparent && !obj.removing && !obj.arrive;
     if (obj.decor) {
       for (const mat of obj.decor.mats) {
         const t = transparent || !!mat.userData.decal;
@@ -1485,9 +1748,15 @@ export class SceneController {
     const planes: THREE.Plane[] = [];
     if (this.sectionAnim.on) planes.push(this.sectionPlane);
     if (obj.reveal) planes.push(obj.reveal.plane);
-    const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length;
+    // the shadow of a part filling in fills in with it
+    const clipShadows = !!obj.reveal;
+    const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length || obj.mat.clipShadows !== clipShadows;
     obj.mat.clippingPlanes = planes.length ? planes : null;
-    obj.edgeMat.clippingPlanes = planes.length ? planes : null;
+    obj.mat.clipShadows = clipShadows;
+    // the outline shows above the fill: only the section cuts it
+    const edgePlanes = this.sectionAnim.on ? [this.sectionPlane] : null;
+    const edgesChanged = (obj.edgeMat.clippingPlanes?.length ?? 0) !== (edgePlanes?.length ?? 0);
+    obj.edgeMat.clippingPlanes = edgePlanes;
     if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = planes.length ? planes : null;
     obj.cap$.mat.clippingPlanes = planes.length ? planes : null;
     obj.cap.visible = (this.sectionAnim.on || !!obj.reveal) && obj.opacity >= 0.999;
@@ -1495,9 +1764,9 @@ export class SceneController {
     obj.cap$.mat.color.set(obj.look.color).multiplyScalar(0.85);
     if (changed) {
       obj.mat.needsUpdate = true;
-      obj.edgeMat.needsUpdate = true;
       obj.cap$.mat.needsUpdate = true;
     }
+    if (changed || edgesChanged) obj.edgeMat.needsUpdate = true;
   }
 
   setDisplay(d: DisplayState) {
@@ -2063,6 +2332,7 @@ export class SceneController {
   takeCamera() {
     this.camAnim = null;
     this.growTo = null;
+    this.visit = null;
     this.autoFit = false;
     if (this.turntable) {
       this.turntable = false;
@@ -2224,6 +2494,17 @@ export class SceneController {
       moving = true;
     }
 
+    // a visit to a change: back where the camera was once it has stayed a moment
+    if (this.visit && !this.camAnim) {
+      const v = this.visit;
+      if (v.back) this.visit = null;
+      else if (now >= v.backAt) {
+        v.back = true;
+        this.moveCamera(v.home.pos, v.home.target, VISIT_BACK_MS, true);
+        moving = true;
+      }
+    }
+
     if (this.playing) {
       this.angle += dt * 90 * this.speed;
       moving = true;
@@ -2271,18 +2552,16 @@ export class SceneController {
     const homeAt = (id: string) => asm!.t0 + Math.max(0, asm!.at.get(id) ?? 0) * asmStep;
     const planned = plan ? (asm ? explodeOffsets(plan, shown, (m) => (now < homeAt(m.id) ? 1 : stepProgress(m.stage, plan.stages, shown))) : explodeOffsets(plan, shown)) : null;
     for (const obj of [...this.parts.values()]) {
-      // reveal sweep
+      // a part made in place: its outline traces, then it fills the way it is made
       if (obj.reveal) {
-        const k = (now - obj.reveal.t0) / obj.reveal.dur;
-        if (k >= 1) {
-          obj.reveal = null;
-          obj.u.uScan.value.x = 0;
-          this.updateClipping(obj);
-        } else {
-          const e = ease(Math.max(0, k));
-          const z = obj.reveal.zMin + (obj.reveal.zMax - obj.reveal.zMin) * e;
-          obj.reveal.plane.constant = z;
-          obj.u.uScan.value.y = z;
+        const r = obj.reveal;
+        const k = (now - r.t0) / r.dur;
+        if (k >= 1) this.endReveal(obj);
+        else {
+          obj.u.uTrace.value.x = k <= 0 ? -0.01 : traceAt(k) * 1.02;
+          const at = r.sMin + (r.sMax - r.sMin) * fillAt(k);
+          r.plane.constant = at;
+          obj.u.uScan.value.y = at;
         }
         moving = true;
       }
@@ -2300,7 +2579,10 @@ export class SceneController {
         } else {
           const e = easeInOut(Math.max(0, k));
           obj.u.uDissolve.value = obj.dissolve.out ? e : 1 - e;
+          // its outline comes and goes with it
+          obj.edgeMat.opacity = this.preset.edge.alpha * (1 - obj.u.uDissolve.value);
         }
+        if (!obj.dissolve) this.applyOpacity(obj);
         moving = true;
       }
       if (obj.flash) {
@@ -2309,14 +2591,32 @@ export class SceneController {
         if (k >= 1) obj.flash = null;
         moving = true;
       }
-      // new surfaces glow at once and cool off
+      // new surfaces glow at once and cool off; a sweeping change brings them in behind its front
       if (obj.change) {
-        const k = (now - obj.change.t0) / obj.change.dur;
+        const c = obj.change;
+        const k = (now - c.t0) / c.dur;
         if (k >= 1) {
           obj.change = null;
           obj.u.uChange.value.x = 0;
           obj.u.uFlash.value = 0;
+          obj.u.uSweep.value.w = 0;
+        } else if (c.sweep) {
+          const f = easeInOut(Math.min(1, (now - c.t0) / SWEEP_FRONT_MS));
+          const front = f * (1 + obj.u.uSweepFront.value.y);
+          obj.u.uSweepFront.value.x = front;
+          c.ghost.u.uSweepFront.value.x = front;
+          obj.u.uFlash.value = Math.min(1, k * 6) * Math.pow(1 - k, 1.4) * 0.85;
+          this.placeSweep(obj);
         } else obj.u.uFlash.value = Math.min(1, k * 8) * (1 - k) * (1 - k);
+        moving = true;
+      }
+      // a check's result lands: one pulse, quick up and slow down
+      if (obj.pulse) {
+        const k = (now - obj.pulse.t0) / obj.pulse.dur;
+        if (k >= 1) {
+          obj.pulse = null;
+          obj.u.uPulse.value.w = 0;
+        } else obj.u.uPulse.value.w = k < 0 ? 0 : k < 0.16 ? Math.sin((Math.PI / 2) * (k / 0.16)) : Math.pow((1 - k) / 0.84, 2.2);
         moving = true;
       }
       if (obj.ripple) {
@@ -2389,6 +2689,33 @@ export class SceneController {
         const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(this.angle * 8));
         m.multiply(new THREE.Matrix4().makeTranslation(lo.axis[0] * k, lo.axis[1] * k, lo.axis[2] * k));
       }
+      // dropping in, or spinning down its thread
+      if (obj.arrive) {
+        const a = obj.arrive;
+        const k = (now - a.t0) / a.dur;
+        if (k >= 1) {
+          obj.arrive = null;
+          this.applyMaterial(obj);
+        } else if (a.kind === "drop") {
+          m.multiply(new THREE.Matrix4().makeTranslation(0, 0, a.travel * dropHeight(k)));
+          // it lands with a little light
+          if (!a.landed && k >= DROP_LAND) {
+            a.landed = true;
+            obj.flash = { t0: now, dur: 520 };
+          }
+        } else {
+          const left = screwLeft(k);
+          const d = a.axis.clone().multiplyScalar(a.travel * left);
+          m.multiply(new THREE.Matrix4().makeTranslation(d.x + a.pivot.x, d.y + a.pivot.y, d.z + a.pivot.z));
+          m.multiply(new THREE.Matrix4().makeRotationAxis(a.axis, a.turns * Math.PI * 2 * left));
+          m.multiply(new THREE.Matrix4().makeTranslation(-a.pivot.x, -a.pivot.y, -a.pivot.z));
+          if (!a.landed && k >= 0.86) {
+            a.landed = true;
+            obj.flash = { t0: now, dur: 420 };
+          }
+        }
+        moving = true;
+      }
       m.multiply(obj.placement);
       if (obj.part.chain && this.chainLinks(obj)) moving = true;
       if (!m.equals(obj.group.matrix)) {
@@ -2404,7 +2731,8 @@ export class SceneController {
       if (age >= g.dur) this.disposeGhost(g);
       else {
         const f = Math.min(1, age / g.fade);
-        g.u.uDissolve.value = easeInOut(f);
+        // a swept change takes the old shape away with its front, not by dissolving
+        g.u.uDissolve.value = g.sweep ? 0 : easeInOut(f);
         g.edgeMat.opacity = g.edgeAlpha * (1 - f);
         // gone, but still drawn into the depth the new mesh tests against
         if (f >= 1) g.mesh.castShadow = false;
@@ -2817,6 +3145,8 @@ export class SceneController {
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
   async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean; explode?: number; only?: string[] }): Promise<string> {
+    // parts still arriving or showing a change get a moment to finish, so the capture doesn't cut them short
+    for (let t = 0; t < 1200 && this.effectsRunning() && !this.disposed; t += 50) await new Promise((r) => setTimeout(r, 50));
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim }, replaced: this.replaced };
     // overlays (analysis results) are drawn unless the caller asks for the plain model
     const showOverlays = opts.overlays !== false && this.overlays.size > 0;
@@ -2839,15 +3169,8 @@ export class SceneController {
     // lit overlays need depth to hide behind the parts in front of them
     const out = new THREE.WebGLRenderTarget(opts.width, opts.height, { type: THREE.UnsignedByteType, depthBuffer: showOverlays });
     out.texture.colorSpace = THREE.SRGBColorSpace;
-    // let pending reveal animations finish first
+    // what is still arriving or changing ends first
     this.finishEffects();
-    for (const o of this.parts.values()) {
-      if (o.reveal) {
-        o.reveal = null;
-        o.u.uScan.value.x = 0;
-        this.updateClipping(o);
-      }
-    }
     // an exploded capture: every part where the plan puts it at that amount, framed to fit
     const unexploded = opts.explode !== undefined ? this.poseExploded(opts.explode) : null;
     try {
@@ -3030,20 +3353,8 @@ export class SceneController {
       frameOpacity: (this.sectionFrame.material as THREE.LineBasicMaterial).opacity,
       fillOpacity: (this.sectionFill.material as THREE.MeshBasicMaterial).opacity,
     };
-    // finish what was animating: a part still sweeping in, or fading
+    // finish what was animating: a part still arriving, or fading
     this.finishEffects();
-    for (const o of this.parts.values()) {
-      if (o.reveal) {
-        o.reveal = null;
-        o.u.uScan.value.x = 0;
-      }
-      if (o.dissolve && !o.removing) {
-        o.dissolve = null;
-        o.u.uDissolve.value = 0;
-      }
-      o.flash = null;
-      o.u.uFlash.value = 0;
-    }
     this.interGroup.visible = false;
     this.measure.group.visible = false;
     // a film's look is the lighting set as it is, whatever the app's theme
