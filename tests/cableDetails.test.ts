@@ -67,6 +67,17 @@ describe("cable details", () => {
     for (const [, l] of cableLoads(pm, ph)) if (l.amps !== undefined && l.rating !== undefined) expect(l.amps).toBeLessThanOrEqual(l.rating);
   });
 
+  it("gives the wiring tab the same load as the card", () => {
+    const loads = cableLoads(pm, ph);
+    for (const w of ph.wires) {
+      const d = cableDetails(pm, ph, w);
+      expect(loads.get(w.id), w.id).toEqual({ volts: d.volts, amps: d.amps, rating: d.rating });
+    }
+    // the heater leads carry the heaters' current
+    const bed = ph.wires.find((w) => w.ends[0].pin === "HB")!;
+    expect(loads.get(bed.id)!.amps).toBeGreaterThan(5);
+  });
+
   it("lights the circuit supply to ground", () => {
     const board = ph.wires.find((w) => w.ends[1].comp === "skr" && w.ends[1].pin === "POWER")!;
     const ground = ph.wires.find((w) => w.ends[1].comp === "skr" && w.ends[1].pin === "POWER_GND")!;

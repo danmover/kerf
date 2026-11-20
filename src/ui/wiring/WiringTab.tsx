@@ -96,6 +96,22 @@ export function WiringTab() {
           </div>
         </div>
 
+        {step !== null && <BuildOrder harness={harness} step={step} playing={playing} />}
+        <div className="wt-group wt-row">
+          {step === null && <BuildOrder harness={harness} step={step} playing={playing} />}
+          <button
+            className="btn sm"
+            onClick={() => download(cutListCsv(m, harness, runs), file, "text/csv")}
+            data-tip="Every cable: what to cut, and the housing, contacts and strip length at each end"
+          >
+            <Icon.Download size={13} /> Cut list
+          </button>
+          {trace && (
+            <button className="btn sm on" onClick={() => useWiringView.setState({ trace: null })} data-tip="Stop lighting the circuit">
+              <Icon.Bolt size={13} /> Circuit of {trace.from} <Icon.X size={11} />
+            </button>
+          )}
+        </div>
         <div className="wt-group">
           <div className="wt-label">Carries</div>
           <div className="wt-chips">
@@ -148,21 +164,6 @@ export function WiringTab() {
           />
           {colours === "load" && <div className="wt-ramp" aria-hidden />}
         </div>
-        <BuildOrder harness={harness} step={step} playing={playing} />
-        <div className="wt-group wt-row">
-          <button
-            className="btn sm"
-            onClick={() => download(cutListCsv(m, harness, runs), file, "text/csv")}
-            data-tip="Every cable: what to cut, and the housing, contacts and strip length at each end"
-          >
-            <Icon.Download size={13} /> Cut list
-          </button>
-          {trace && (
-            <button className="btn sm on" onClick={() => useWiringView.setState({ trace: null })} data-tip="Stop lighting the circuit">
-              <Icon.Bolt size={13} /> Circuit of {trace.from} <Icon.X size={11} />
-            </button>
-          )}
-        </div>
       </aside>
       <CableList
         rows={rows}
@@ -188,15 +189,13 @@ function BuildOrder({ harness, step, playing }: { harness: Harness; step: number
   const d = useMemo(() => (w && m ? cableDetails(m, harness, w, wireRun(w.id)) : null), [w, m, harness]);
   if (step === null)
     return (
-      <div className="wt-group">
-        <button
-          className="btn sm wt-build"
-          onClick={() => useWiringView.setState({ step: 0, playing: true, picked: null, trace: null, filter: NO_FILTER })}
-          data-tip="Fit the harness a cable at a time, in the order it goes in on the bench: ground first, power last"
-        >
-          <Icon.Play size={13} /> Build order
-        </button>
-      </div>
+      <button
+        className="btn sm wt-build"
+        onClick={() => useWiringView.setState({ step: 0, playing: true, picked: null, trace: null, filter: NO_FILTER })}
+        data-tip="Fit the harness a cable at a time, in the order it goes in on the bench: ground first, power last"
+      >
+        <Icon.Play size={13} /> Build order
+      </button>
     );
   return (
     <motion.div className="wt-group wt-step" initial={{ opacity: 0, y: 4 }} animate={{ opacity: 1, y: 0 }}>

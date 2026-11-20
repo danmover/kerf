@@ -198,7 +198,8 @@
 .wr-card.cc {
   width: 316px;
   padding: 0;
-  max-height: calc(100% - 196px);
+  /* down to just above the view's bottom edge: on a short view the plugs still fit */
+  max-height: calc(100% - 72px);
   display: flex;
   flex-direction: column;
   overflow: hidden;

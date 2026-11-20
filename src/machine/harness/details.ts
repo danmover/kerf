@@ -359,6 +359,17 @@ function endDetails(m: MachineData, h: Harness, w: HarnessWire, k: 0 | 1): EndDe
   };
 }
 
+type RowCurrent = ReturnType<typeof rowCurrents> extends Map<string, infer C> ? C : never;
+
+/** What a cable carries: its share of the net's current, or for a cable between ports what the device on it needs. */
+function currentOf(cur: RowCurrent | undefined, a: PinDef | undefined, b: PinDef | undefined): Partial<RowCurrent> | undefined {
+  if (cur) return cur;
+  const sink = a?.side === "sink" ? a : b?.side === "sink" ? b : undefined;
+  if (!sink || (sink.need_a === undefined && sink.need_w === undefined)) return undefined;
+  const v = sink.v ?? (sink === a ? b : a)?.v;
+  return { amps: sink.need_a ?? (sink.need_w !== undefined && v ? sink.need_w / v : undefined), volts: v };
+}
+
 function titleOf(r: WireRow): string {
   return r.cable ?? (r.label || `${r.kind === "ground" ? "Ground" : r.kind === "power" ? "Power" : r.kind === "motor" ? "Motor" : "Signal"} wire`);
 }
@@ -368,17 +379,8 @@ export function cableDetails(m: MachineData, h: Harness, w: HarnessWire, run?: n
   const r = w.row;
   const a = pinDef(m, w.ends[0]);
   const b = pinDef(m, w.ends[1]);
-  let cur = rowCurrents(
-    m,
-    h.wires.map((x) => x.row),
-  ).get(r.id);
-  // a cable between ports carries what the device on it needs
+  const cur = currentOf(rowCurrents(m, h.wires.map((x) => x.row)).get(r.id), a, b);
   const sink = a?.side === "sink" ? a : b?.side === "sink" ? b : undefined;
-  const source = sink === a ? b : a;
-  if (!cur && sink && (sink.need_a !== undefined || sink.need_w !== undefined)) {
-    const v = sink.v ?? source?.v;
-    cur = { amps: sink.need_a ?? (sink.need_w !== undefined && v ? sink.need_w / v : undefined), volts: v };
-  }
   const ends: [EndDetails, EndDetails] = [endDetails(m, h, w, 0), endDetails(m, h, w, 1)];
   const cut = run !== undefined && r.fixedMm === undefined ? cutLength(run) : r.lengthMm;
   const rating = r.gauge !== undefined ? awgAmpacity(r.gauge, r.insulation) : undefined;
@@ -422,13 +424,10 @@ export function cableDetails(m: MachineData, h: Harness, w: HarnessWire, run?: n
 
 /** Volts, amps and the wire's rating for every cable of the harness (amps and volts as the cable card has them). */
 export function cableLoads(m: MachineData, h: Harness): Map<string, { volts?: number; amps?: number; rating?: number }> {
-  const cur = rowCurrents(
-    m,
-    h.wires.map((x) => x.row),
-  );
+  const cur = rowCurrents(m, h.wires.map((x) => x.row));
   const out = new Map<string, { volts?: number; amps?: number; rating?: number }>();
   for (const w of h.wires) {
-    const c = cur.get(w.id);
+    const c = currentOf(cur.get(w.id), pinDef(m, w.ends[0]), pinDef(m, w.ends[1]));
     out.set(w.id, { volts: c?.volts, amps: c?.amps, rating: w.row.gauge !== undefined ? awgAmpacity(w.row.gauge, w.row.insulation) : undefined });
   }
   return out;
