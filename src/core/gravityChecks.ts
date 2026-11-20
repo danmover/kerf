@@ -200,17 +200,42 @@ const MOTORS = new Map<CatalogKind, { spec: "t_stall" | "t_hold"; word: string; 
   ["stepper", { spec: "t_hold", word: "holding", use: 0.85, why: "a stepper has about 85 % of its holding torque to work with before it loses steps" }],
 ]);
 
+/** What holds a drive where it is when the design is let go. */
+export interface DriveHold {
+  load: DriveLoad;
+  /**
+   * "carried": something drawn carries a lift all the way. "stated": the design's held: says so. "motor": motors
+   * or servos on it (each with the torque it can hold with, N·mm at its own shaft; none listed when the maker
+   * gives no torque). "nothing": it is free to fall or swing.
+   */
+  by: "carried" | "stated" | "motor" | "nothing";
+  motors?: { comp: string; shaft: Motion; torque: number }[];
+  /**
+   * Gravity puts next to nothing on it (a level slide; a rotor whose weight is within 2 mm of its axis), so the
+   * checks leave it alone: real friction keeps it where it is.
+   */
+  balanced?: boolean;
+}
+
 /**
  * The gravity checks: what holds each lift up, which motors hold their loads, turning groups nothing holds, and
  * guides that run out part way through a travel.
  */
 export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined): CheckItem[] {
+  return gravityHolds(model, holds, kernel, mesh, volume).items;
+}
+
+/** The gravity checks, and for each drive what holds it (for the "let go" preview, which must agree with them). */
+export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined): { items: CheckItem[]; drives: DriveHold[] } {
+  const drives: DriveHold[] = [];
+  const out: CheckItem[] = [];
+  const done = { items: out, drives };
   const boxes = kernel.boxes;
-  if (!boxes) return [];
+  if (!boxes) return done;
   const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && boxes[p.id]);
-  if (!parts.some((p) => turns(motionOfPart(p, holds)))) return [];
+  if (!parts.some((p) => turns(motionOfPart(p, holds)))) return done;
   const loads = driveLoads(model, holds, massBodies(parts, boxes, mesh, volume));
-  if (!loads.length) return [];
+  if (!loads.length) return done;
   const comps = model.machine?.components ?? [];
   const catIds = new Map(model.parts.filter((p) => p.bom?.catalogId).map((p) => [instance(p), p.bom!.catalogId!]));
   const kindOf = (p: EvalPart): CatalogKind | undefined => {
@@ -219,7 +244,6 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
   };
   const says = (p: EvalPart) => p.held ?? comps.find((c) => c.name === p.name && c.held)?.held;
   const supplies = model.machine ? motorSupplies(model.machine) : new Map<string, number>();
-  const out: CheckItem[] = [];
   const base = { category: "engineering" as const, basis: "calculation" as const };
 
   for (const d of loads) {
@@ -256,7 +280,11 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
           span: d.lead.span,
         });
       }
-      if (Math.abs(d.peak) < FORCE_MIN) continue;
+      if (Math.abs(d.peak) < FORCE_MIN) {
+        // a level slide: there is nothing for gravity to pull it along
+        drives.push({ load: d, by: "nothing", balanced: true });
+        continue;
+      }
       // what can carry its weight along the travel
       const member = new Set(d.parts.map((p) => p.id));
       for (const p of model.parts) if (moves(p)) member.add(p.id);
@@ -338,6 +366,7 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
         const locks = screw ? ((screw.specs.efficiency as number) < 0.5 ? " The screw holds it where it stops with the power off: one under 50 % efficient does not back-drive." : " The screw back-drives (over 50 % efficient): with the power off the weight turns it, so its motor needs a brake or must stay powered.") : "";
         const reach = carriers.every((c) => c.rigid) ? Math.max(...carriers.map((c) => reachOf.get(c.part) ?? travel)) : travel;
         const who = listOf(carriers.map((c) => c.part.name));
+        drives.push({ load: d, by: (only && pull >= push) || reach < travel - 1 ? "nothing" : "carried" });
         if (only && pull >= push) {
           out.push({ ...b, id: `gravity:carried:${name}`, status: "fail", title: `${who} cannot lift ${name}`, detail: `${weighs}, more than the ${force(push)} ${acts.length > 1 ? "the actuators push between them" : "the actuator pushes at most"}.`, fix: `Use ${acts.length > 1 ? "actuators" : "an actuator"} rated for at least ${force(pull * 2)} (twice the weight, to start and stop it), make ${name} lighter, or carry part of it on a spring or counterweight.`, margin: push / pull });
         } else if (reach < travel - 1) {
@@ -370,6 +399,7 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
           });
         }
       } else if (stated) {
+        drives.push({ load: d, by: "stated" });
         out.push({
           ...base,
           id: `gravity:stated:${name}`,
@@ -382,6 +412,7 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
           basis: "needs analysis",
         });
       } else {
+        drives.push({ load: d, by: "nothing" });
         out.push({
           ...base,
           id: `gravity:falls:${name}`,
@@ -401,7 +432,7 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
     const arm = Math.abs(d.peak) / (d.mass * G);
     const per = !d.root.kind && !d.root.link && Math.abs(d.root.ratio) > 1e-12 ? d.root.ratio : 1;
     // the same load at a motor's own shaft: the work is the same, so the torque goes by the speeds
-    const motors: { mc: MachineComponent; ratio: number }[] = [];
+    const motors: { mc: MachineComponent; ratio: number; shaft: Motion }[] = [];
     // a motor whose torque the maker does not give (a brushless outrunner) still drives it
     let driven = false;
     for (const mc of comps) {
@@ -410,9 +441,19 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
       const shaft = model.parts.filter((p) => p.name === mc.name).map((p) => motionOfPart(p, holds)).find((x) => x && d.motions.has(x) && !x.kind && !x.link && Math.abs(x.ratio) > 1e-12);
       if (!shaft) continue;
       driven = true;
-      if (MOTORS.has(kind)) motors.push({ mc, ratio: shaft.ratio });
+      if (MOTORS.has(kind)) motors.push({ mc, ratio: shaft.ratio, shaft });
     }
+    // what each motor can hold with, at its own shaft
+    const torqueOf = (mc: MachineComponent): number | undefined => {
+      const part = catalogPart(mc.catalogId)!;
+      const rule = MOTORS.get(part.kind)!;
+      const rated = part.specs[rule.spec];
+      if (typeof rated !== "number") return undefined;
+      const v = supplies.get(mc.name);
+      return rated * (rule.spec === "t_stall" && v !== undefined && typeof part.specs.v_rated === "number" && part.specs.v_rated > 0 ? v / part.specs.v_rated : 1);
+    };
     const balanced = Math.abs(d.peak) < TORQUE_MIN || arm < ARM_MIN;
+    drives.push(driven ? { load: d, by: "motor", motors: motors.flatMap((x) => (torqueOf(x.mc) === undefined ? [] : [{ comp: x.mc.name, shaft: x.shaft, torque: torqueOf(x.mc)! }])), balanced } : { load: d, by: "nothing", balanced });
     const where = `with the drive at ${fmtNum(d.peakDeg % 360, 0)}°`;
     if (!driven) {
       if (balanced) continue;
@@ -431,12 +472,10 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
     for (const { mc, ratio } of motors) {
       const part = catalogPart(mc.catalogId)!;
       const rule = MOTORS.get(part.kind)!;
-      const s = part.specs;
-      const rated = s[rule.spec];
-      if (typeof rated !== "number") continue;
+      const has = torqueOf(mc);
+      if (has === undefined) continue;
       const v = supplies.get(mc.name);
-      const k = rule.spec === "t_stall" && v !== undefined && typeof s.v_rated === "number" && s.v_rated > 0 ? v / s.v_rated : 1;
-      const has = rated * k;
+      const k = has / (part.specs[rule.spec] as number);
       // motors on one drive share its load
       const need = Math.abs((d.peak * per) / ratio) / motors.length;
       const frac = need / has;
@@ -455,5 +494,5 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
       else out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "pass", title: `${label} holds ${name} against its weight`, detail: `${what}: ${fmtNum(frac * 100, 0)} % of its ${torque(has)} ${rule.word} torque${volts}.` });
     }
   }
-  return out;
+  return done;
 }

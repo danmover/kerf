@@ -100,6 +100,10 @@ export interface MechSpec {
   auto: boolean;
   /** the body the camera follows */
   follow?: string;
+  /** part ids left off the machine (like sim.without, but one built part at a time): the "let go" preview drops them as loose boxes */
+  offIds?: string[];
+  /** the frame's parts by boxes that follow their shape, not one box each: a loose thing can land inside a housing */
+  shapes?: boolean;
 }
 
 export interface FloorSpec {

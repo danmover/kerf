@@ -50,6 +50,8 @@ import { FitLayer, playFitting, useFitView } from "./FitLayer";
 import { PmiButton, PmiLayer } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
+import { LetGoCard, LetGoLayer } from "./LetGoLayer";
+import { toggleLetGo, useLetGo } from "./letGoView";
 import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
 import { DecalDecorator } from "./viewport/parts/decals";
@@ -325,6 +327,7 @@ export function Viewport() {
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => turns(p.motion));
+  const lettingGo = useLetGo((s) => s.on);
   const canFit = useMemo(() => !!model && hasFitting(model), [model]);
   const fitting = useFitView((f) => f.on);
   // the photoreal look hides the grid and CAD edges while it runs
@@ -424,6 +427,9 @@ export function Viewport() {
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
+        <button className={`icon-btn ${lettingGo ? "active" : ""}`} disabled={!visibleParts} onClick={() => toggleLetGo()} data-tip="Let go: gravity on, hands off. Whatever is not held falls (Shift+Space)" aria-label="Let go" aria-pressed={lettingGo}>
+          <Icon.Drop />
+        </button>
         <div className="sep" />
         <div className="vp-look">
           <LightingMenu photoLook={photoLook} />
@@ -518,6 +524,10 @@ export function Viewport() {
       </LayerBoundary>
       <LayerBoundary label="Wiring" retry={model}>
         {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Let go" retry={model}>
+        {scene && !inSketch && <LetGoLayer scene={scene} />}
+        {!inSketch && <LetGoCard />}
       </LayerBoundary>
       <LayerBoundary label="Fits" retry={model}>
         {scene && !inSketch && canFit && <FitLayer scene={scene} />}

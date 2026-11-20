@@ -1580,6 +1580,18 @@ export class SceneController {
     this.changed = true;
   }
 
+  private fallen: Map<string, THREE.Matrix4> | null = null;
+
+  /**
+   * Where "let go" has taken parts from where they are drawn (a motion in world space, by part id; null: as
+   * designed). Kept apart from setPose, so a drag or an overlay that poses the machine does not put them back.
+   */
+  setLetGo(poses: Map<string, THREE.Matrix4> | null) {
+    if (!poses && !this.fallen) return;
+    this.fallen = poses;
+    this.changed = true;
+  }
+
   // ---------- fastenings ----------
 
   private carried: Map<string, { motion: Motion }> | null = null;
@@ -2389,7 +2401,10 @@ export class SceneController {
       const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z).multiply(po) : new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
       // its own motion or the one it is fastened to (a screw turns with the part it holds), riding on its carrier
       const mo = turns(obj.part.motion) ? obj.part.motion : this.carried?.get(obj.part.id)?.motion;
-      if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
+      // let go, gravity has it: where the run put it, not where the drive would
+      const fell = this.fallen?.get(obj.part.id);
+      if (fell) m.multiply(fell);
+      else if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
       // a loose screw, nut or washer rattles along its axis as the parts move
       const lo = this.loose?.get(obj.part.id);
       if (lo && Math.abs(this.angle) > 1e-9) {
@@ -3168,7 +3183,9 @@ export class SceneController {
         const po = this.pose?.get(o.part.id);
         const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(p.x, p.y, p.z).multiply(po) : new THREE.Matrix4().makeTranslation(p.x + (po?.[0] ?? 0), p.y + (po?.[1] ?? 0), p.z + (po?.[2] ?? 0));
         const mo = turns(o.part.motion) ? o.part.motion : this.carried?.get(o.part.id)?.motion;
-        if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
+        const fell = this.fallen?.get(o.part.id);
+        if (fell) m.multiply(fell);
+        else if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
         const lo = this.loose?.get(o.part.id);
         if (lo && Math.abs(s.angle) > 1e-9) {
           const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(s.angle * 8));

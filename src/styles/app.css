@@ -894,6 +894,42 @@ a:hover {
   box-shadow: var(--shadow);
   padding: 10px 12px;
 }
+.vp-letgo {
+  max-width: min(560px, calc(100% - 24px));
+}
+.vp-letgo-line {
+  font-size: 12.5px;
+  color: var(--text);
+  min-height: 1.3em;
+  overflow-wrap: anywhere;
+}
+.vp-letgo-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--text-3);
+}
+.vp-letgo-dot.running {
+  background: var(--accent);
+  animation: vp-letgo-pulse 0.9s ease-in-out infinite;
+}
+.vp-letgo-dot.settled {
+  background: var(--pass);
+}
+.vp-letgo-dot.error {
+  background: var(--fail);
+}
+@keyframes vp-letgo-pulse {
+  50% {
+    opacity: 0.35;
+  }
+}
+@media (prefers-reduced-motion: reduce) {
+  .vp-letgo-dot.running {
+    animation: none;
+  }
+}
 .vp-hud {
   position: absolute;
   top: 12px;
