@@ -246,8 +246,8 @@ export function Viewport() {
   }, [glTry, glGen]);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur });
-  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, scene]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur, floorGloss: settings.floorGloss });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, settings.floorGloss, scene]);
 
   useEffect(() => {
     ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
