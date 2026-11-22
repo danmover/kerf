@@ -740,7 +740,7 @@ export function contactRun(model: Model, holds: Holds, kernel: ChecksResult, mes
   const mine: Near[] = [];
   const others: Near[] = [];
   for (const p of model.parts) {
-    if (p.hidden || (p.imported && p.imported.kind !== "solid") || !built[p.id] || p.band || p.libKind === "belt" || p.libKind === "rope" || p.libKind === "round_belt" || p.spring) continue;
+    if (p.hidden || (p.imported && p.imported.kind !== "solid") || !built[p.id] || p.band || p.libKind === "belt" || p.libKind === "rope" || p.libKind === "round_belt" || p.oring || p.spring) continue;
     const own = member(p);
     if (!own && only && !only(p)) continue;
     (own ? mine : others).push({ p, box: built[p.id] as [V3, V3], motion: motionOfPart(p, holds) });
@@ -837,7 +837,7 @@ export function sweepChecks(model: Model, holds: Holds, kernel: ChecksResult, me
   if (!built) return [];
   const bodies: Body[] = [];
   for (const p of model.parts) {
-    if (p.hidden || (p.imported && p.imported.kind !== "solid") || !built[p.id] || p.band || p.libKind === "belt" || p.libKind === "rope" || p.libKind === "round_belt") continue;
+    if (p.hidden || (p.imported && p.imported.kind !== "solid") || !built[p.id] || p.band || p.libKind === "belt" || p.libKind === "rope" || p.libKind === "round_belt" || p.oring) continue;
     const md = mesh(p.hash);
     const s = md && sweepSurface(md);
     if (!s) continue;

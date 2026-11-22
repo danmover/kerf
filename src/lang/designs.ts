@@ -225,6 +225,7 @@ export function placeDesign(inner: Model, o: PlaceOptions): PlacedDesign {
     if (p.gear) q.gear = { ...p.gear, center: pt(p.gear.center), axis: dir(p.gear.axis), ...(p.gear.meshWith ? { meshWith: ren(p.gear.meshWith) } : {}) };
     if (p.bearing) q.bearing = { ...p.bearing, center: pt(p.bearing.center), axis: dir(p.bearing.axis) };
     if (p.spring) q.spring = { ...p.spring, center: pt(p.spring.center), axis: dir(p.spring.axis) };
+    if (p.oring) q.oring = { ...p.oring, center: pt(p.oring.center), axis: dir(p.oring.axis) };
     if (p.fastener) q.fastener = { ...p.fastener, headTop: pt(p.fastener.headTop), outward: dir(p.fastener.outward) };
     if (p.flex) q.flex = p.flex.map((f) => (f.against ? { ...f, against: ren(f.against) } : f));
     if (p.band) q.band = band(p.band);

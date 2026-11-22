@@ -23,6 +23,7 @@ import { stashSweep, sweepChecks } from "./sweepChecks";
 import { stabilityChecks } from "./stability";
 import { gravityChecks, gravityHolds, gravityLoads } from "./gravityChecks";
 import { roundBeltChecks } from "./roundBeltChecks";
+import { oringChecks, oringSqueeze } from "./oringChecks";
 import { ropeChecks, ropeTie } from "./ropeChecks";
 import { sheetChecks } from "./sheetChecks";
 import { chainChecks } from "./chainChecks";
@@ -299,6 +300,12 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         items.push({ id: `int:${i.a}|${i.b}`, category: "interference", status: "pass", title: `${tie.rope.name} is tied to ${tie.on.name}`, detail: `The end of ${tie.rope.name} is drawn ${fmtNum(i.volume, 1)} mm³ into ${label(tie.on.id)} where it is tied: an eye, a hole or a clamp takes it there, not a clash`, parts: [i.a, i.b], span: tie.rope.span, basis: "geometry" });
         continue;
       }
+      // an O-ring drawn at its own size in the gland that squeezes it
+      const ring = inputs.mesh ? oringSqueeze(i, model, inputs.mesh) : null;
+      if (ring) {
+        items.push({ id: `int:${i.a}|${i.b}`, category: "interference", status: "pass", title: `${ring.ring.name} is squeezed by ${ring.on.name}`, detail: `${label(ring.ring.id)} is drawn at its own size, ${fmtNum(i.volume, 1)} mm³ into ${label(ring.on.id)}: the squeeze that makes it seal, not a clash. Its own checks say whether the squeeze is right`, parts: [i.a, i.b], span: ring.ring.span, basis: "geometry" });
+        continue;
+      }
       // a rubber tyre drawn pressed onto what it runs on (rolls_on:), by no more than rubber gives
       const sq = rollSqueeze(i, (id) => partsById.get(id));
       if (sq && sq.allowed > 0 && sq.depth > 0 && sq.depth <= sq.allowed + 0.1) {
@@ -446,6 +453,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     items.push(...gravityChecks(model, holds, kernel, inputs.mesh, volumeOf));
     items.push(...ropeChecks(model, holds, kernel, inputs.mesh, volumeOf, gravityLoads(model, holds, kernel, inputs.mesh, volumeOf)));
   }
+  if (inputs.mesh && model.parts.some((p) => p.oring)) items.push(...oringChecks(model, holds, inputs.mesh));
   if (model.machine?.roundBelts?.length) items.push(...roundBeltChecks(model, holds, kernel && inputs.mesh ? gravityHolds(model, holds, kernel, inputs.mesh, volumeOf).pulls : []));
   items.push(...sheetChecks(model));
   items.push(...chainChecks(model));

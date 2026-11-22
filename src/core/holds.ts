@@ -160,7 +160,7 @@ export function worldBox(p: EvalPart, mesh?: MeshLookup): Box | null {
 }
 
 const bvhCache = new WeakMap<MeshData, TriBVH>();
-const bvhOf = (m: MeshData) => {
+export const bvhOf = (m: MeshData) => {
   let b = bvhCache.get(m);
   if (!b) {
     b = new TriBVH(m.positions, m.indices);

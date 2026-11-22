@@ -1934,6 +1934,7 @@ class Evaluator {
           gear: sd.suffix ? undefined : gear,
           bearing: def.bearing && !sd.suffix ? { ...def.bearing, center: applyXforms([0, 0, def.bearing.width / 2], xf), axis } : undefined,
           spring: def.spring && !sd.suffix ? { ...def.spring, center: applyXforms([0, 0, def.spring.installed / 2], xf), axis } : undefined,
+          ...(def.oring && !sd.suffix ? { oring: { ...def.oring, center: applyXforms([0, 0, 0], xf), axis } } : {}),
           ...(band && !sd.suffix ? { band } : {}),
           ...(chainInfo && !sd.suffix ? { chain: chainInfo } : {}),
           ...(decals && (!sd.suffix || (imported && sdIdx === 0)) ? { decals } : {}),
@@ -5170,6 +5171,7 @@ export function moveParts(parts: EvalPart[], moves: Map<string, BodyMove>) {
     if (p.gear) p.gear = { ...p.gear, center: pt(p.gear.center), axis: dir(p.gear.axis) };
     if (p.bearing) p.bearing = { ...p.bearing, center: pt(p.bearing.center), axis: dir(p.bearing.axis) };
     if (p.spring) p.spring = { ...p.spring, center: pt(p.spring.center), axis: dir(p.spring.axis) };
+    if (p.oring) p.oring = { ...p.oring, center: pt(p.oring.center), axis: dir(p.oring.axis) };
     if (p.fastener) p.fastener = { ...p.fastener, headTop: pt(p.fastener.headTop), outward: dir(p.fastener.outward) };
     if (p.motion && !remap.has(p.motion)) remap.set(p.motion, { ...p.motion, origin: pt(p.motion.origin), axis: dir(p.motion.axis), ...(p.motion.roll ? { roll: { ...p.motion.roll, at: pt(p.motion.roll.at) } } : {}) });
     if (p.rollsOn?.touch) p.rollsOn = { ...p.rollsOn, touch: pt(p.rollsOn.touch) };

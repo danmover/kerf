@@ -193,6 +193,26 @@ export interface BandInfo {
   saddleMu: number;
 }
 
+/** An O-ring that seals (lib.oring), in world space: the checks measure the gland it is drawn in. */
+export interface OringInfo {
+  /** the rubber, as its label and material name */
+  rubber: string;
+  material: string;
+  shore: number;
+  /** inside diameter and cord diameter as bought, mm */
+  id: number;
+  cs: number;
+  /** the temperatures the rubber works at, °C */
+  temp: [number, number];
+  /** "static" or "moving" when the design says which; otherwise the checks see whether the two sides move apart */
+  duty?: "static" | "moving";
+  /** a face seal: which side of the ring the pressure is on */
+  pressure?: "inside" | "outside";
+  /** the middle of the ring, and its axis */
+  center: V3;
+  axis: V3;
+}
+
 /** A coil spring's design (lib.spring), in world space. */
 export interface SpringInfo {
   /** wire diameter, outside diameter, free length, installed length and shortest working length, mm */
@@ -284,6 +304,7 @@ export interface EvalPart {
   /** a sheet() part: its bends and flanges, and the recipe of its flat pattern */
   sheet?: SheetPart;
   spring?: SpringInfo;
+  oring?: OringInfo;
   band?: BandInfo;
   /** aero_tube()s the part is built from, in its own coordinates */
   tubes?: AeroTube[];

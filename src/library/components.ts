@@ -37,7 +37,8 @@ import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
 import { CHAINS, CHAIN_IDS, sprocketPd, sprocketProfile, sprocketRoot, sprocketTip, toothWidth } from "../machine/chains";
 import { MACHINE_LIBRARY } from "../machine/library";
 import { SPRING_WIRE, springRate } from "./springs";
-import type { SpringInfo } from "../core/model";
+import { RUBBERS, rubberOf } from "./bands";
+import type { OringInfo, SpringInfo } from "../core/model";
 import type { Footprint } from "../machine/pcb/types";
 
 export type Placement = "axis" | "facing" | "free";
@@ -72,6 +73,7 @@ export interface CompDef {
   gear?: { m: number; z: number; width: number; pa: number; bore: number };
   bearing?: { code: string; bore: number; od: number; width: number; dynamicLoadN: number };
   spring?: Omit<SpringInfo, "center" | "axis">;
+  oring?: Omit<OringInfo, "center" | "axis">;
   bom: { description: string; standard?: string; catalogId?: string; length?: number; price?: number; priceNote?: string; search?: string; key?: string };
   /** catalog-backed purchasable part */
   catalog?: { id: string; length?: number; travel?: number };
@@ -782,6 +784,40 @@ export const LIBRARY: Record<string, LibEntry> = {
     group: "Bands",
     make() {
       throw new Error("lib.band is laid out round the parts it wraps");
+    },
+  },
+
+  oring: {
+    signature: 'lib.oring("NBR", id: 25, cs: 2.62) { at: (x, y, z), axis: Z }',
+    doc: 'An O-ring that seals: in a groove round a piston or plug, in a groove inside a bore round a rod, or in a groove in a flat face under a cover. See O-ring seals below. rubber: "NBR" (oil), "EPDM" (water, outdoors) or "silicone" (heat, food); id: and cs: the ring\'s inside diameter and cord as bought, mm; shore: hardness (default 70 A). `at` is the middle of the ring (the middle of its cord, along the axis) and `axis` the way its hole faces; it is drawn at its own size. Draw the groove and the part it seals against: the checks measure the gland where the ring is, and work out the squeeze, the stretch, how full the groove is and how much of the cord the groove holds. duty: "static" or "moving" says which squeeze applies; left out, Kerf sees whether the two sides move against each other. pressure: "inside" or "outside" says which side of a face seal the pressure is on, so the ring can be checked to lie against the other wall of its groove. A ring in a moving part needs rides: that part. Fields: id, cs, od, shore.',
+    positional: ["rubber"],
+    params: ["rubber", "id", "cs", "shore", "duty", "pressure"],
+    group: "Seals",
+    make(a) {
+      const name = a.str("rubber", "NBR");
+      const r = rubberOf(name);
+      if (!r || r === RUBBERS.natural) throw new Error(`lib.oring: rubber must be "NBR", "EPDM" or "silicone" (got "${name}")`);
+      const id = a.num("id", 20);
+      const cs = a.num("cs", 2);
+      const shore = a.num("shore", r.shore);
+      const duty = a.str("duty", "");
+      if (!(cs >= 0.5 && cs <= 12)) throw new Error("lib.oring: cs (the cord's diameter) must be 0.5 to 12 mm");
+      if (!(id >= 2 * cs && id <= 1000)) throw new Error("lib.oring: id (the ring's inside diameter) must be at least twice the cord and no more than 1000 mm");
+      if (!(shore >= 40 && shore <= 95)) throw new Error("lib.oring: shore must be 40 to 95 (Shore A)");
+      if (duty && duty !== "static" && duty !== "moving") throw new Error('lib.oring: duty must be "static" or "moving"');
+      const pressure = a.str("pressure", "");
+      if (pressure && pressure !== "inside" && pressure !== "outside") throw new Error('lib.oring: pressure must be "inside" or "outside" (which side of the ring it is on)');
+      const label = `O-ring ${fmt(id)} × ${fmt(cs)} mm`;
+      const recipe: PartRecipe = { base: { t: "revolve2", p: { t: "circle", d: cs, c: [(id + cs) / 2, 0] }, f: { o: Z0, u: [1, 0, 0], n: ZP }, angle: 360 }, ops: [] };
+      return {
+        kind: "oring",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe, color: "#1b1d21", material: r.material, finish: "matte" }],
+        fields: { scalars: { id, cs, od: id + 2 * cs, shore }, points: { at: Z0, center: Z0 }, dirs: { axis: ZP } },
+        oring: { rubber: r.label, material: r.material, shore, id, cs, temp: r.temp, ...(duty ? { duty: duty as "static" | "moving" } : {}), ...(pressure ? { pressure: pressure as "inside" | "outside" } : {}) },
+        bom: { description: `O-ring ${fmt(id)} × ${fmt(cs)} mm, ${r.label} ${fmt(shore)}A` },
+      };
     },
   },
 

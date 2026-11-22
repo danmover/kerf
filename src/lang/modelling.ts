@@ -724,7 +724,7 @@ export const SOLID_FNS: Record<string, Fn> = Object.fromEntries([
       }
       return new ShapeV({ t: "tube", od: d + 2 * depth, id: Math.max(0.2, d - 2), h: width, at: start, dir });
     },
-    'oring_groove(d, cs: 2, at:, dir:, type: "face"|"rod"|"bore", squeeze:) — the cutting tool for an O-ring gland sized from the cord cross-section cs (depth cs × (1 − squeeze), width 1.4 cs). face: d is the groove centre diameter on a flat face, dir points into the material; rod: a groove around a shaft of diameter d, centred at at along the axis dir; bore: a groove inside a hole of diameter d. Use with cut.',
+    'oring_groove(d, cs: 2, at:, dir:, type: "face"|"rod"|"bore", squeeze:) — the cutting tool for an O-ring gland sized from the cord cross-section cs (depth cs × (1 − squeeze), width 1.4 cs). face: d is the groove centre diameter on a flat face, dir points into the material; rod: a groove around a shaft of diameter d, centred at at along the axis dir; bore: a groove inside a hole of diameter d. Use with cut, and put the ring in it with lib.oring, whose checks measure the gland as drawn.',
   ),
 ]);
 
