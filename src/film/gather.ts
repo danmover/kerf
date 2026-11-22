@@ -55,7 +55,7 @@ export function gatherFacts(layout: FilmLayout, look: FilmLook): FilmFacts {
       mass,
       box,
       exploded: layout.exploded.get(p.id) ?? null,
-      moving: !!p.motion && (Math.abs(p.motion.ratio) > 1e-12 || !!p.motion.link || !!p.motion.parent),
+      moving: !!p.motion && (Math.abs(p.motion.ratio) > 1e-12 || !!p.motion.link || !!p.motion.parent || !!p.motion.travel || !!p.motion.roll),
       hardware: HARDWARE.has(p.libKind ?? "") || !!p.fastener,
       group: p.group,
     });

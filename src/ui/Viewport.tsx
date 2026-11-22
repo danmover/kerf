@@ -2,12 +2,13 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneController, type PhotoStatus } from "./viewport/scene";
+import { SceneController, type PhotoStatus, type RopeDraw } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
-import { turns } from "../core/model";
+import { turns, type Motion } from "../core/model";
 import { findHolds } from "../core/holds";
+import { ropeParts } from "../core/ropeChecks";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
@@ -52,6 +53,8 @@ import { FitLayer, playFitting, useFitView } from "./FitLayer";
 import { PmiButton, PmiLayer } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
+import { LetGoCard, LetGoLayer } from "./LetGoLayer";
+import { toggleLetGo, useLetGo } from "./letGoView";
 import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
 import { DecalDecorator } from "./viewport/parts/decals";
@@ -287,6 +290,24 @@ export function Viewport() {
     return () => window.clearTimeout(t);
   }, [model, meshVersion, scene]);
 
+  // ropes are drawn moving with what they run on: which part each drum, sheave and tied end is
+  useEffect(() => {
+    const ropes = model?.machine?.ropes ?? [];
+    if (!model || !ropes.length) {
+      ctl.current?.setRopes(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      const out = new Map<string, RopeDraw>();
+      for (const r of ropes) {
+        const part = model.parts.find((p) => p.libKind === "rope" && p.name === r.name);
+        if (part) out.set(part.id, { nodes: r.nodes, d: r.rope.d, length: r.length, on: ropeParts(r, model, meshOf).map((p) => p?.id) });
+      }
+      ctl.current?.setRopes(out);
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [model, meshVersion, scene]);
+
   useEffect(() => {
     if (stage === "refining" || stage === "done") ctl.current?.settle();
     ctl.current?.setModelSettling(stage !== "idle" && stage !== "done");
@@ -358,6 +379,7 @@ export function Viewport() {
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => turns(p.motion));
+  const lettingGo = useLetGo((s) => s.on);
   const canFit = useMemo(() => !!model && hasFitting(model), [model]);
   const fitting = useFitView((f) => f.on);
   // the photoreal look hides the grid and CAD edges while it runs
@@ -457,6 +479,9 @@ export function Viewport() {
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
+        <button className={`icon-btn ${lettingGo ? "active" : ""}`} disabled={!visibleParts} onClick={() => toggleLetGo()} data-tip="Let go: gravity on, hands off. Whatever is not held falls (Shift+Space)" aria-label="Let go" aria-pressed={lettingGo}>
+          <Icon.Drop />
+        </button>
         <div className="sep" />
         <div className="vp-look">
           <LightingMenu photoLook={photoLook} />
@@ -551,6 +576,10 @@ export function Viewport() {
       </LayerBoundary>
       <LayerBoundary label="Wiring" retry={model}>
         {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Let go" retry={model}>
+        {scene && !inSketch && <LetGoLayer scene={scene} />}
+        {!inSketch && <LetGoCard />}
       </LayerBoundary>
       <LayerBoundary label="Fits" retry={model}>
         {scene && !inSketch && canFit && <FitLayer scene={scene} />}
@@ -804,6 +833,14 @@ function PhotoPill({ s }: { s: PhotoStatus }) {
   );
 }
 
+/** How a moving part moves, in a line: a lift by its travel, a wheel by what it rolls on, the rest by their rate. */
+function motionLine(m: Motion): string {
+  if (m.kind === "slide" && m.travel) return `travels ${fmtNum(Math.abs(m.travel), 1)} mm and back${m.perTurn ? `, ${fmtNum(m.perTurn, 2)} mm per turn of the drive` : ""}`;
+  if (m.kind === "roll" && m.roll) return `rolls on ${m.roll.onName} without slipping (rolling radius ${fmtNum(m.roll.r, 1)} mm)`;
+  if (m.link && m.kind) return m.kind === "rod" ? "a connecting rod" : `${m.kind === "slide" ? "slides" : "swings"}, driven by ${m.link.name}`;
+  return `turns at ${fmtNum(Math.abs(m.ratio), 3)}× the input`;
+}
+
 function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
   const model = useDesign((s) => s.model);
   const report = useDesign((s) => s.report);
@@ -855,7 +892,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
             {gap.distance < 1e-4 ? " · touching or overlapping" : ` · Δ ${gap.b.map((v, k) => fmtNum(Math.abs(v - gap.a[k]), 2)).join(", ")}`}
           </div>
         )}
-        {p.motion && parts.length === 1 && <div>turns at {fmtNum(Math.abs(p.motion.ratio), 3)}× the input</div>}
+        {p.motion && parts.length === 1 && <div>{motionLine(p.motion)}</div>}
       </div>
       <MaterialButton parts={parts} />
       {issues.length > 0 && (

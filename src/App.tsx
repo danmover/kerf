@@ -38,6 +38,7 @@ import { initAccount } from "./cloud/account";
 import { startSync } from "./cloud/sync";
 import { toggleMarkup } from "./ui/Markup";
 import { toggleWiring } from "./ui/wiringView";
+import { toggleLetGo } from "./ui/letGoView";
 import { startMaterialChecks } from "./materials/runtime";
 import { startAssemblyChecks } from "./mfg/dfaRuntime";
 import { startHeatAndWearChecks } from "./machine/runtime";
@@ -209,6 +210,10 @@ function useShortcuts() {
           }
           return;
         }
+        case "letgo":
+          if ((e.target as HTMLElement | null)?.tagName === "BUTTON") return;
+          e.preventDefault();
+          return toggleLetGo();
         case "fit":
           return requestCamera("fit");
         case "section":

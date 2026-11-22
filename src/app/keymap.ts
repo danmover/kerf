@@ -34,6 +34,7 @@ export const KEY_COMMANDS: KeyCommand[] = [
   { id: "wiring", label: "Show the wiring", group: "View", keys: ["w"] },
   { id: "drawings", label: "Switch between the 3D view and drawings", group: "View", keys: ["d"] },
   { id: "play", label: "Play or pause the mechanism", group: "View", keys: ["space"] },
+  { id: "letgo", label: "Let go: gravity on, whatever is not held falls", group: "View", keys: ["shift+space"] },
   { id: "assembly", label: "Play the assembly animation", group: "View", keys: ["a"] },
   { id: "turntable", label: "Turntable", group: "View", keys: ["t"] },
   { id: "lighting.next", label: "Next lighting", group: "View", keys: ["l"] },

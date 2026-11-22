@@ -12,7 +12,9 @@ import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
 import { cylMid, lineDistance, partCylinders } from "../../analysis/fits/geometry";
 import { catalogPart } from "../../machine/catalog";
-import type { BeltDef, BeltNode } from "../../machine/types";
+import type { BeltDef, BeltNode, RopeDef, RoundBeltDef } from "../../machine/types";
+import { cordTension } from "../../machine/roundBelts";
+import { beltGrip } from "../../core/roundBeltChecks";
 import { MATERIALS, materialDensity } from "../../library/standards";
 import type { ScenarioSpec } from "../scenario";
 import type { MechItem, MechJointItem, MechSpec } from "./lang";
@@ -32,12 +34,17 @@ const cross = (a: V3, b: V3): V3 => [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[
 const len = (a: V3) => Math.hypot(a[0], a[1], a[2]);
 const unit = (a: V3): V3 => scl(a, 1 / (len(a) || 1));
 /** One key per turning: its axis line (its closest point to the design origin), its rate, and what it rides on. */
-function lineKey(m: Motion): string {
+function lineKey(m: Motion, liftOf?: Map<Motion, string>): string {
   if (m.link) return `${m.kind}:${m.link.id}`;
   const a = unit(m.axis);
+  // a lift: its direction and travel, which lift it is (two cars on two towers are two bodies), and what carries it
+  if (m.kind === "slide") {
+    const key = `slide:${a.map((x) => Math.round(x * (m.travel ?? 0) * 100)).join(",")}${liftOf?.has(m) ? `#${liftOf.get(m)}` : ""}`;
+    return m.parent ? `${key}<${lineKey(m.parent, liftOf)}` : key;
+  }
   const c = sub(m.origin, scl(a, dot(m.origin, a)));
   const key = [...a.map((x) => Math.round(Math.abs(x) * 1e4)), ...c.map((x) => Math.round(x * 100)), Math.round(m.ratio * 1e6) * Math.sign(a[0] + a[1] * 1e-3 + a[2] * 1e-6 || 1)].join(",");
-  return m.parent ? `${key}<${lineKey(m.parent)}` : key;
+  return m.parent ? `${key}<${lineKey(m.parent, liftOf)}` : key;
 }
 const SI = (p: V3): V3 => [p[0] / 1000, p[1] / 1000, p[2] / 1000];
 
@@ -288,7 +295,8 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       off.add(n);
     }
   }
-  const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && !off.has(p.name));
+  const offIds = new Set(spec.offIds ?? []);
+  const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && !off.has(p.name) && !offIds.has(p.id));
   const byName = new Map<string, EvalPart[]>();
   for (const p of parts) {
     const l = byName.get(p.name);
@@ -322,21 +330,42 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   const holds = findHolds(model, (h) => geom(h)?.preview ?? geom(h)?.final);
   const lines = new Map<string, Group>();
   const rodLinks: { link: Link; group: Group }[] = [];
+  // parts with the same travel slide as one body only when they are fastened to each other: each lift is its own
+  const liftOf = new Map<Motion, string>();
+  {
+    const lifts = parts.filter((p) => p.motion?.kind === "slide" && !p.motion.link && !!p.motion.travel);
+    const root = new Map(lifts.map((p) => [p.id, p.id]));
+    const find = (id: string): string => {
+      let r = id;
+      while (root.get(r) !== r) r = root.get(r)!;
+      root.set(id, r);
+      return r;
+    };
+    for (const j of holds.joins) {
+      if (!root.has(j.a.id) || !root.has(j.b.id) || lineKey(j.a.motion!) !== lineKey(j.b.motion!)) continue;
+      const [x, y] = [find(j.a.id), find(j.b.id)].sort();
+      root.set(y, x);
+    }
+    for (const p of lifts) liftOf.set(p.motion!, find(p.id));
+  }
+  const keyOf = (m: Motion) => lineKey(m, liftOf);
   if (spec.auto) {
     const parentOf = new Map<Group, string>();
     for (const p of parts) {
       if (!p.motion || explicit.has(p.name) || !turns(p.motion) || p.motion.link) continue;
       const a = unit(p.motion.axis);
       const o = p.motion.origin;
-      const key = lineKey(p.motion);
+      const key = keyOf(p.motion);
       let g = lines.get(key);
       if (!g) {
         let id = p.name;
         for (let k = 2; named.has(id) || groups.some((x) => x.id === id); k++) id = `${p.name}_${k}`;
-        g = { id, members: [], parts: [], auto: true, joint: { k: "pivot", name: id, what: [], on: null, at: o, axis: a } };
+        // a part with travel of its own slides between its two ends; everything else here turns on its shaft
+        const lift = p.motion.kind === "slide" && p.motion.travel ? p.motion.travel : 0;
+        g = { id, members: [], parts: [], auto: true, joint: lift ? { k: "slider", name: id, what: [], on: null, at: o, axis: a, limits: [Math.min(0, lift), Math.max(0, lift)] } : { k: "pivot", name: id, what: [], on: null, at: o, axis: a } };
         lines.set(key, g);
         groups.push(g);
-        if (p.motion.parent) parentOf.set(g, lineKey(p.motion.parent));
+        if (p.motion.parent) parentOf.set(g, keyOf(p.motion.parent));
       }
       if (!g.members.includes(p.name)) {
         g.members.push(p.name);
@@ -372,16 +401,21 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       if (!bodyOf.has(p.name)) bodyOf.set(p.name, g.id);
     }
     for (const { link, group } of rodLinks) {
-      const driver = lines.get(lineKey(link.driver)) ?? groups.find((x) => x.parts.some((q) => q.motion === link.driver));
+      const driver = lines.get(keyOf(link.driver)) ?? groups.find((x) => x.parts.some((q) => q.motion === link.driver));
       if (driver && driver !== group) group.joint!.on = driver.id;
     }
     // a gear riding on a turning deck (rides:) pivots on the deck's body, not the frame
     for (const [g, pk] of parentOf) {
-      const carrier = lines.get(pk) ?? groups.find((x) => x.parts.some((q) => q.motion && lineKey(q.motion) === pk));
+      const carrier = lines.get(pk) ?? groups.find((x) => x.parts.some((q) => q.motion && keyOf(q.motion) === pk));
       if (carrier && carrier !== g) g.joint!.on = carrier.id;
     }
     const autos = [...lines.values()];
-    if (autos.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${autos.map((g) => g.members.join(" + ") + (g.joint!.on ? ` (on ${g.joint!.on})` : "")).join("; ")}`);
+    const lifted = (g: Group) => g.parts.some((p) => p.motion?.kind === "slide" && !p.motion.link && !!p.motion.travel);
+    const turning = autos.filter((g) => !lifted(g));
+    const sliding = autos.filter(lifted);
+    const list = (gs: Group[]) => gs.map((g) => g.members.join(" + ") + (g.joint!.on ? ` (on ${g.joint!.on})` : "")).join("; ");
+    if (turning.length) notes.push(`Turning on their own shafts (from spin:/mesh:): ${list(turning)}`);
+    if (sliding.length) notes.push(`Sliding between the ends of their travel (from slides: with travel:): ${list(sliding)}`);
   }
   // screws, nuts and washers move with the part they clamp (not one they are its pivot), and parts bolted to a
   // turning part turn with it
@@ -409,7 +443,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       const c = holds.carried.get(p.id);
       if (!c) continue;
       const before = taken.size;
-      ride(p, groupOf.get(c.from.id) ?? lines.get(lineKey(c.motion)));
+      ride(p, groupOf.get(c.from.id) ?? lines.get(keyOf(c.motion)));
       rode += taken.size - before;
     }
   if (rode) notes.push(`${rode} screw${rode === 1 ? "" : "s"}, nut${rode === 1 ? "" : "s"} and bolted part${rode === 1 ? "" : "s"} move with the bodies they fasten`);
@@ -536,7 +570,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     ps.flatMap((p) => {
       const pr = props.get(p.id);
       if (!pr) return [];
-      const bs = fixed ? [{ min: pr.min, max: pr.max }] : pr.boxes;
+      const bs = fixed && !spec.shapes ? [{ min: pr.min, max: pr.max }] : pr.boxes;
       return bs.map((b) => ({ c: SI(scl(add(b.min, b.max), 0.5)), h: SI(scl(sub(b.max, b.min), 0.5)), q: [1, 0, 0, 0] as [number, number, number, number] }));
     });
   const massLines: string[] = [];
@@ -712,6 +746,8 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       }
     }
   if (spec.auto) for (const b of model.machine?.belts ?? []) beltLinks(b, joints, bodyOf, bodyById, links, notes);
+  if (spec.auto) for (const r of model.machine?.ropes ?? []) ropeLinks(r, joints, bodyOf, links, notes);
+  if (spec.auto) for (const b of model.machine?.roundBelts ?? []) roundBeltLinks(b, model, joints, bodyOf, links, notes);
 
   for (const it of spec.items) {
     switch (it.k) {
@@ -1168,7 +1204,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   const traces = spec.items.flatMap((it) => (it.k === "trace" ? [{ name: it.name, body: bodyIdOf(it.on, `sim.trace(${it.name})`), at: SI(it.at) }] : []));
 
   return {
-    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, off: off.size ? model.parts.filter((p) => off.has(p.name)).map((p) => p.id) : undefined, notes, ...(traces.length ? { traces } : {}) },
+    mech: { bodies, joints, drives, links, springs, loads, jets: jets.length ? jets : undefined, wheels, tracks, loose, ground, base, gravity, mounts, magnets: magnets.sensors.length ? magnets : undefined, field: hasField ? field : undefined, tunnels: tunnels.length ? tunnels : undefined, power, follow, off: off.size || offIds.size ? model.parts.filter((p) => off.has(p.name) || offIds.has(p.id)).map((p) => p.id) : undefined, notes, ...(traces.length ? { traces } : {}) },
   };
 }
 
@@ -1237,6 +1273,59 @@ function beltLinks(b: BeltDef, joints: MechJoint[], bodyOf: Map<string, string>,
     added.push(`${js.name} ${(((2 * Math.PI) / Math.abs(perM(na, ja))) * 1000).toFixed(0)} mm a turn, ${fmtK(kLin)}`);
   }
   if (added.length) notes.push(`${b.name}: ${b.open ? "drives" : "turns"} ${added.join("; ")} from ${na.name} (belt stretch from EA ${Math.round(ea)} N; teeth never skip)`);
+}
+
+/**
+ * A rope from a winch drum (lib.rope with lifts:) on the mechanism's joints: the drum's pivot is tied to the slider
+ * of what it lifts, by the travel a turn of the drum winds, and as stiff as the rope between them. The tie holds
+ * both ways, which a rope does only while something keeps it taut: the weight on a hoist does.
+ */
+/**
+ * A round belt ties the pulleys it runs round by the diameters the middle of its cord runs on, as stiff as the cord
+ * is at the stretch it is fitted at, and no further than its grip: past that a pulley turns inside the belt.
+ */
+function roundBeltLinks(b: RoundBeltDef, model: Model, joints: MechJoint[], bodyOf: Map<string, string>, links: MechLink[], notes: string[]) {
+  const on = b.nodes.map((nd) => {
+    if (!bodyOf.has(nd.name)) return undefined;
+    const j = joints.find((x) => x.body === bodyOf.get(nd.name) && x.kind === "pivot" && Math.abs(dot(unit(nd.axis), x.axis)) > 0.99);
+    return j ? { nd, j, perM: (nd.dir * Math.sign(dot(nd.axis, j.axis))) / (nd.r / 1000) } : undefined;
+  });
+  const turning = on.filter((x): x is NonNullable<typeof x> => !!x);
+  const a = turning.find((x) => x.nd.name === b.drive) ?? turning[0];
+  if (!a) return;
+  const g = beltGrip(b, model);
+  if (!g) {
+    notes.push(`${b.name}: slack, so it passes nothing between its pulleys`);
+    return;
+  }
+  // the cord's stiffness where it is working: the pull one more per cent of stretch adds, both strands sharing the belt's length
+  const ea = (cordTension(b.cord, b.stretch + 0.01) - cordTension(b.cord, b.stretch)) / 0.01;
+  const kLin = (4 * ea) / (b.length / 1000);
+  const added: string[] = [];
+  for (const x of turning) {
+    if (x === a || x.j === a.j || links.some((l) => l.kind === "ratio" && ((l.a === a.j.name && l.b === x.j.name) || (l.a === x.j.name && l.b === a.j.name)))) continue;
+    const name = turning.length > 2 ? `${b.name}_${x.nd.name}` : b.name;
+    const r = x.nd.r / 1000;
+    links.push({ kind: "ratio", name, a: a.j.name, b: x.j.name, ratio: x.perM / a.perM, slack: 0, efficiency: 0.97, stiffness: Math.max(1e-6, kLin * r * r), grip: g.force * r });
+    added.push(`${x.nd.name} at ${Math.abs(a.perM / x.perM).toFixed(2)}:1`);
+  }
+  if (added.length) notes.push(`${b.name}: ${a.nd.name} drives ${added.join(", ")} by friction (slips past ${(g.force * (a.nd.r / 1000)).toFixed(2)} N·m at ${a.nd.name})`);
+}
+
+function ropeLinks(r: RopeDef, joints: MechJoint[], bodyOf: Map<string, string>, links: MechLink[], notes: string[]) {
+  for (const dv of r.drives) {
+    const nd = r.nodes.find((n) => n.kind === "drum" && n.name === dv.drum);
+    if (!nd?.axis || !bodyOf.has(dv.drum) || !bodyOf.has(dv.lift)) continue;
+    const ja = joints.find((j) => j.body === bodyOf.get(dv.drum) && j.kind === "pivot" && Math.abs(dot(unit(nd.axis!), j.axis)) > 0.99);
+    const js = joints.find((j) => j.body === bodyOf.get(dv.lift) && j.kind === "slider");
+    if (!ja || !js || links.some((l) => l.name === r.name)) continue;
+    // metres the lift's joint moves for each radian of the drum's
+    const ratio = (dv.perRad / 1000) * Math.sign(dot(unit(nd.axis), ja.axis)) * Math.sign(dot(unit(dv.axis), js.axis) || 1);
+    const stored = r.nodes.reduce((n, x) => n + (x.kind === "drum" ? (x.wraps ?? 0) * 2 * Math.PI * x.r : 0), 0);
+    const kLin = (r.rope.ea / Math.max(1, r.length - stored)) * 1000;
+    links.push({ kind: "ratio", name: r.name, a: ja.name, b: js.name, ratio, slack: 0, efficiency: 0.97, stiffness: kLin });
+    notes.push(`${r.name}: ${dv.drum} winds ${dv.lift} ${(Math.abs(dv.perRad) * 2 * Math.PI).toFixed(0)} mm a turn (rope stretch from EA ${Math.round(r.rope.ea)} N; it is taken as taut)`);
+  }
 }
 
 const fmtK = (k: number) => `${(k / 1000).toFixed(0)} N/mm of belt`;

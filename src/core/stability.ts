@@ -95,6 +95,36 @@ const compass = (n: P2) => {
 };
 const mass = (g: number) => (g >= 1000 ? `${fmtNum(g / 1000, 2)} kg` : `${fmtNum(g, 0)} g`);
 
+/** A solid part with its mass (grams) and centre of mass where it is drawn. */
+export interface MassBody {
+  p: EvalPart;
+  g: number;
+  c: V3;
+}
+
+/**
+ * Each part's mass and centre, as drawn. A bought part weighs what the catalog says, shared over its solids by
+ * volume; a made part weighs its volume times its material's density (or the mass: it is given).
+ */
+export function massBodies(parts: EvalPart[], boxes: NonNullable<ChecksResult["boxes"]>, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined): MassBody[] {
+  const instance = (p: EvalPart) => p.id.split(".")[0];
+  const instVol = new Map<string, number>();
+  for (const p of parts) instVol.set(instance(p), (instVol.get(instance(p)) ?? 0) + (volume(p) ?? 0));
+  const bodies: MassBody[] = [];
+  for (const p of parts) {
+    const v = volume(p);
+    if (!v) continue;
+    const spec = p.bom?.catalogId ? catalogPart(p.bom.catalogId)?.specs.mass_g : undefined;
+    const g = typeof spec === "number" && instVol.get(instance(p)) ? (spec * v) / instVol.get(instance(p))! : (materialDensity(p.material) * v) / 1000;
+    const m = mesh(p.hash);
+    const local = m && centroid(m);
+    const b = boxes[p.id];
+    const c = local ? applyMat(xformMatrix(p.xf) as Mat4, local) : ([0, 1, 2].map((k) => (b[0][k] + b[1][k]) / 2) as V3);
+    bodies.push({ p, g, c });
+  }
+  return bodies;
+}
+
 export function stabilityChecks(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined): CheckItem[] {
   const boxes = kernel.boxes;
   if (!boxes) return [];
@@ -124,21 +154,7 @@ export function stabilityChecks(model: Model, holds: Holds, kernel: ChecksResult
   if (poly.length < 3) return [];
 
   // each part's mass and centre, as drawn
-  const instance = (p: EvalPart) => p.id.split(".")[0];
-  const instVol = new Map<string, number>();
-  for (const p of parts) instVol.set(instance(p), (instVol.get(instance(p)) ?? 0) + (volume(p) ?? 0));
-  const bodies: { p: EvalPart; g: number; c: V3 }[] = [];
-  for (const p of parts) {
-    const v = volume(p);
-    if (!v) continue;
-    const spec = p.bom?.catalogId ? catalogPart(p.bom.catalogId)?.specs.mass_g : undefined;
-    const g = typeof spec === "number" && instVol.get(instance(p)) ? (spec * v) / instVol.get(instance(p))! : (materialDensity(p.material) * v) / 1000;
-    const m = mesh(p.hash);
-    const local = m && centroid(m);
-    const b = boxes[p.id];
-    const c = local ? applyMat(xformMatrix(p.xf) as Mat4, local) : ([0, 1, 2].map((k) => (b[0][k] + b[1][k]) / 2) as V3);
-    bodies.push({ p, g, c });
-  }
+  const bodies = massBodies(parts, boxes, mesh, volume);
   const total = bodies.reduce((a, b) => a + b.g, 0);
   if (total <= 0) return [];
 
