@@ -52,6 +52,7 @@ export function SimLayer({ scene }: { scene: SceneController }) {
     // a print plays back on the printer's own parts, posed from its show_x, show_y and show_z
     const o = vrun.print ? new PrinterOverlay(model.parts, meshes, posePrinter(useDesign.getState().source, model), vrun.print) : new SimOverlay(vrun.scene, model.parts, meshes, screws);
     o.setFrames(vrun.frames);
+    if (o instanceof SimOverlay) o.setDisplays(vrun.displays);
     o.setTime(useSim.getState().t);
     o.setPlaying(useSim.getState().playing && !reduceMotion);
     ov.current = o;

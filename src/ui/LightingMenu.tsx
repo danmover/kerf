@@ -85,6 +85,11 @@ export function LightingMenu({ photoLook = false }: { photoLook?: boolean }) {
             <span className="grow">Edges</span>
             <span className={`toggle ${s.edges ? "on" : ""}`} />
           </button>
+          <button role="switch" aria-checked={s.floorGloss} className={`photo-switch ${s.floorGloss ? "on" : ""}`} onClick={() => updateSettings({ floorGloss: !s.floorGloss })} data-tip="The floor mirrors the model as much as this set's floor would">
+            <Icon.Sun size={15} />
+            <span className="grow">Glossy floor</span>
+            <span className={`toggle ${s.floorGloss ? "on" : ""}`} />
+          </button>
           {photoLook && (s.grid || s.edges) && <div className="light-note">The photoreal view hides the grid and edges while it runs.</div>}
         </div>
       )}

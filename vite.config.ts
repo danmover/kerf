@@ -90,7 +90,7 @@ function securityPolicy(): Plugin {
         else if (/^\/assets\/fea\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FEA_CSP);
         else if (/^\/assets\/(render|route)\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CIRCUIT_CSP);
         else if (/^\/assets\/sim\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SIM_CSP);
-        else if (/^\/assets\/bvh\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", BVH_CSP);
+        else if (/^\/assets\/(bvh|bevel)\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", BVH_CSP);
         else if (/^\/assets\/cables\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CABLES_CSP);
         else if (/^\/assets\/aero\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", AERO_CSP);
         else if (/^\/assets\/flow\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FLOW_CSP);

@@ -12,6 +12,8 @@ import { ropeParts } from "../core/ropeChecks";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
+import { useReduceMotion } from "../app/motion";
+import { useChat } from "../ai/chat";
 import { useTheme } from "../app/theme";
 import { lightingPreset } from "./viewport/render/studio";
 import { registerViewport } from "../app/viewportApi";
@@ -92,6 +94,11 @@ export function Viewport() {
   const stage = useDesign((s) => s.stage);
   const view = useView();
   const settings = useSettings();
+  // the setting, or the system's: either turns the 3D effects off
+  const reduceMotion = useReduceMotion();
+  const claudeBusy = useChat((s) => s.busy);
+  const report = useDesign((s) => s.report);
+  const projectId = useProject((s) => s.current?.id);
   const theme = useTheme();
   const [webglError, setWebglError] = useState("");
   // the 3D view's start-up attempt; a failed start is retried a few times before the error card
@@ -226,6 +233,7 @@ export function Viewport() {
       focus: (ids) => c.focusOn(ids),
       sectionThrough: (point, normal) => c.sectionThrough(point, normal),
       film: (o) => c.beginFilm(o),
+      skipEffects: () => c.skipEffects(),
     });
     setScene(c);
     return () => {
@@ -249,8 +257,8 @@ export function Viewport() {
   }, [glTry, glGen]);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur });
-  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, scene]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur, floorGloss: settings.floorGloss });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, settings.floorGloss, scene]);
 
   useEffect(() => {
     ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
@@ -318,9 +326,34 @@ export function Viewport() {
       xray: view.xray,
       edges: settings.edges,
       grid: settings.grid,
-      reduceMotion: settings.reduceMotion,
+      reduceMotion,
     });
-  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, settings.reduceMotion, model, meshVersion, scene]);
+  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, reduceMotion, model, meshVersion, scene]);
+
+  // while Claude builds, the camera goes to see a change out of view and comes back
+  useEffect(() => ctl.current?.setFollowChanges(claudeBusy), [claudeBusy, scene]);
+
+  // a check's result lands on its parts: a new failure pulses red, one put right green (not the first report of a design)
+  const lastFails = useRef<{ project: string | undefined; fails: Map<string, string[]> } | null>(null);
+  useEffect(() => {
+    const c = ctl.current;
+    if (!c || !report) return;
+    const last = lastFails.current;
+    const prev = last && last.project === projectId ? last.fails : null;
+    const fails = new Map<string, string[]>();
+    const status = new Map(report.items.map((i) => [i.id, i.status]));
+    for (const i of report.items) if (i.status === "fail" && i.parts?.length) fails.set(i.id, i.parts);
+    // a check running again still counts as failing until it says otherwise
+    if (prev) for (const [id, parts] of prev) if (status.get(id) === "pending") fails.set(id, parts);
+    lastFails.current = { project: projectId, fails };
+    if (!prev) return;
+    const failing = new Set<string>();
+    const fixed = new Set<string>();
+    for (const [id, parts] of fails) if (!prev.has(id)) for (const p of parts) failing.add(p);
+    for (const [id, parts] of prev) if (!fails.has(id)) for (const p of parts) if (!failing.has(p)) fixed.add(p);
+    if (failing.size) c.pulseParts(failing, "fail");
+    if (fixed.size) c.pulseParts(fixed, "fixed");
+  }, [report, projectId, scene]);
 
   useEffect(() => ctl.current?.setSection(view.section), [view.section, model, scene]);
   useEffect(() => ctl.current?.setExplode(view.explode), [view.explode, scene]);
@@ -333,9 +366,9 @@ export function Viewport() {
   // after setParts above, so overlays attach to the current part groups
   useEffect(() => {
     // a route hovered in the make tab shows only that process's issues on its part
-    if (model) mfgOverlay.current?.update(model.parts, processPreview ?? processResults, view.focusCheck, showProcessIssues || !!processPreview, settings.reduceMotion);
+    if (model) mfgOverlay.current?.update(model.parts, processPreview ?? processResults, view.focusCheck, showProcessIssues || !!processPreview, reduceMotion);
     ctl.current?.setProcessMarks(!!mfgOverlay.current?.size);
-  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, settings.reduceMotion, scene]);
+  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, reduceMotion, scene]);
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap, scene]);
   useEffect(() => {

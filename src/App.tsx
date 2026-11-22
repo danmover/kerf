@@ -7,6 +7,7 @@ import { useSettings, updateSettings, TERMS_VERSION, LIGHTING_IDS } from "./app/
 import { bindingOf, commandFor } from "./app/keymap";
 import { useProject, refreshProjects, onProjectOpen, flushPending, undo, redo } from "./app/project";
 import { useView, requestCamera, toggleCode, type ViewPreset } from "./app/view";
+import { viewport } from "./app/viewportApi";
 import { startEngine, useDesign } from "./core/engine";
 import { turns } from "./core/model";
 import { startAnalysisRuntime } from "./analysis/runtime";
@@ -184,6 +185,8 @@ function useShortcuts() {
       const v = useView.getState();
       if (key === "Escape") {
         if (meta || e.altKey) return;
+        // Esc skips what the 3D view is playing (parts arriving, a change sweeping through) as well as letting go
+        viewport()?.skipEffects();
         if (v.selected.length || v.focusCheck || v.focusParts.length) useView.setState({ selected: [], focusCheck: null, focusParts: [] });
         return;
       }

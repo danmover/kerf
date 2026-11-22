@@ -17,7 +17,7 @@ export const MODELS = [
 ] as const;
 
 /** Lighting presets the viewport offers; kept here so settings stay free of three.js. */
-export const LIGHTING_IDS = ["studio", "showroom", "blueprint", "workshop", "daylight"];
+export const LIGHTING_IDS = ["studio", "showroom", "blueprint", "workshop", "workbench", "daylight"];
 
 export type ModelId = (typeof MODELS)[number]["id"];
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -53,6 +53,8 @@ export interface Settings {
   edges: boolean;
   /** once the 3D view is still, the parts in front of and behind the selection soften a little */
   focusBlur: boolean;
+  /** the floor under the model mirrors it, as much as the lighting set's floor would */
+  floorGloss: boolean;
   /** viewport lighting preset (see ui/viewport/render/studio) */
   lighting: string;
   /** how far the lighting is turned about the vertical axis, degrees */
@@ -99,6 +101,10 @@ export interface Settings {
   advanced: boolean;
   /** the wiring view keeps every part solid and shows the cables behind them faintly through (false: covers fade instead) */
   wiringSolid: boolean;
+  /** how the wiring view shows the design around the cables: ghosted back, solid, or covers see-through (missing: ghosted) */
+  wiringLook?: "ghost" | "solid" | "see";
+  /** the cables are drawn in the normal 3D view too, where any can be clicked for its details */
+  cablesInModel: boolean;
   /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
   keepWarm: number;
   /** prompt tokens at which a long chat's older turns are summarised (see ai/compact) */
@@ -156,6 +162,7 @@ const DEFAULTS: Settings = {
   grid: true,
   edges: true,
   focusBlur: true,
+  floorGloss: true,
   lighting: "studio",
   lightAngle: 0,
   quality: "balanced",
@@ -180,6 +187,7 @@ const DEFAULTS: Settings = {
   fastChanges: true,
   advanced: false,
   wiringSolid: true,
+  cablesInModel: true,
   keepWarm: 30,
   compactAt: 500_000,
   showCost: true,
