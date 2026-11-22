@@ -16,6 +16,7 @@ import { applyMat, driveAngle, motionPoseSplit } from "./kinematics";
 import { isFastener, motionOfPart, type Holds, type MeshLookup } from "./holds";
 import { massBodies, type MassBody } from "./stability";
 import { contactRun, sweepAngles } from "./sweepChecks";
+import { ropeHolds, ropeRuns, type RopeHold } from "./ropeChecks";
 import { catalogPart } from "../machine/catalog";
 import { motorSupplies } from "../machine/erc";
 import type { CatalogKind, MachineComponent } from "../machine/types";
@@ -225,6 +226,20 @@ export function gravityChecks(model: Model, holds: Holds, kernel: ChecksResult, 
   return gravityHolds(model, holds, kernel, mesh, volume).items;
 }
 
+const loadCache = new WeakMap<Model, { holds: Holds; kernel: ChecksResult; loads: DriveLoad[] }>();
+
+/** What gravity puts on each drive of the design (none when nothing moves), worked out once for all the checks that ask. */
+export function gravityLoads(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined): DriveLoad[] {
+  const boxes = kernel.boxes;
+  if (!boxes) return [];
+  const hit = loadCache.get(model);
+  if (hit && hit.holds === holds && hit.kernel === kernel) return hit.loads;
+  const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && boxes[p.id]);
+  const loads = parts.some((p) => turns(motionOfPart(p, holds))) ? driveLoads(model, holds, massBodies(parts, boxes, mesh, volume)) : [];
+  loadCache.set(model, { holds, kernel, loads });
+  return loads;
+}
+
 /** The gravity checks, and for each drive what holds it (for the "let go" preview, which must agree with them). */
 export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined): { items: CheckItem[]; drives: DriveHold[] } {
   const drives: DriveHold[] = [];
@@ -232,9 +247,7 @@ export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, m
   const done = { items: out, drives };
   const boxes = kernel.boxes;
   if (!boxes) return done;
-  const parts = model.parts.filter((p) => !p.hidden && !(p.imported && p.imported.kind !== "solid") && boxes[p.id]);
-  if (!parts.some((p) => turns(motionOfPart(p, holds)))) return done;
-  const loads = driveLoads(model, holds, massBodies(parts, boxes, mesh, volume));
+  const loads = gravityLoads(model, holds, kernel, mesh, volume);
   if (!loads.length) return done;
   const comps = model.machine?.components ?? [];
   const catIds = new Map(model.parts.filter((p) => p.bom?.catalogId).map((p) => [instance(p), p.bom!.catalogId!]));
@@ -245,6 +258,87 @@ export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, m
   const says = (p: EvalPart) => p.held ?? comps.find((c) => c.name === p.name && c.held)?.held;
   const supplies = model.machine ? motorSupplies(model.machine) : new Map<string, number>();
   const base = { category: "engineering" as const, basis: "calculation" as const };
+
+  // the motors on a drive, each with the turn of its own shaft
+  const plain = (m: Motion | undefined): m is Motion => !!m && !m.kind && !m.link && Math.abs(m.ratio) > 1e-12;
+  const motorsOn = (set: Set<Motion>) => {
+    const motors: { mc: MachineComponent; ratio: number; shaft: Motion }[] = [];
+    // a motor whose torque the maker does not give (a brushless outrunner) still drives it
+    let driven = false;
+    for (const mc of comps) {
+      const kind = catalogPart(mc.catalogId)?.kind;
+      if (!kind || !(MOTORS.has(kind) || kind === "bldc")) continue;
+      const shaft = model.parts.filter((p) => p.name === mc.name).map((p) => motionOfPart(p, holds)).find((x) => x && set.has(x) && plain(x));
+      if (!shaft) continue;
+      driven = true;
+      if (MOTORS.has(kind)) motors.push({ mc, ratio: shaft.ratio, shaft });
+    }
+    return { motors, driven };
+  };
+  // what each motor can hold with, at its own shaft
+  const torqueOf = (mc: MachineComponent): number | undefined => {
+    const part = catalogPart(mc.catalogId)!;
+    const rule = MOTORS.get(part.kind)!;
+    const rated = part.specs[rule.spec];
+    if (typeof rated !== "number") return undefined;
+    const v = supplies.get(mc.name);
+    return rated * (rule.spec === "t_stall" && v !== undefined && typeof part.specs.v_rated === "number" && part.specs.v_rated > 0 ? v / part.specs.v_rated : 1);
+  };
+  const perOf = (d: DriveLoad) => (plain(d.root) ? d.root.ratio : 1);
+
+  // ropes: the pull in each, and the torque that puts on the drive that turns its drum
+  const roped: RopeHold[] = model.machine?.ropes?.length ? ropeHolds(ropeRuns(model, holds, mesh), loads) : [];
+  interface Winch {
+    /** N·mm at the drive's root */
+    torque: number;
+    pulls: { rope: string; drum: string; r: number; tension: number; hold: RopeHold }[];
+  }
+  const winches = new Map<DriveLoad, Winch>();
+  for (const h of roped) {
+    if (!(h.tension > 1e-6)) continue;
+    for (const dr of h.drums) {
+      const m = dr.motion;
+      if (!plain(m)) continue;
+      const L = loads.find((x) => x.kind === "turn" && x.motions.has(m));
+      if (!L) continue;
+      const w = winches.get(L) ?? winches.set(L, { torque: 0, pulls: [] }).get(L)!;
+      w.torque += dr.torque * Math.abs(m.ratio / perOf(L));
+      w.pulls.push({ rope: h.run.rope.name, drum: h.run.rope.nodes[dr.node].name, r: h.run.rope.nodes[dr.node].r, tension: h.tension, hold: h });
+    }
+  }
+  /**
+   * What holds a rope's drums against its pull: "fixed" when none of them turns (the rope is as good as tied
+   * there), "motor" when motors on every turning drum's drive can hold it, "weak" when one cannot, "free" when a
+   * turning drum has no motor on it at all.
+   */
+  const winchOf = (h: RopeHold): { state: "fixed" | "motor" | "weak" | "free"; drum?: string; motors: string[]; torque: number } => {
+    let state: "fixed" | "motor" | "weak" | "free" = "fixed";
+    let drum: string | undefined;
+    let most = 0;
+    const names: string[] = [];
+    const rank = { fixed: 0, motor: 1, weak: 2, free: 3 };
+    for (const dr of h.drums) {
+      const m = dr.motion;
+      if (!plain(m)) continue;
+      const L = loads.find((x) => x.kind === "turn" && x.motions.has(m));
+      const { motors, driven } = motorsOn(L?.motions ?? new Set(chain(m)));
+      let st: "motor" | "weak" | "free" = driven ? "motor" : "free";
+      if (L && driven) {
+        const peak = Math.abs(L.peak) + (winches.get(L)?.torque ?? 0);
+        for (const x of motors) {
+          const has = torqueOf(x.mc);
+          if (has !== undefined && x.mc.load === undefined && Math.abs((peak * perOf(L)) / x.ratio) / motors.length >= has) st = "weak";
+        }
+      }
+      names.push(...motors.map((x) => x.mc.name));
+      if (rank[st] >= rank[state]) {
+        state = st;
+        drum = h.run.rope.nodes[dr.node].name;
+        most = Math.max(most, dr.torque);
+      }
+    }
+    return { state, drum: drum ?? (h.drums[0] ? h.run.rope.nodes[h.drums[0].node].name : undefined), motors: [...new Set(names)], torque: most };
+  };
 
   for (const d of loads) {
     const moves = (p: EvalPart) => {
@@ -350,10 +444,48 @@ export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, m
         if (run === "never" && c.how.startsWith("the grip of")) carriers.splice(carriers.indexOf(c), 1);
         else reachOf.set(c.part, typeof run === "object" ? at(run.deg) : travel);
       }
-      const stated = model.parts.filter((p) => motionOfPart(p, holds) === m && !isFastener(p)).map(says).find(Boolean);
+      // what the lift itself says holds it (a part that rides on it says only how it is fixed to the lift)
+      const stated = says(d.lead);
       const up = d.peak > 0;
       const pull = Math.abs(d.peak);
       const weighs = `${name}${withIt} weighs ${mass(d.mass)}${Math.abs(a[2]) < 0.999 ? `, ${force(pull)} of it along its travel` : ` (${force(pull)})`}`;
+      const onRope = carriers.length ? [] : roped.flatMap((h) => h.carries.filter((c) => c.load === d && c.holds).map((c) => ({ h, c, w: winchOf(h) })));
+      if (onRope.length) {
+        // the rope carries it: what matters then is what holds the rope's drum
+        const order = { fixed: 0, motor: 1, weak: 2, free: 3 };
+        const best = [...onRope].sort((x, y) => order[x.w.state] - order[y.w.state])[0];
+        const { h, c, w } = best;
+        const rope = h.run.rope;
+        const who = listOf(onRope.map((x) => x.h.run.rope.name));
+        const share = Math.abs(c.take - 1) > 0.02 ? `, on ${fmtNum(c.take, Math.abs(c.take - Math.round(c.take)) > 0.02 ? 1 : 0)} parts of rope` : "";
+        const inRope = `${force(c.pull)} in ${rope.name}${share}`;
+        const b = { ...base, parts: [...ids, ...model.parts.filter((p) => onRope.some((x) => x.h.run.rope.name === p.name)).map((p) => p.id)], span: d.lead.span };
+        const nd = rope.nodes.find((x) => x.name === w.drum);
+        const atDrum = nd ? `${torque(w.torque)} about ${w.drum} (${force(h.tension)} at ${fmtNum(nd.r, 1)} mm from its axis)` : "";
+        if (w.state === "fixed" || w.state === "motor") {
+          drives.push({ load: d, by: "carried" });
+          const drumSays = w.state === "motor" ? ` ${w.drum} is held against that by ${listOf(w.motors)}, checked on its own.` : w.drum ? ` ${w.drum} does not turn, so the rope is as good as tied there.` : " Both its ends are tied.";
+          out.push({ ...b, id: `gravity:carried:${name}`, status: "pass", title: `${name} is held up by ${who}`, detail: `${weighs}, carried through its ${fmtNum(travel, 0)} mm of travel by its rope: ${inRope}.${drumSays}${onRope.length > 1 ? " Each rope is checked as if it carried the weight alone." : ""}`, margin: 1 });
+        } else if (w.state === "weak") {
+          // the motor's own check says so
+          drives.push({ load: d, by: "nothing" });
+        } else if (stated) {
+          drives.push({ load: d, by: "stated" });
+          out.push({ ...b, id: `gravity:stated:${name}`, status: "info", title: `${name} is held up by "${stated}", which is not drawn`, detail: `${weighs}. ${rope.name} carries that to ${w.drum}: ${atDrum}. Nothing drawn holds ${w.drum} against it, and the design says ${name} is held by "${stated}", so that must. Kerf cannot check that it does.`, fix: `Draw what holds ${w.drum} so it can be checked: a gearmotor or stepper on its shaft (turns_with: ${w.drum}).`, basis: "needs analysis" });
+        } else {
+          drives.push({ load: d, by: "nothing" });
+          out.push({
+            ...b,
+            id: `gravity:falls:${name}`,
+            status: "fail",
+            title: `Nothing stops ${w.drum} unwinding, so ${name} falls`,
+            detail: `${weighs}. ${rope.name} carries that to ${w.drum}: ${atDrum}. ${w.drum} is free to turn and nothing holds it against that: no gearmotor, stepper or servo is on its shaft. Let go, ${name} drops and pulls the rope off the drum.`,
+            fix: `Put a gearmotor or stepper on ${w.drum}'s shaft (turns_with: ${w.drum}) so Kerf can check it holds ${torque(w.torque)}. If a ratchet, a brake or a worm gear that is not drawn holds it, say so on ${name} with held: "ratchet on the winch".`,
+            margin: 0,
+          });
+        }
+        continue;
+      }
       if (carriers.length) {
         const friction = carriers.every((c) => c.how.startsWith("the grip of"));
         const by = `carried through its ${fmtNum(travel, 0)} mm of travel by ${listOf(carriers.map((c) => `${c.how} (${c.part.name}${c.on ? ` on ${c.on.name}` : ""})`))}`;
@@ -428,35 +560,51 @@ export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, m
       continue;
     }
 
-    // a turning group: is it out of balance, and does a motor hold it
+    // a turning group: is it out of balance, does a rope hold it or pull on it, and does a motor hold it
+    const winch = winches.get(d);
+    const peak = Math.abs(d.peak) + (winch?.torque ?? 0);
     const arm = Math.abs(d.peak) / (d.mass * G);
-    const per = !d.root.kind && !d.root.link && Math.abs(d.root.ratio) > 1e-12 ? d.root.ratio : 1;
+    const per = perOf(d);
     // the same load at a motor's own shaft: the work is the same, so the torque goes by the speeds
-    const motors: { mc: MachineComponent; ratio: number; shaft: Motion }[] = [];
-    // a motor whose torque the maker does not give (a brushless outrunner) still drives it
-    let driven = false;
-    for (const mc of comps) {
-      const kind = catalogPart(mc.catalogId)?.kind;
-      if (!kind || !(MOTORS.has(kind) || kind === "bldc")) continue;
-      const shaft = model.parts.filter((p) => p.name === mc.name).map((p) => motionOfPart(p, holds)).find((x) => x && d.motions.has(x) && !x.kind && !x.link && Math.abs(x.ratio) > 1e-12);
-      if (!shaft) continue;
-      driven = true;
-      if (MOTORS.has(kind)) motors.push({ mc, ratio: shaft.ratio, shaft });
-    }
-    // what each motor can hold with, at its own shaft
-    const torqueOf = (mc: MachineComponent): number | undefined => {
-      const part = catalogPart(mc.catalogId)!;
-      const rule = MOTORS.get(part.kind)!;
-      const rated = part.specs[rule.spec];
-      if (typeof rated !== "number") return undefined;
-      const v = supplies.get(mc.name);
-      return rated * (rule.spec === "t_stall" && v !== undefined && typeof part.specs.v_rated === "number" && part.specs.v_rated > 0 ? v / part.specs.v_rated : 1);
-    };
-    const balanced = Math.abs(d.peak) < TORQUE_MIN || arm < ARM_MIN;
-    drives.push(driven ? { load: d, by: "motor", motors: motors.flatMap((x) => (torqueOf(x.mc) === undefined ? [] : [{ comp: x.mc.name, shaft: x.shaft, torque: torqueOf(x.mc)! }])), balanced } : { load: d, by: "nothing", balanced });
+    const { motors, driven } = motorsOn(d.motions);
+    const balanced = !winch && (Math.abs(d.peak) < TORQUE_MIN || arm < ARM_MIN);
     const where = `with the drive at ${fmtNum(d.peakDeg % 360, 0)}°`;
+    // a rope that holds it up (a boom raised by a rope): then it is the rope's drum that must be held
+    const onRope = driven || balanced ? [] : roped.flatMap((h) => h.carries.filter((c) => c.load === d && c.holds).map((c) => ({ h, c, w: winchOf(h) })));
+    if (onRope.length) {
+      const order = { fixed: 0, motor: 1, weak: 2, free: 3 };
+      const { h, c, w } = [...onRope].sort((x, y) => order[x.w.state] - order[y.w.state])[0];
+      const rope = h.run.rope;
+      const b = { ...base, parts: [...ids, ...model.parts.filter((p) => p.name === rope.name).map((p) => p.id)], span: d.lead.span };
+      const weighs = `${name}${withIt} weighs ${mass(d.mass)}, which puts up to ${torque(Math.abs(d.peak))} on its shaft (${where})`;
+      const nd = rope.nodes.find((x) => x.name === w.drum);
+      const atDrum = nd ? `${torque(w.torque)} about ${w.drum} (${force(h.tension)} at ${fmtNum(nd.r, 1)} mm from its axis)` : "";
+      const stated = says(d.lead);
+      if (w.state === "fixed" || w.state === "motor") {
+        drives.push({ load: d, by: "carried" });
+        out.push({ ...b, id: `gravity:carried:${name}`, status: "pass", title: `${name} is held up by ${rope.name}`, detail: `${weighs}. ${rope.name} holds it there with up to ${force(c.pull)} in the rope.${w.state === "motor" ? ` ${w.drum} is held against that by ${listOf(w.motors)}, checked on its own.` : w.drum ? ` ${w.drum} does not turn, so the rope is as good as tied there.` : " Both its ends are tied."}`, margin: 1 });
+      } else if (w.state === "weak") drives.push({ load: d, by: "nothing" });
+      else if (stated) {
+        drives.push({ load: d, by: "stated" });
+        out.push({ ...b, id: `gravity:stated:${name}`, status: "info", title: `${name} is held up by "${stated}", which is not drawn`, detail: `${weighs}. ${rope.name} carries that to ${w.drum}: ${atDrum}. Nothing drawn holds ${w.drum} against it, and the design says ${name} is held by "${stated}", so that must. Kerf cannot check that it does.`, fix: `Draw what holds ${w.drum} so it can be checked: a gearmotor or stepper on its shaft (turns_with: ${w.drum}).`, basis: "needs analysis" });
+      } else {
+        drives.push({ load: d, by: "nothing" });
+        out.push({ ...b, id: `gravity:falls:${name}`, status: "fail", title: `Nothing stops ${w.drum} unwinding, so ${name} falls`, detail: `${weighs}. ${rope.name} carries that to ${w.drum}: ${atDrum}. ${w.drum} is free to turn and nothing holds it against that: no gearmotor, stepper or servo is on its shaft. Let go, ${name} swings down and pulls the rope off the drum.`, fix: `Put a gearmotor or stepper on ${w.drum}'s shaft (turns_with: ${w.drum}) so Kerf can check it holds ${torque(w.torque)}. If a ratchet, a brake or a worm gear that is not drawn holds it, say so on ${name} with held: "ratchet on the winch".`, margin: 0 });
+      }
+      continue;
+    }
+    drives.push(driven ? { load: d, by: "motor", motors: motors.flatMap((x) => (torqueOf(x.mc) === undefined ? [] : [{ comp: x.mc.name, shaft: x.shaft, torque: torqueOf(x.mc)! }])), balanced } : { load: d, by: "nothing", balanced });
+    // what the rope on its drum is holding up, for the words
+    const hung = winch ? listOf(winch.pulls.flatMap((p) => p.hold.carries.filter((c) => c.holds).map((c) => c.load.lead.name))) : "";
+    const pullSays = winch ? `The pull of ${winch.pulls.map((p) => `${p.rope} on ${p.drum} (${force(p.tension)} at ${fmtNum(p.r, 1)} mm from its axis)`).join(" and of ")}` : "";
     if (!driven) {
       if (balanced) continue;
+      if (winch) {
+        // a lift or a boom on the rope says so itself; a rope with only a pull: of its own is said here
+        if (!hung)
+          out.push({ ...base, id: `gravity:winch:${name}`, status: "fail", title: `Nothing holds ${name} against its rope`, detail: `${pullSays} puts ${torque(winch.torque)} on ${name}'s shaft. ${name} is free to turn and no gearmotor, stepper or servo is on it, so the rope pulls itself off the drum.`, fix: `Put a gearmotor or stepper on ${name}'s shaft (turns_with: ${name}) so Kerf can check it holds ${torque(winch.torque)}.`, parts: ids, span: d.lead.span, margin: 0 });
+        continue;
+      }
       out.push({
         ...base,
         id: `gravity:free:${name}`,
@@ -477,21 +625,27 @@ export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, m
       const v = supplies.get(mc.name);
       const k = has / (part.specs[rule.spec] as number);
       // motors on one drive share its load
-      const need = Math.abs((d.peak * per) / ratio) / motors.length;
+      const need = Math.abs((peak * per) / ratio) / motors.length;
       const frac = need / has;
       const label = mc.role ? `${mc.name} (${mc.role})` : mc.name;
       const volts = k !== 1 ? ` at ${fmtNum(v!, 1)} V` : "";
-      const b = { ...base, parts: [mc.name, ...ids], span: mc.span, margin: has / need };
-      const what = `The weight of ${name}${withIt} (${mass(d.mass)}) puts up to ${torque(need)} on ${label}, ${where}`;
+      const b = { ...base, parts: [mc.name, ...ids, ...(winch ? model.parts.filter((p) => winch.pulls.some((x) => x.rope === p.name)).map((p) => p.id) : [])], span: mc.span, margin: has / need };
+      // what it holds: the weight on its own drive, or what hangs on the rope round its drum
+      const held = winch ? hung || `${listOf(winch.pulls.map((p) => p.rope))}'s pull` : name;
+      const what = winch ? `${pullSays}${hung ? `, which is the weight of ${hung},` : ""} puts up to ${torque(need)} on ${label}` : `The weight of ${name}${withIt} (${mass(d.mass)}) puts up to ${torque(need)} on ${label}, ${where}`;
+      // a smaller drum eases the motor, but only down to the smallest the rope may be bent round
+      const rp = winch?.pulls[0].hold.run.rope.rope;
+      const smaller = winch ? Math.floor((winch.pulls[0].r * 2 * rule.use) / frac) : 0;
+      const lighter = winch ? `${rp && smaller >= rp.bend * rp.d + rp.d ? `use a smaller drum (${fmtNum(smaller, 0)} mm across would do) or ` : ""}share the weight over more parts of rope with a sheave on the load` : `make ${name} lighter or shorter`;
       if (mc.load !== undefined) {
         // the design gives its own load: say so only when the weight alone is more
-        if (need > 1.25 * mc.load) out.push({ ...b, id: `gravity:load:${mc.name}`, status: "warn", title: `${label}: load: is less than the weight on it`, detail: `${what}, but its load: is ${torque(mc.load)}. The motor checks use load:, so they are passing a lighter job than gravity gives it.`, fix: `Set load: on ${mc.name} to at least ${fmtNum(Math.ceil(need), 0)} (N·mm), or balance ${name} so the motor carries less.` });
+        if (need > 1.25 * mc.load) out.push({ ...b, id: `gravity:load:${mc.name}`, status: "warn", title: `${label}: load: is less than the weight on it`, detail: `${what}, but its load: is ${torque(mc.load)}. The motor checks use load:, so they are passing a lighter job than gravity gives it.`, fix: `Set load: on ${mc.name} to at least ${fmtNum(Math.ceil(need), 0)} (N·mm), or ${winch ? lighter : `balance ${name} so the motor carries less`}.` });
         continue;
       }
       if (balanced && frac < SHARE_MIN) continue;
-      if (frac >= 1) out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "fail", title: `${label} cannot hold ${name} up`, detail: `${what}: more than its ${torque(has)} ${rule.word} torque${volts}. It stalls there, and lets ${name} fall back.`, fix: `Use a motor with at least ${torque(need / rule.use)} of ${rule.word} torque, gear it down ${fmtNum(Math.ceil((frac / rule.use) * 10) / 10, 1)} times more, make ${name} lighter or shorter, or balance it with a counterweight or spring (calc.motor_select() picks a motor for a duty).` });
-      else if (frac > rule.use) out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "warn", title: `${label} works hard holding ${name}`, detail: `${what}: ${fmtNum(frac * 100, 0)} % of its ${torque(has)} ${rule.word} torque${volts}, before anything it carries or any speeding up. ${rule.why.replace(/^./, (c) => c.toUpperCase())}.`, fix: `Use a motor with at least ${torque(need / rule.use)} of ${rule.word} torque, gear it down further, or balance ${name} with a counterweight or spring.` });
-      else out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "pass", title: `${label} holds ${name} against its weight`, detail: `${what}: ${fmtNum(frac * 100, 0)} % of its ${torque(has)} ${rule.word} torque${volts}.` });
+      if (frac >= 1) out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "fail", title: `${label} cannot hold ${held}${winch && !hung ? "" : " up"}`, detail: `${what}: more than its ${torque(has)} ${rule.word} torque${volts}. It stalls there, and lets ${winch ? (hung ? `${hung} fall` : "the rope run out") : `${name} fall back`}.`, fix: `Use a motor with at least ${torque(need / rule.use)} of ${rule.word} torque, gear it down ${fmtNum(Math.ceil((frac / rule.use) * 10) / 10, 1)} times more, ${lighter}${winch ? "" : ", or balance it with a counterweight or spring"} (calc.motor_select() picks a motor for a duty).` });
+      else if (frac > rule.use) out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "warn", title: `${label} works hard holding ${held}`, detail: `${what}: ${fmtNum(frac * 100, 0)} % of its ${torque(has)} ${rule.word} torque${volts}, before ${winch ? "any speeding up or snatch" : "anything it carries or any speeding up"}. ${rule.why.replace(/^./, (c) => c.toUpperCase())}.`, fix: `Use a motor with at least ${torque(need / rule.use)} of ${rule.word} torque, gear it down further, or ${winch ? lighter : `balance ${name} with a counterweight or spring`}.` });
+      else out.push({ ...b, id: `gravity:motor:${mc.name}`, status: "pass", title: winch ? `${label} holds ${held}${hung ? " up" : ""}` : `${label} holds ${name} against its weight`, detail: `${what}: ${fmtNum(frac * 100, 0)} % of its ${torque(has)} ${rule.word} torque${volts}.` });
     }
   }
   return done;

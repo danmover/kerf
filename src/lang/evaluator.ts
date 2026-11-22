@@ -31,7 +31,7 @@ import { connOf, findConn, findPin, wiringNames } from "../machine/catalog/conns
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
 import { emptyMachine, type BeltDef, type RopeDef, type CatalogPart, type LeadDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
 import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
-import { DEAD_WRAPS, RopeError, layoutRope, ropeCutLength, ropeRecipe, ropeSpec, ropeState, ropeTaken, squareTo, wheelOf, type RopeIn, type RopePoint } from "../machine/ropes";
+import { DEAD_WRAPS, RopeError, drumPayout, layoutRope, ropeCutLength, ropeRecipe, ropeSpec, ropeState, ropeTaken, squareTo, wheelOf, type RopeIn, type RopePoint } from "../machine/ropes";
 import { recipeBounds } from "../analysis/fits/geometry";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
@@ -347,6 +347,8 @@ class Evaluator {
   shapeRefs = 0;
   comps = new Map<string, CompInfo>();
   partMotion = new Map<string, Motion>();
+  /** drums a rope has already been fitted to: a second rope on one does not turn it round again */
+  ropeTurned = new WeakSet<Motion>();
   parts: EvalPart[] = [];
   params: EvalParam[] = [];
   reqs: EvalRequirement[] = [];
@@ -2482,6 +2484,22 @@ class Evaluator {
    * lib.rope: resolve the path to a drum, sheaves and tie points, lay it out and draw it. With lifts:, the part it
    * raises takes its travel per turn from the drum and the way the rope is reeved, when the design gives it none.
    */
+  /**
+   * Whether a plainly spinning motion can be turned the other way with nothing else in the design put out: no rope
+   * already fitted to it, no gear, chain or belt on a part that turns with it, nothing linked to it or rolling on it.
+   */
+  private freeToReverse(m: Motion): boolean {
+    if (this.ropeTurned.has(m)) return false;
+    const names = new Set<string>();
+    for (const [n, x] of this.partMotion) if (x === m) names.add(n);
+    for (const [n, c] of this.comps) if (c.motion === m) names.add(n);
+    const others = [...this.partMotion.values(), ...[...this.comps.values()].map((c) => c.motion)].filter((x): x is Motion => !!x && x !== m);
+    if (others.some((x) => x.link?.driver === m || x.roll?.on === m)) return false;
+    if (this.parts.some((p) => (names.has(p.name) && (!!p.gear || !!p.chain)) || (!!p.gear?.meshWith && names.has(p.gear.meshWith)) || !!p.chain?.nodes.some((n) => names.has(n.name)))) return false;
+    if (this.machine.belts.some((b) => b.nodes.some((n) => names.has(n.name)))) return false;
+    return true;
+  }
+
   rope(s: Extract<Stmt, { k: "component" }>, args: Args): { def: CompDef; rope?: RopeDef } {
     const ctx = this.ctx();
     const id = args.str("id");
@@ -2569,8 +2587,8 @@ class Evaluator {
     };
     const flip = new Set(listed("flip", "the sheaves the rope passes on the far side of, like flip: [guide]"));
     for (const n of flip) if (!nodes.some((nd, i) => nd.k === "wheel" && nd.name === n && i > 0 && i < last)) throw new EvalError(`flip: ${n} should be one of the sheaves between the ends of path: (wind: "under" turns a drum's rope round)`, argSpan("flip"));
-    const wind = args.has("wind") ? args.str("wind") : "over";
-    if (wind !== "over" && wind !== "under") throw new EvalError('wind: "over" (the rope leaves over the top of the drum, the default) or "under"', argSpan("wind"));
+    const wind = args.has("wind") ? args.str("wind") : undefined;
+    if (wind !== undefined && wind !== "over" && wind !== "under") throw new EvalError('wind: "over" (the rope leaves over the top of the drum) or "under"', argSpan("wind"));
     const wrapsV = args.value("wraps");
     if (wrapsV !== undefined && !(typeof wrapsV === "number" && wrapsV >= 0 && wrapsV <= 500)) throw new EvalError("wraps: the turns of rope on the drum where it is drawn, like wraps: 8", argSpan("wraps"));
     const pullV = args.value("pull");
@@ -2591,52 +2609,70 @@ class Evaluator {
     // lifts: how much rope the path takes for each millimetre the lift moves, with the nodes that go with it
     let perTurn: number | undefined;
     let extra = 0;
-    const drums = layout.nodes.map((nd, i) => ({ nd, i })).filter((x) => x.nd.kind === "drum");
-    for (const name of lifts) {
-      const lm = this.partMotion.get(name) ?? this.comps.get(name)?.motion;
-      if (!lm || lm.kind !== "slide" || lm.link || !lm.travel) throw new EvalError(`lifts: ${name} should be a part that travels on its own (slides: Z  travel: 400), defined above the rope`, argSpan("lifts"));
-      // what goes with the lift: a node that rides it, or one drawn inside or against it
-      const boxes = this.parts.filter((q) => q.name === name).map((q) => {
-        const b = q.recipe ? recipeBounds(q.recipe) : null;
-        if (!b) return null;
-        const lo: V3 = [Infinity, Infinity, Infinity];
-        const hi: V3 = [-Infinity, -Infinity, -Infinity];
-        for (let k = 0; k < 8; k++) {
-          const w = applyXforms([b[k & 1][0], b[(k >> 1) & 1][1], b[(k >> 2) & 1][2]], q.xf);
-          for (let j = 0; j < 3; j++) {
-            lo[j] = Math.min(lo[j], w[j]);
-            hi[j] = Math.max(hi[j], w[j]);
+    const fit = () => {
+      const drums = layout.nodes.map((nd, i) => ({ nd, i })).filter((x) => x.nd.kind === "drum");
+      for (const name of lifts) {
+        const lm = this.partMotion.get(name) ?? this.comps.get(name)?.motion;
+        if (!lm || lm.kind !== "slide" || lm.link || !lm.travel) throw new EvalError(`lifts: ${name} should be a part that travels on its own (slides: Z  travel: 400), defined above the rope`, argSpan("lifts"));
+        // what goes with the lift: a node that rides it, or one drawn inside or against it
+        const boxes = this.parts.filter((q) => q.name === name).map((q) => {
+          const b = q.recipe ? recipeBounds(q.recipe) : null;
+          if (!b) return null;
+          const lo: V3 = [Infinity, Infinity, Infinity];
+          const hi: V3 = [-Infinity, -Infinity, -Infinity];
+          for (let k = 0; k < 8; k++) {
+            const w = applyXforms([b[k & 1][0], b[(k >> 1) & 1][1], b[(k >> 2) & 1][2]], q.xf);
+            for (let j = 0; j < 3; j++) {
+              lo[j] = Math.min(lo[j], w[j]);
+              hi[j] = Math.max(hi[j], w[j]);
+            }
+          }
+          return { lo, hi };
+        });
+        const inBox = (p: V3) => boxes.some((b) => !!b && p.every((x, j) => x >= b.lo[j] - 2 && x <= b.hi[j] + 2));
+        const rides = (m: Motion | undefined) => {
+          for (let x = m; x; x = x.parent) if (x === lm) return true;
+          return false;
+        };
+        let moves = nodes.map((nd, i) => rides(motions[i]) || (!motions[i] && inBox(nd.k === "tie" ? nd.p : nd.c)));
+        // with no shape to go by, the rope's tied end is on what it lifts
+        if (!moves.some(Boolean) && boxes.every((b) => !b)) moves = nodes.map((nd) => nd.k === "tie");
+        if (!moves.some(Boolean)) continue;
+        const a = vnorm(lm.axis);
+        const at = (shift: number) => {
+          const pts: RopePoint[] = layout.nodes.map((nd, i) => ({ c: moves[i] ? vadd(nd.c, vscale(a, shift)) : nd.c, axis: nd.axis, r: nd.r, dir: nd.dir }));
+          return { pts, st: ropeState(pts, pts.map((q) => (q.axis ? squareTo(q.axis) : undefined))) };
+        };
+        // the rope the lift's whole travel takes from where it is drawn (a rope that does not lead straight along
+        // the travel takes a little more or less per millimetre as it goes, so the whole of it is what counts)
+        const STEPS = 24;
+        let was = at(0);
+        let taken = 0;
+        for (let k = 1; k <= STEPS; k++) {
+          const now = at((lm.travel * k) / STEPS);
+          taken += ropeTaken(now.pts, was.st, now.st);
+          was = now;
+        }
+        const take = taken / lm.travel;
+        if (Math.abs(take) < 1e-6) continue;
+        // paid out from the drum when the path gets longer
+        const drum = drums.length === 1 ? drums[0] : undefined;
+        if (drum) extra = Math.max(extra, taken / (2 * Math.PI * drum.nd.r));
+        const dm = drum ? motions[drum.i] : undefined;
+        if (drum && dm && !dm.kind && !dm.link && Math.abs(dm.ratio) > 1e-9) {
+          // The drum lets rope out or takes it in as it turns, and it must be the way the lift's travel needs.
+          // Which way a winch runs is the motor's business, not the drawing's: the drum is turned to suit its rope
+          // unless something else already goes by the way it turns.
+          if (drumPayout(drum.nd, drum.i === 0) * dm.ratio * taken < 0 && this.freeToReverse(dm)) dm.ratio = -dm.ratio;
+          this.ropeTurned.add(dm);
+          if (lm.perTurn === undefined) {
+            lm.perTurn = (Math.abs(dm.ratio) * 2 * Math.PI * drum.nd.r) / Math.abs(take);
+            perTurn = lm.perTurn;
           }
         }
-        return { lo, hi };
-      });
-      const inBox = (p: V3) => boxes.some((b) => !!b && p.every((x, j) => x >= b.lo[j] - 2 && x <= b.hi[j] + 2));
-      const rides = (m: Motion | undefined) => {
-        for (let x = m; x; x = x.parent) if (x === lm) return true;
-        return false;
-      };
-      let moves = nodes.map((nd, i) => rides(motions[i]) || (!motions[i] && inBox(nd.k === "tie" ? nd.p : nd.c)));
-      // with no shape to go by, the rope's tied end is on what it lifts
-      if (!moves.some(Boolean) && boxes.every((b) => !b)) moves = nodes.map((nd) => nd.k === "tie");
-      if (!moves.some(Boolean)) continue;
-      const a = vnorm(lm.axis);
-      const at = (shift: number) => {
-        const pts: RopePoint[] = layout.nodes.map((nd, i) => ({ c: moves[i] ? vadd(nd.c, vscale(a, shift)) : nd.c, axis: nd.axis, r: nd.r, dir: nd.dir }));
-        return { pts, st: ropeState(pts, pts.map((q) => (q.axis ? squareTo(q.axis) : undefined))) };
-      };
-      const lo = at(-0.5);
-      const hi = at(0.5);
-      const take = ropeTaken(hi.pts, lo.st, hi.st);
-      if (Math.abs(take) < 1e-6) continue;
-      // rope the lift's whole travel takes from where it is drawn: paid out from the drum when the path gets longer
-      const drum = drums.length === 1 ? drums[0] : undefined;
-      if (drum) extra = Math.max(extra, (take * lm.travel) / (2 * Math.PI * drum.nd.r));
-      const dm = drum ? motions[drum.i] : undefined;
-      if (drum && dm && !dm.kind && !dm.link && Math.abs(dm.ratio) > 1e-9 && lm.perTurn === undefined) {
-        lm.perTurn = (Math.abs(dm.ratio) * 2 * Math.PI * drum.nd.r) / Math.abs(take);
-        perTurn = lm.perTurn;
       }
-    }
+    };
+    fit();
     if (typeof wrapsV !== "number" && extra > 1e-6) layout = lay(Math.ceil((DEAD_WRAPS + extra) * 4) / 4);
 
     const cut = ropeCutLength(layout, spec);
@@ -2650,6 +2686,7 @@ class Evaluator {
       length: Math.round(layout.length * 1000) / 1000,
       cutLength: cut,
       lifts,
+      wind: layout.wind,
       wrapsGiven: typeof wrapsV === "number",
       ...(typeof pullV === "number" ? { pull: pullV } : {}),
       span: s.span,
@@ -2661,7 +2698,7 @@ class Evaluator {
       if (e instanceof RopeError) throw new EvalError(e.message, argSpan("path"));
       throw e;
     }
-    const drum = drums[0]?.nd;
+    const drum = layout.nodes.find((nd) => nd.kind === "drum");
     const def: CompDef = {
       kind: "rope",
       label,

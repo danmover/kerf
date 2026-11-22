@@ -436,12 +436,14 @@ export interface RopeLayout {
   /** turns on a drum drawn as a sleeve in fast builds: the tube's outer and inner diameter, length, start and axis */
   sleeves: { od: number; id: number; h: number; at: V3; dir: V3 }[];
   short: V3[];
+  /** the side its end drum's rope leaves from, as laid */
+  wind: "over" | "under";
 }
 
 export interface LayoutOpts {
   /** wheels the rope passes on the other side of */
   flip?: Set<string>;
-  /** the side of a drum the rope leaves from: over the top (the higher tangent) or under */
+  /** the side of a drum the rope leaves from: over the top (the higher tangent) or under; none: the side that carries on round the next sheave */
   wind?: "over" | "under";
   /** turns of rope on each drum as drawn */
   wraps: number;
@@ -479,20 +481,6 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
   const d = spec.d;
   const centre = (x: RopeIn) => (x.k === "tie" ? x.p : x.c);
   for (let i = 0; i < N - 1; i++) if (vlen(vsub(centre(input[i + 1]), centre(input[i]))) < 1e-6) throw new RopeError(`path: ${nameOf(input[i], i, N)} and ${nameOf(input[i + 1], i + 1, N)} are in the same place`);
-  const dirs: (1 | -1)[] = input.map((x, i) => {
-    if (x.k === "tie") return 1;
-    const a = vnorm(x.axis);
-    if (i === 0) return drumDir(x, centre(input[1]), d, opts.wind ?? "over", false);
-    if (i === N - 1) return drumDir(x, centre(input[N - 2]), d, opts.wind ?? "over", true);
-    const P = centre(input[i - 1]);
-    const Q = centre(input[i + 1]);
-    const into = vsub(x.c, P);
-    const out = vsub(Q, x.c);
-    const turn = vdot(vcross(into, out), a) / (vlen(into) * vlen(out));
-    if (Math.abs(turn) < 1e-3) throw new RopeError(`path: the rope runs straight past ${x.name}, so Kerf cannot tell which side of it the rope takes. Move ${x.name} to where the rope bends round it, or leave it out of path:`);
-    const dir: 1 | -1 = turn > 0 ? 1 : -1;
-    return opts.flip?.has(x.name) ? (-dir as 1 | -1) : dir;
-  });
   // where the rope leaves a drum along its axis: its anchor is at one flange and the turns lie side by side from there
   const wraps = Math.max(0, opts.wraps);
   const lead = input.map((x, i) => {
@@ -504,7 +492,61 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
     const offs = ([1, -1] as const).map((side) => ({ side, off: Math.max(-half, Math.min(half, -side * half + side * wraps * d)) }));
     return Math.abs(offs[0].off - toward) <= Math.abs(offs[1].off - toward) ? offs[0] : offs[1];
   });
-  const pts: RopePoint[] = input.map((x, i) => (x.k === "tie" ? { c: x.p, r: 0, dir: 1 } : { c: vadd(x.c, vscale(vnorm(x.axis), lead[i].off)), axis: vnorm(x.axis), r: lineR(x.rootD, d), dir: dirs[i] }));
+  const at = (dirs: (1 | -1)[]): RopePoint[] => input.map((x, i) => (x.k === "tie" ? { c: x.p, r: 0, dir: 1 } : { c: vadd(x.c, vscale(vnorm(x.axis), lead[i].off)), axis: vnorm(x.axis), r: lineR(x.rootD, d), dir: dirs[i] }));
+
+  // An end drum. With wind: given the rope leaves over its top or under it. With none, it leaves by the side that
+  // carries on the way it goes round the next sheave, so the rope makes no S between the two; with no sheave next
+  // (or one square to the drum) it leaves over the top.
+  let wind: "over" | "under" = opts.wind ?? "over";
+  const ends = (dirs: (1 | -1)[]) => {
+    for (const i of [0, N - 1]) {
+      const x = input[i];
+      if (x.k !== "wheel") continue;
+      const k = i === 0 ? 1 : N - 2;
+      const next = input[k];
+      const over = drumDir(x, centre(next), d, "over", i !== 0);
+      const along = next.k === "wheel" && k > 0 && k < N - 1 ? vdot(vnorm(x.axis), vnorm(next.axis)) : 0;
+      dirs[i] = opts.wind ? (opts.wind === "over" ? over : (-over as 1 | -1)) : Math.abs(along) > 0.5 ? ((dirs[k] * Math.sign(along)) as 1 | -1) : over;
+      if (i === 0 || input[0].k !== "wheel") wind = dirs[i] === over ? "over" : "under";
+    }
+  };
+  // A sheave: the rope takes the side of it that makes the shorter run, which is the inside of the bend it makes
+  // there and, where it doubles back over one, the side that does not cross its own two parts. It starts from the
+  // bend of the line through the centres and is then set right against the real tangents (a wide drum next to a
+  // small sheave pulls that line the wrong way).
+  const dirs: (1 | -1)[] = input.map((x, i) => {
+    if (x.k === "tie" || i === 0 || i === N - 1) return 1;
+    const into = vsub(x.c, centre(input[i - 1]));
+    const out = vsub(centre(input[i + 1]), x.c);
+    return vdot(vcross(into, out), vnorm(x.axis)) >= 0 ? 1 : -1;
+  });
+  const run = (ds: (1 | -1)[]) => {
+    ends(ds);
+    const p = ropePath(at(ds));
+    if (p.inside.length) return Infinity;
+    for (let i = 1; i < N - 1; i++) if (p.wrap[i] < (0.5 * Math.PI) / 180) return Infinity;
+    return p.free;
+  };
+  if (N <= 14) {
+    let best = run(dirs);
+    for (let pass = 0; pass < 4; pass++) {
+      let changed = false;
+      for (let i = 1; i < N - 1; i++) {
+        dirs[i] = -dirs[i] as 1 | -1;
+        const c = run(dirs);
+        if (c < best - 1e-6) {
+          best = c;
+          changed = true;
+        } else dirs[i] = -dirs[i] as 1 | -1;
+      }
+      if (!changed) break;
+    }
+  }
+  input.forEach((x, i) => {
+    if (x.k === "wheel" && i > 0 && i < N - 1 && opts.flip?.has(x.name)) dirs[i] = -dirs[i] as 1 | -1;
+  });
+  ends(dirs);
+  const pts = at(dirs);
   const path = ropePath(pts);
   for (const i of path.inside) {
     const other = i > 0 && vlen(vsub(path.depart[i - 1], pts[i].c)) <= pts[i].r * 1.001 ? i - 1 : i + 1;
@@ -588,7 +630,7 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
     both(...round(nd, path.arrive[i], nd.dir, Math.max(0, path.wrap[i]), rad(12), () => 0, false));
   }
   const stored = nodes.reduce((n, nd) => n + (nd.kind === "drum" ? (nd.wraps ?? 0) * TAU * nd.r : 0), 0);
-  return { nodes, spans, length: path.free + stored, line, short, sleeves };
+  return { nodes, spans, length: path.free + stored, line, short, sleeves, wind };
 }
 
 const nameOf = (x: RopeIn, i: number, n: number) => (x.k === "wheel" ? x.name : i === 0 ? "the first tie" : i === n - 1 ? "the second tie" : "a tie");

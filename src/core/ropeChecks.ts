@@ -11,7 +11,7 @@
 
 import { type EvalPart, type Model, type Motion } from "./model";
 import type { CheckItem } from "./checks";
-import type { ChecksResult } from "../kernel/protocol";
+import type { ChecksResult, Interference } from "../kernel/protocol";
 import { applyMat, driveAngle, motionPose, motionPoseSplit, type Mat4 } from "./kinematics";
 import { isFastener, motionOfPart, type Holds, type MeshLookup } from "./holds";
 import { sweepAngles } from "./sweepChecks";
@@ -126,16 +126,34 @@ function solidDistance(m: MeshData, p: V3): number {
   return crossings % 2 ? 0 : best;
 }
 
+const meshBox = new WeakMap<MeshData, [V3, V3]>();
+function boxOf(m: MeshData): [V3, V3] {
+  let b = meshBox.get(m);
+  if (b) return b;
+  const lo: V3 = [Infinity, Infinity, Infinity];
+  const hi: V3 = [-Infinity, -Infinity, -Infinity];
+  const P = m.positions;
+  for (let i = 0; i < P.length; i += 3)
+    for (let k = 0; k < 3; k++) {
+      if (P[i + k] < lo[k]) lo[k] = P[i + k];
+      if (P[i + k] > hi[k]) hi[k] = P[i + k];
+    }
+  b = [lo, hi];
+  meshBox.set(m, b);
+  return b;
+}
+
 /** The part drawn at a point: the nearest one within reach, a made or bought part before a fastener. */
-function partAt(model: Model, kernel: ChecksResult, mesh: MeshLookup, p: V3): EvalPart | undefined {
+function partAt(model: Model, mesh: MeshLookup, p: V3): EvalPart | undefined {
   let best: { part: EvalPart; d: number } | undefined;
   for (const q of model.parts) {
     if (q.hidden || q.libKind === "rope" || q.libKind === "belt" || (q.imported && q.imported.kind !== "solid")) continue;
-    const b = kernel.boxes?.[q.id];
-    if (!b || [0, 1, 2].some((k) => p[k] < b[0][k] - TIE_REACH || p[k] > b[1][k] + TIE_REACH)) continue;
     const m = mesh(q.hash);
     if (!m) continue;
-    const d = solidDistance(m, inverseXforms(p, q.xf)) + (isFastener(q) ? 1e-3 : 0);
+    const local = inverseXforms(p, q.xf);
+    const [lo, hi] = boxOf(m);
+    if ([0, 1, 2].some((k) => local[k] < lo[k] - TIE_REACH || local[k] > hi[k] + TIE_REACH)) continue;
+    const d = solidDistance(m, local) + (isFastener(q) ? 1e-3 : 0);
     if (d <= TIE_REACH + 1e-3 && (!best || d < best.d)) best = { part: q, d };
   }
   return best?.part;
@@ -210,13 +228,22 @@ function frameAt(run: Pick<RopeRun, "rope" | "motions">, pose: (m: Motion) => Ma
   return { pts, marks };
 }
 
-function runOf(rope: RopeDef, model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup): RopeRun {
-  const N = rope.nodes.length;
-  const parts = rope.nodes.map((nd) => (nd.kind === "tie" ? partAt(model, kernel, mesh, nd.c) : (model.parts.find((p) => p.name === nd.name && !isFastener(p)) ?? model.parts.find((p) => p.name === nd.name))));
-  const motions = parts.map((p) => {
+/** The part each node of a rope is: the drum or sheave itself, or the part a tied end is on (none: tied to nothing). */
+export function ropeParts(rope: RopeDef, model: Model, mesh: MeshLookup): (EvalPart | undefined)[] {
+  return rope.nodes.map((nd) => (nd.kind === "tie" ? partAt(model, mesh, nd.c) : (model.parts.find((p) => p.name === nd.name && !isFastener(p)) ?? model.parts.find((p) => p.name === nd.name))));
+}
+
+/** How each node of a rope moves, when it does. */
+export function ropeMotions(parts: (EvalPart | undefined)[], holds: Holds): (Motion | undefined)[] {
+  return parts.map((p) => {
     const m = p ? motionOfPart(p, holds) : undefined;
     return m && (Math.abs(m.ratio) > 1e-12 || !!m.link || !!m.travel || !!m.parent || !!m.roll) ? m : undefined;
   });
+}
+
+function runOf(rope: RopeDef, model: Model, holds: Holds, mesh: MeshLookup): RopeRun {
+  const parts = ropeParts(rope, model, mesh);
+  const motions = ropeMotions(parts, holds);
   const moving = motions.some(Boolean);
   const angles = moving ? sweepAngles(motions) : [0];
   const drums = rope.nodes.map((nd, i) => ({ nd, i })).filter((x) => x.nd.kind === "drum");
@@ -263,16 +290,37 @@ function runOf(rope: RopeDef, model: Model, holds: Holds, kernel: ChecksResult, 
   return run;
 }
 
-const runCache = new WeakMap<Model, { holds: Holds; kernel: ChecksResult; runs: RopeRun[] }>();
+/**
+ * A rope drawn a little way into the part it is tied to: its end goes through an eye or a hole there, or meets the
+ * face at an angle. Not a clash, when it is no more than the rope's own end near that tie.
+ */
+export function ropeTie(i: Interference, model: Model, mesh: MeshLookup): { rope: RopeDef; on: EvalPart } | null {
+  const ropes = model.machine?.ropes ?? [];
+  if (!ropes.length) return null;
+  const A = model.parts.find((p) => p.id === i.a);
+  const B = model.parts.find((p) => p.id === i.b);
+  if (!A || !B || (A.libKind === "rope") === (B.libKind === "rope")) return null;
+  const [line, on] = A.libKind === "rope" ? [A, B] : [B, A];
+  const rope = ropes.find((r) => r.name === line.name);
+  if (!rope) return null;
+  const d = rope.rope.d;
+  // no more of it than ten diameters of rope, close to the tie
+  if (i.volume > (Math.PI / 4) * d * d * 10 * d) return null;
+  const parts = ropeParts(rope, model, mesh);
+  const tied = rope.nodes.some((nd, k) => nd.kind === "tie" && parts[k]?.id === on.id && len(sub(i.center, nd.c)) <= 10 * d + 2);
+  return tied ? { rope, on } : null;
+}
+
+const runCache = new WeakMap<Model, { holds: Holds; mesh: MeshLookup; runs: RopeRun[] }>();
 
 /** Every rope of the design, followed through its motion. */
-export function ropeRuns(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup): RopeRun[] {
+export function ropeRuns(model: Model, holds: Holds, mesh: MeshLookup): RopeRun[] {
   const ropes = model.machine?.ropes ?? [];
-  if (!ropes.length || !kernel.boxes) return [];
+  if (!ropes.length) return [];
   const hit = runCache.get(model);
-  if (hit && hit.holds === holds && hit.kernel === kernel) return hit.runs;
-  const runs = ropes.map((r) => runOf(r, model, holds, kernel, mesh));
-  runCache.set(model, { holds, kernel, runs });
+  if (hit && hit.holds === holds && hit.mesh === mesh) return hit.runs;
+  const runs = ropes.map((r) => runOf(r, model, holds, mesh));
+  runCache.set(model, { holds, mesh, runs });
   return runs;
 }
 
@@ -408,7 +456,7 @@ function hangingOn(run: RopeRun, model: Model, holds: Holds, kernel: ChecksResul
  * sheaves and fleet angles, and its pull against its strength.
  */
 export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mesh: MeshLookup, volume: (p: EvalPart) => number | undefined, loads: DriveLoad[]): CheckItem[] {
-  const runs = ropeRuns(model, holds, kernel, mesh);
+  const runs = ropeRuns(model, holds, mesh);
   if (!runs.length) return [];
   const held = ropeHolds(runs, loads);
   const out: CheckItem[] = [];
@@ -437,7 +485,7 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
         detail: `Its ${i === 0 ? "first" : "last"} end is at (${nd.c.map((x) => N0(x, 1)).join(", ")}), and no part is drawn there (within ${TIE_REACH} mm): a rope's tied end has to be on the part it pulls, or on the part that holds it.`,
         fix: `Move that point in path: onto the part the rope ties to (the top of an eye bolt, a hole through a lug, the face it is clamped to), or draw the anchor there.`,
       });
-    const route = nodes.map((nd, i) => (nd.kind === "tie" ? `a tie on ${where(nd, run, i)}` : nd.kind === "drum" ? `the drum ${nd.name}` : nd.name));
+    const route = nodes.map((nd, i) => (nd.kind === "tie" ? `a tie on ${where(nd, run, i)}` : nd.kind === "drum" && !/drum|winch|spool|reel|capstan/i.test(nd.name) ? `the drum ${nd.name}` : nd.name));
     const stored = nodes.filter((nd) => nd.kind === "drum").reduce((n, nd) => n + (nd.wraps ?? 0) * TAU * nd.r, 0);
     if (!loose.length)
       out.push({
@@ -466,6 +514,7 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
       const drum = nodes.findIndex((nd) => nd.kind === "drum");
       const dm = drum >= 0 ? run.motions[drum] : undefined;
       const lifts = h.carries.filter((c) => c.load.kind === "lift");
+      let offLine = false;
       if (Math.abs(s) <= tol) {
         out.push({ ...motion, id: `rope:run:${r.name}`, status: "pass", title: `${t} stays taut through the motion`, detail: `The path takes up ${N0(span)} mm of rope through the motion${drum >= 0 ? `, and the drum winds exactly that` : " and gives it back"}: the rope is never more than ${N0(Math.max(...run.slack.map(Math.abs)), 1)} mm slack or short.` });
       } else {
@@ -474,23 +523,47 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
         if (drum < 0) fix = `Both ends are tied, so the path must stay the same length as the parts move: move the sheaves or the ties until it does, or take one end to a drum.`;
         else if (!plainSpin(dm)) fix = `${nodes[drum].name} does not turn: give it spin: (or turns_with: its motor or gearbox) so it winds the rope as ${listOf(lifts.map((c) => c.load.lead.name)) || "the load"} moves.`;
         else {
-          // the travel per turn that fits: the drum's rope per drive turn over the rope the lift takes per mm
+          // the travel per turn that fits: what the drum winds in a turn of the drive, over the rope the lift's
+          // whole travel takes for each millimetre of it
           const lift = lifts[0];
-          const total = run.payout[run.payout.length - 1] - run.payout[0];
-          const want = run.need[run.need.length - 1] - run.need[0];
-          if (lift && Math.abs(want) > 1e-6 && Math.abs(total) > 1e-6 && Math.sign(want) !== Math.sign(total)) fix = `The drum turns the wrong way: it lets rope out as ${lift.load.lead.name} needs it taken in. Give ${nodes[drum].name} spin: ${N0(-dm.ratio, 3)}, or lead the rope off its other side with flip: [${nodes[drum].name}].`;
-          else if (lift && lift.take > 1e-6) fix = `Set per_turn: ${N0((Math.abs(dm.ratio) * TAU * nodes[drum].r) / lift.take, 2)} on ${lift.load.lead.name} (one turn of ${nodes[drum].name} winds ${N0(TAU * nodes[drum].r, 1)} mm of rope${Math.abs(lift.take - 1) > 0.01 ? `, and ${lift.load.lead.name} moves 1 mm for every ${N0(lift.take, 2)} mm of it` : ""}), or leave per_turn: out and give the rope lifts: ${lift.load.lead.name} so Kerf works it out.`;
+          let far = 0;
+          run.need.forEach((n, k) => {
+            if (Math.abs(n) > Math.abs(run.need[far])) far = k;
+          });
+          const want = run.need[far];
+          const total = run.payout[far];
+          const travel = lift ? Math.abs(lift.load.root.rate ?? 0) * driveAngle(run.angles[far], lift.load.root.range) : 0;
+          const fits = lift && travel > 1e-6 && Math.abs(want) > 1e-6 ? (Math.abs(dm.ratio) * TAU * nodes[drum].r * travel) / Math.abs(want) : undefined;
+          const now = lift?.load.root.perTurn;
+          if (lift && Math.abs(want) > 1e-6 && Math.abs(total) > 1e-6 && Math.sign(want) !== Math.sign(total)) fix = `The drum turns the wrong way: it lets rope out as ${lift.load.lead.name} needs it taken in. Give ${nodes[drum].name} spin: ${N0(-dm.ratio, 3)}, or lead the rope off the other side of it with wind: "${r.wind === "under" ? "over" : "under"}".`;
+          else if (lift && fits !== undefined && now !== undefined && Math.abs(fits / now - 1) < 2e-3) {
+            // the two ends of the travel agree and the middle does not: the rope leads off the line of the travel
+            offLine = true;
+            fix = `Lead the rope to ${lift.load.lead.name} in line with its travel (tie it straight under the sheave it comes from), so every millimetre of rope moves it a millimetre.`;
+          } else if (lift && fits !== undefined) fix = `Set per_turn: ${N0(fits, 2)} on ${lift.load.lead.name} (one turn of ${nodes[drum].name} winds ${N0(TAU * nodes[drum].r, 1)} mm of rope${Math.abs(travel / Math.abs(want) - 1) > 0.01 ? `, and ${lift.load.lead.name} moves 1 mm for every ${N0(Math.abs(want) / travel, 2)} mm of it` : ""}), or leave per_turn: out and give the rope lifts: ${lift.load.lead.name} so Kerf works it out.`;
           else fix = `Make what the drum winds match what the moving parts take up: change the drum's diameter or its spin:, or the travel of what the rope moves.`;
         }
-        out.push({
-          ...motion,
-          id: `rope:run:${r.name}`,
-          status: "fail",
-          title: s > 0 ? `${t} goes slack as it moves` : `${t} would have to stretch as it moves`,
-          detail: `${at}, the path from ${route[0]} to ${route[N - 1]} takes ${N0(Math.abs(run.need[worst]), 1)} mm ${run.need[worst] >= 0 ? "more" : "less"} rope than as drawn, and ${drum >= 0 ? `the drum has let out ${N0(run.payout[worst], 1)} mm` : "there is no drum to give or take any"}: the rope is ${N0(Math.abs(s), 1)} mm ${s > 0 ? "too long there and hangs loose" : "too short there, which a real rope settles by stopping the motion or breaking"}.`,
-          fix,
-          margin: tol / Math.abs(s),
-        });
+        if (offLine) {
+          out.push({
+            ...motion,
+            id: `rope:run:${r.name}`,
+            status: "warn",
+            title: `${t} does not pull ${lifts[0].load.lead.name} at a steady rate`,
+            detail: `${t} leads to ${lifts[0].load.lead.name} at an angle to its travel, so a turn of the drum moves it a little more at one end of the travel than the other: against a steady ${N0(lifts[0].load.root.perTurn ?? 0, 1)} mm a turn it is up to ${N0(Math.abs(s), 1)} mm out part way (${at}). The rope stays taut under the weight; a position counted from the motor's turns is that far off.`,
+            fix,
+            margin: tol / Math.abs(s),
+          });
+        } else {
+          out.push({
+            ...motion,
+            id: `rope:run:${r.name}`,
+            status: "fail",
+            title: s > 0 ? `${t} goes slack as it moves` : `${t} would have to stretch as it moves`,
+            detail: `${at}, the path from ${route[0]} to ${route[N - 1]} takes ${N0(Math.abs(run.need[worst]), 1)} mm ${run.need[worst] >= 0 ? "more" : "less"} rope than as drawn, and ${drum >= 0 ? `the drum has ${run.payout[worst] >= 0 ? "let out" : "wound in"} ${N0(Math.abs(run.payout[worst]), 1)} mm` : "there is no drum to give or take any"}: the rope is ${N0(Math.abs(s), 1)} mm ${s > 0 ? "too long there and hangs loose" : "too short there, which a real rope settles by stopping the motion or breaking"}.`,
+            fix,
+            margin: tol / Math.abs(s),
+          });
+        }
       }
     }
 
@@ -555,7 +628,11 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
         detail: !off.length
           ? `The most it leads off square anywhere in the motion is ${N0(worstA, 1)}° (1.5° is the limit for a smooth drum).`
           : `${off.map((x) => `it meets ${x.nd.name} ${N0(x.a, 1)}° off square`).join("; ").replace(/^./, (c) => c.toUpperCase())}. Past 1.5° a smooth drum winds unevenly and the rope scrubs a sheave's flange; past 4° it climbs out of the groove.`,
-        fix: !off.length ? undefined : `Line ${listOf(off.map((x) => x.nd.name))} up with the rope's run (move it along its axis, or turn its axis square to the rope), or move the first sheave further from the drum: at least ${N0(Math.max(...off.map((x) => (x.nd.kind === "drum" ? ((x.nd.width ?? 0) / 2) / Math.tan((FLEET_WARN * Math.PI) / 180) : 0))), 0)} mm for this drum's width.`,
+        fix: !off.length
+          ? undefined
+          : `Line ${listOf(off.map((x) => x.nd.name))} up with the rope's run (move it along its axis, or turn its axis square to the rope)${
+              off.some((x) => x.nd.kind === "drum" && (x.nd.width ?? 0) > d) ? `, or move the first sheave further from the drum: at least ${N0(Math.max(...off.map((x) => (x.nd.kind === "drum" ? (x.nd.width ?? 0) / 2 / Math.tan((FLEET_WARN * Math.PI) / 180) : 0))), 0)} mm away keeps a drum this wide inside 1.5°` : ""
+            }.`,
         margin: FLEET_WARN / Math.max(1e-6, worstA),
       });
     }
@@ -584,7 +661,7 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
         status: swings ? "warn" : "pass",
         title: swings ? `${names} will swing on ${t}` : `${names} ${hg.names.length === 1 ? "hangs" : "hang"} on ${t}`,
         detail: `${names} (${mass(hg.kg)}) ${hg.names.length === 1 ? "hangs" : "hang"} on ${hg.legs.length === 1 ? "one part" : `${hg.legs.length} parts`} of the rope and nothing else, which puts ${force(pull)} in it.${swings ? ` ${lean > 1 ? `The rope leads up ${N0(lean, 1)}° off vertical` : `${hg.names.length === 1 ? "Its" : "Their"} centre of mass is ${N0(side, 1)} mm to the side of where the rope holds ${hg.names.length === 1 ? "it" : "them"}`}: let go, ${hg.names.length === 1 ? "it swings" : "they swing"} until the weight is straight under the rope.` : ""}`,
-        fix: swings ? (lean > 1 ? `Move the rope's tie, or the sheave above it, so the rope leads straight up from ${names}.` : `Tie the rope over ${names}' centre of mass (at x ${N0(hg.c[0], 1)}, y ${N0(hg.c[1], 1)}), or use two legs to hold it level.`) : undefined,
+        fix: swings ? (lean > 1 ? `Move the rope's tie, or the sheave above it, so the rope leads straight up from ${names}.` : `Tie the rope over the centre of mass of ${names} (x ${N0(hg.c[0], 1)}, y ${N0(hg.c[1], 1)}), or use two legs to hold it level.`) : undefined,
       });
     }
 
@@ -605,16 +682,22 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
     const carried = h.carries.filter((c) => c.holds);
     if (pull > 1e-6) {
       const top = carried.sort((a, b) => b.pull - a.pull)[0];
-      const from = top && top.pull >= staticPull && top.pull >= (r.pull ?? 0) ? `${top.load.lead.name} and what moves with it weigh ${mass(top.load.mass)}${Math.abs(top.take - 1) > 0.02 && top.load.kind === "lift" ? `, shared by ${N0(top.take, top.take % 1 > 0.02 ? 1 : 0)} parts of rope` : ""}` : (r.pull ?? 0) >= staticPull ? `the pull is given as ${force(r.pull ?? 0)}` : `the weight hanging on it`;
-      const times = r.rope.mbl / pull;
+      const parts = top ? Math.abs(top.take) : 1;
+      const from =
+        top && top.pull >= staticPull && top.pull >= (r.pull ?? 0)
+          ? `${top.load.lead.name}${top.load.parts.some((p) => p.name !== top.load.lead.name && !isFastener(p)) ? " and what moves with it weigh" : " weighs"} ${mass(top.load.mass)}${top.load.kind === "lift" && Math.abs(parts - 1) > 0.05 ? `, shared by ${N0(parts, Math.abs(parts - Math.round(parts)) > 0.05 ? 1 : 0)} parts of rope` : ""}, which puts ${force(pull)} in the rope`
+          : (r.pull ?? 0) >= staticPull
+            ? `Its pull is given as ${force(r.pull ?? 0)}`
+            : `The weight hanging on it puts ${force(pull)} in the rope`;
+      const share = pull / wll;
       const status = pull <= wll ? "pass" : pull <= 2 * wll ? "warn" : "fail";
       const stretch = (pull / r.rope.ea) * (r.length - stored);
       out.push({
         ...base,
         id: `rope:load:${r.name}`,
         status,
-        title: status === "pass" ? `${t} carries ${force(pull)} with ${N0(times, 1)} times in hand` : `${t} is ${status === "fail" ? "far too" : "too"} weak for ${force(pull)}`,
-        detail: `${from.replace(/^./, (c) => c.toUpperCase())}: ${force(pull)} in the rope. ${r.label} breaks at ${force(r.rope.mbl)}, ${N0(times, 1)} times that; ropes are worked at a fifth of their breaking load (${force(wll)} here), and a tenth for anything overhead or safety-critical. At this pull it stretches about ${N0(stretch, stretch < 10 ? 1 : 0)} mm over its ${N0(r.length - stored)} mm run.${status === "pass" ? "" : " Starting, stopping and any snatch add to the pull."}`,
+        title: status === "pass" ? `${t} carries ${force(pull)}, ${share < 0.01 ? "under 1" : N0(share * 100)} % of its working load` : `${t} is ${status === "fail" ? "far too" : "too"} weak for ${force(pull)}`,
+        detail: `${from}. ${r.label} breaks at ${force(r.rope.mbl)}, and ropes are worked at a fifth of that: ${force(wll)} here (a tenth for anything overhead or safety-critical). At this pull it stretches ${stretch < 0.05 ? "under 0.1" : `about ${N0(stretch, stretch < 10 ? 1 : 0)}`} mm over its ${N0(r.length - stored)} mm run.${status === "pass" ? "" : " Starting, stopping and any snatch add to the pull."}`,
         fix: status === "pass" ? undefined : `Use a rope that breaks at ${force(pull * r.rope.factor)} or more, or share the weight over more parts of rope with a sheave on the load.`,
         margin: wll / pull,
       });

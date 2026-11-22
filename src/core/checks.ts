@@ -21,7 +21,8 @@ import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
 import { stashSweep, sweepChecks } from "./sweepChecks";
 import { stabilityChecks } from "./stability";
-import { gravityChecks } from "./gravityChecks";
+import { gravityChecks, gravityLoads } from "./gravityChecks";
+import { ropeChecks, ropeTie } from "./ropeChecks";
 import { sheetChecks } from "./sheetChecks";
 import { chainChecks } from "./chainChecks";
 import { uciChecks } from "./uciChecks";
@@ -291,6 +292,12 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
         });
         continue;
       }
+      // a rope's end drawn into the part it is tied to
+      const tie = inputs.mesh ? ropeTie(i, model, inputs.mesh) : null;
+      if (tie) {
+        items.push({ id: `int:${i.a}|${i.b}`, category: "interference", status: "pass", title: `${tie.rope.name} is tied to ${tie.on.name}`, detail: `The end of ${tie.rope.name} is drawn ${fmtNum(i.volume, 1)} mm³ into ${label(tie.on.id)} where it is tied: an eye, a hole or a clamp takes it there, not a clash`, parts: [i.a, i.b], span: tie.rope.span, basis: "geometry" });
+        continue;
+      }
       // a rubber tyre drawn pressed onto what it runs on (rolls_on:), by no more than rubber gives
       const sq = rollSqueeze(i, (id) => partsById.get(id));
       if (sq && sq.allowed > 0 && sq.depth > 0 && sq.depth <= sq.allowed + 0.1) {
@@ -436,6 +443,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     else items.push(...sweepChecks(sweep.model, sweep.holds, sweep.kernel, sweep.mesh, sweep.ignore));
     items.push(...stabilityChecks(model, holds, kernel, inputs.mesh, volumeOf));
     items.push(...gravityChecks(model, holds, kernel, inputs.mesh, volumeOf));
+    items.push(...ropeChecks(model, holds, kernel, inputs.mesh, volumeOf, gravityLoads(model, holds, kernel, inputs.mesh, volumeOf)));
   }
   items.push(...sheetChecks(model));
   items.push(...chainChecks(model));

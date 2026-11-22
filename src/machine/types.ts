@@ -700,6 +700,8 @@ export interface RopeDef {
   cutLength: number;
   /** the parts the design says it lifts (lifts:) */
   lifts: string[];
+  /** which side of an end drum the rope leaves by */
+  wind: "over" | "under";
   /** the turns on its drums were given (wraps:), not worked out */
   wrapsGiven: boolean;
   /** a pull given outright, N (pull:), for a rope whose load Kerf cannot work out from weights */
