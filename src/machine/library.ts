@@ -369,7 +369,7 @@ const BELT: LibEntry = {
   signature: 'lib.belt("gt2_6mm", path: [clamp_a, motor_pulley, idler, clamp_b], tension: 15N, mass: 600, accel: 3000) { role: "x" }',
   doc: `Timing belt round its pulleys. path: the pulleys in the order the belt meets them, starting and ending at the two clamp points for an open belt (a carriage axis), or pulleys only for a closed loop; pulleys are lib.pulley components or lib.bearing used as a smooth idler. outside: [idler]: idlers the belt's back runs on. tension: installation tension (N). Load: mass (g) and accel (mm/s²) of what it moves, plus friction (N); or torque (N·mm at the drive pulley). drive: the driving pulley (default: the first pulley with a travel per turn). Ids: ${catalogOfKind("belt")
     .map((p) => p.id)
-    .join(", ")}.`,
+    .join(", ")}. A round belt or an O-ring that drives by friction is lib.round_belt.`,
   positional: ["id"],
   params: ["id", "path", "outside", "tension", "mass", "accel", "friction", "torque", "force", "drive"],
   group: "Motion",

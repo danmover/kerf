@@ -677,6 +677,74 @@ export interface RopeNode {
   label: string;
 }
 
+/** A pulley on a round belt's path. */
+export interface RoundBeltNode {
+  name: string;
+  label: string;
+  /** the middle of where the cord sits, on the axis (world) */
+  c: [number, number, number];
+  axis: [number, number, number];
+  /** radius of the cord's centre line round it, and the diameter the cord sits on */
+  r: number;
+  rootD: number;
+  /** the way the belt goes round its axis along the path: 1 counter-clockwise seen against the axis */
+  dir: 1 | -1;
+  /** contact angle, and how far off square the belt meets it, degrees */
+  wrap: number;
+  fleet: number;
+  /** width of the groove the cord sits in, and how far its sides stand above the cord's seat, mm, when the part shows them */
+  width?: number;
+  flange?: number;
+}
+
+/** A round belt or an O-ring used as one (lib.round_belt): driven by friction in grooved pulleys. */
+export interface RoundBeltDef {
+  name: string;
+  label: string;
+  role?: string;
+  cord: {
+    kind: "pu" | "rubber";
+    label: string;
+    material: string;
+    color: string;
+    /** cord diameter unstretched, mm, and Shore A hardness */
+    d: number;
+    shore: number;
+    /** polyurethane: N/mm² at 5 % and 10 % stretch; rubber: Gent's limit and the pull it loses per tenfold of time */
+    at5?: number;
+    at10?: number;
+    Jm?: number;
+    relax?: number;
+    /** the stretch it is meant to work at, as fractions, and whose figures they are */
+    stretchMin: number;
+    stretchMax: number;
+    stretchBasis: string;
+    /** smallest pulley, at the bottom of the groove, mm */
+    minPulley: number;
+    pulleyBasis: string;
+    muAluminium: number;
+    muSteel: number;
+    muBasis: string;
+    maxTemp: number;
+  };
+  nodes: RoundBeltNode[];
+  spans: RopeSpan[];
+  /** round the path along the cord's centre line, and the belt's own centre-line length unstretched, mm */
+  length: number;
+  made: number;
+  /** an O-ring's inside diameter, when it is one */
+  ringId?: number;
+  /** stretch as fitted (0.06 = 6 %), and where it comes from */
+  stretch: number;
+  stretchFrom: "stretch" | "length" | "id" | "default";
+  /** pull in each strand as fitted, N */
+  tension: number;
+  /** the pulley that drives it (drive:) and the torque it must pass there, N·mm (torque:) */
+  drive?: string;
+  torque?: number;
+  span: Span;
+}
+
 /** A straight run of rope between two nodes, as drawn. */
 export interface RopeSpan {
   from: string;
@@ -759,8 +827,9 @@ export interface MachineData {
   belts: BeltDef[];
   /** ropes from drums over sheaves to where they are tied */
   ropes: RopeDef[];
+  roundBelts: RoundBeltDef[];
 }
 
 export function emptyMachine(): MachineData {
-  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [], belts: [], ropes: [] };
+  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [], belts: [], ropes: [], roundBelts: [] };
 }

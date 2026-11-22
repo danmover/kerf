@@ -701,7 +701,7 @@ function spaced(pts: V3[], min: number): V3[] {
   return out;
 }
 
-function sweepAlong(pts: V3[], d: number): ShapeRecipe | null {
+export function sweepAlong(pts: V3[], d: number): ShapeRecipe | null {
   const p = spaced(pts, Math.max(0.3, d * 0.2));
   if (p.length < 2) return null;
   // straight pieces joined by arcs, as round as the shortest pieces allow

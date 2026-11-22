@@ -29,9 +29,10 @@ import { CalcObj, calcNamespace } from "../machine/calcs";
 import { catalogOfKind, catalogPart } from "../machine/catalog";
 import { connOf, findConn, findPin, wiringNames } from "../machine/catalog/conns";
 import { MACHINE_LIBRARY, groupForCatalog } from "../machine/library";
-import { emptyMachine, type BeltDef, type RopeDef, type CatalogPart, type LeadDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
+import { emptyMachine, type BeltDef, type RopeDef, type RoundBeltDef, type CatalogPart, type LeadDef, type MachineComponent, type MachineData, type PinRef, type WireInsulation } from "../machine/types";
 import { ChainError, chainAsBelt, chainRecipe, chainSpec, linksFor, type ChainInfo, type ChainNode } from "../machine/chains";
-import { DEAD_WRAPS, RopeError, drumPayout, layoutRope, ropeCutLength, ropeRecipe, ropeSpec, ropeState, ropeTaken, squareTo, wheelOf, type RopeIn, type RopePoint } from "../machine/ropes";
+import { RoundBeltError, cordTension, layoutRoundBelt, puCord, puGrade, roundBeltRecipe, rubberCord, stretchedD } from "../machine/roundBelts";
+import { DEAD_WRAPS, RopeError, drumPayout, layoutRope, ropeCutLength, ropeRecipe, ropeSpec, ropeState, ropeTaken, squareTo, wheelOf, type RopeIn, type RopePoint, type WheelIn } from "../machine/ropes";
 import { recipeBounds } from "../analysis/fits/geometry";
 import { BeltError, analyseBelt, beltFields, beltRecipe, beltSpec, beltTrace, drivePulley, layoutBelt, motorLever, onShaft, type BeltIn, type MotorIn, type PulleyIn } from "../machine/belts";
 import { SCENARIO_PROPS, scenarioSpec, SimSpec, simNamespace, type ScenarioDef, type ScenarioExpect } from "../sim/scenario";
@@ -1697,6 +1698,12 @@ class Evaluator {
       const made = this.rope(s, args);
       def = made.def;
       rope = made.rope;
+    } else if (key === "round_belt") {
+      const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "turns_with", "on", "side", "load", "slides", "travel"].find((k) => props[k] !== undefined);
+      if (placed) throw new EvalError(`A belt follows its path: leave out ${placed}:`, propSpans[placed]);
+      const made = this.roundBelt(s, args);
+      def = made.def;
+      if (made.belt) this.machine.roundBelts.push(made.belt);
     } else if (key === "chain") {
       const placed = ["at", "axis", "facing", "rotate", "spin", "mesh", "chain", "turns_with", "rides"].find((k) => props[k] !== undefined);
       if (placed) throw new EvalError(`A chain follows its path: leave out ${placed}:`, propSpans[placed]);
@@ -2117,6 +2124,7 @@ class Evaluator {
     this.machine.boards.push(...machine.boards);
     this.machine.belts.push(...machine.belts);
     this.machine.ropes.push(...machine.ropes);
+    this.machine.roundBelts.push(...machine.roundBelts);
     for (const h of inner.mateQueries ?? []) this.mateQueries.add(h);
     this.splitQueries.push(...(inner.splitQueries ?? []));
     this.inserts.push({
@@ -2715,6 +2723,154 @@ class Evaluator {
       catalog: { id: part.id, length: cut },
     };
     return { def, rope: rd };
+  }
+
+  /**
+   * lib.round_belt: a polyurethane round belt, or an O-ring used as a belt, laid round grooved pulleys, with the
+   * stretch it is fitted at and the pull that puts in it.
+   */
+  roundBelt(s: Extract<Stmt, { k: "component" }>, args: Args): { def: CompDef; belt?: RoundBeltDef } {
+    const ctx = this.ctx();
+    const argSpan = (name: string) => s.call.args.find((a) => a.name === name)?.span ?? s.call.span;
+    const matName = args.str("rubber", "PU");
+    const grade = puGrade(matName);
+    const rubber = grade ? undefined : rubberOf(matName);
+    if (!grade && !rubber) throw new EvalError(`lib.round_belt: "${matName}" is not a belt material. Use "PU" (polyurethane round belting, 88A), "PU 92A" (stiffer), or an O-ring rubber: ${Object.values(RUBBERS).map((r) => `"${r.name}"`).join(", ")}`, argSpan("rubber"));
+    const cs = args.positive("cs");
+    if (cs < 1 || cs > 15) throw new EvalError("lib.round_belt: cs: the cord's diameter in mm, 1 to 15", argSpan("cs"));
+    const shore = rubber ? args.num("shore", rubber.shore) : 0;
+    if (rubber && (shore < 30 || shore > 90)) throw new EvalError("lib.round_belt: shore (hardness) should be 30..90 A", argSpan("shore"));
+    const cord = grade ? puCord(grade, cs) : rubberCord(rubber!, shore, cs);
+    const pathV = args.value("path");
+    if (!Array.isArray(pathV)) throw new EvalError("lib.round_belt needs path: the pulleys in the order the belt meets them, like path: [motor_pulley, big_pulley]", argSpan("path"));
+    const given = (["id", "length", "stretch"] as const).filter((k) => args.has(k));
+    if (given.length > 1) throw new EvalError("lib.round_belt: give one of id: (an O-ring's inside diameter), length: (the belt's own length round its middle) or stretch: (percent, and Kerf gives the length to make it)", argSpan(given[1]));
+    const idV = args.has("id") ? args.positive("id") : undefined;
+    const lenV = args.has("length") ? args.positive("length") : undefined;
+    const stV = args.has("stretch") ? args.num("stretch", 0) : undefined;
+    if (stV !== undefined && !(stV >= 0 && stV <= 50)) throw new EvalError("lib.round_belt: stretch: how far the belt is stretched when fitted, in percent, like stretch: 6", argSpan("stretch"));
+    if (idV !== undefined && grade) throw new EvalError('lib.round_belt: id: is an O-ring\'s inside diameter, so it goes with an O-ring rubber such as rubber: "EPDM". Polyurethane belting is welded to length: give stretch: or length:', argSpan("id"));
+    const torqueV = args.value("torque");
+    if (torqueV !== undefined && !(typeof torqueV === "number" && torqueV >= 0 && Number.isFinite(torqueV))) throw new EvalError("torque: the torque the belt passes at its driving pulley, like torque: 0.2Nm", argSpan("torque"));
+    const r1 = (x: number) => Math.round(x * 10) / 10;
+    const label = cord.kind === "pu" ? `Round belt, ${fmtNum(cs)} mm ${cord.label}` : idV !== undefined ? `O-ring ${fmtNum(idV)} × ${fmtNum(cs)} mm ${cord.label}, as a belt` : `Round belt, ${fmtNum(cs)} mm ${cord.label} cord`;
+    if (this.opts.skipGeometry) return { def: { kind: "round_belt", label, placement: "free", solids: [], fields: { scalars: { cs, length: 0, made: 0, stretch: 0, tension: 0 } }, bom: { description: label } } };
+
+    const nameOf = (v: Obj) => String(v.fields.name) + (typeof v.fields.index === "number" ? `[${v.fields.index}]` : "");
+    const partName = (v: Value): string | undefined => (v instanceof Ref && v.what === "part" ? v.name : v instanceof Obj && v.kind === "part" ? String(v.fields.name) : undefined);
+    const num = (v: Value | undefined) => (typeof v === "number" ? v : undefined);
+    const wheels: WheelIn[] = pathV.map((v, i): WheelIn => {
+      if (v instanceof Obj && v.kind === "component") {
+        const name = nameOf(v);
+        if (typeof v.fields.count === "number") throw new EvalError(`path: "${name}" is a pattern of ${v.fields.count}: pick one, like ${name}.all[0]`, argSpan("path"));
+        this.current?.add(String(v.fields.name));
+        const f = v.fields;
+        const vec = (k: string) => (f[k] instanceof Vec ? toV3(f[k], ctx, k) : undefined);
+        const axis = vec("axis");
+        const cp = typeof f.catalog_id === "string" ? catalogPart(f.catalog_id) : undefined;
+        let c: V3 | undefined;
+        let rootD: number | undefined;
+        let width: number | undefined;
+        let flange: number | undefined;
+        let what = "";
+        if (f.kind === "bearing") {
+          c = vec("center");
+          rootD = num(f.od);
+          width = num(f.width);
+          flange = 0;
+          what = `${String(f.code)} bearing`;
+        } else if (f.kind === "sheave" || f.kind === "drum") {
+          c = vec("center");
+          rootD = num(f.root_d);
+          width = num(f.kind === "drum" ? f.width : f.groove_w);
+          flange = num(f.flange);
+          what = `${fmtNum(rootD ?? 0, 0)} mm pulley`;
+        } else if (cp?.kind === "pulley") {
+          c = vec("belt_center");
+          rootD = num(f.contact_d) ?? num(f.pd);
+          width = num(f.groove_w);
+          flange = rootD !== undefined && num(f.od) !== undefined ? Math.max(0, (num(f.od)! - rootD) / 2) : undefined;
+          what = cp.specs.smooth === true ? "smooth idler" : "toothed pulley";
+        } else throw new EvalError(`path: "${name}" is not something a belt runs on. Use a lib.sheave (a grooved pulley), a lib.bearing as an idler, or a round part of your own with a groove`, argSpan("path"));
+        if (!c || !axis || !(rootD !== undefined && rootD > 0)) throw new EvalError(`path: "${name}" has no position or size the belt can use`, argSpan("path"));
+        return { k: "wheel", name, label: what, c, axis, rootD, width, flange };
+      }
+      const pn = partName(v);
+      if (pn !== undefined) {
+        this.current?.add(pn);
+        const p = this.parts.find((q) => q.name === pn && q.kind === "part") ?? this.parts.find((q) => q.name === pn);
+        if (!p) throw new EvalError(`path: "${pn}" must be defined above the belt`, argSpan("path"));
+        const w = wheelOf(p.recipe, p.xf, cs);
+        if (!w) throw new EvalError(`path: ${pn} has no round shape for the belt to run on. Build its groove with cylinder(), tube() or revolve() first in the part, or use lib.sheave`, argSpan("path"));
+        return { k: "wheel", name: pn, label: "pulley", c: w.c, axis: w.axis, rootD: w.rootD, width: w.width, flange: w.flange };
+      }
+      throw new EvalError(`path: item ${i + 1} should be a pulley (a component or a round part), got ${typeName(v)}`, argSpan("path"));
+    });
+    const named = (arg: string, what: string): string[] => {
+      const v = args.value(arg);
+      if (v === undefined) return [];
+      return (Array.isArray(v) ? v : [v]).map((x) => {
+        const n = x instanceof Obj && x.kind === "component" ? nameOf(x) : partName(x);
+        if (n === undefined || !wheels.some((w) => w.name === n)) throw new EvalError(`${arg}: ${what}`, argSpan(arg));
+        return n;
+      });
+    };
+    const flip = new Set(named("flip", "the pulleys the belt runs its back on, from path:, like flip: [idler]"));
+    const drive = named("drive", "the pulley in path: that drives the belt, like drive: motor_pulley")[0];
+
+    const lay = (stretch: number) => {
+      try {
+        return layoutRoundBelt(wheels, stretchedD(cs, stretch), flip);
+      } catch (e) {
+        if (e instanceof RoundBeltError) throw new EvalError(e.message, argSpan("path"));
+        throw e;
+      }
+    };
+    // the stretch: as given, or from the belt's own length, or the middle of what its makers work to
+    const own = idV !== undefined ? Math.PI * (idV + cs) : lenV;
+    let stretch = stV !== undefined ? stV / 100 : own === undefined ? (cord.kind === "pu" ? 0.05 : 0.1) : 0;
+    let layout = lay(stretch);
+    if (own !== undefined)
+      for (let k = 0; k < 2; k++) {
+        stretch = layout.length / own - 1;
+        layout = lay(stretch);
+      }
+    const made = own ?? layout.length / (1 + stretch);
+    const bd: RoundBeltDef = {
+      name: s.name,
+      label,
+      cord,
+      nodes: layout.nodes,
+      spans: layout.spans,
+      length: Math.round(layout.length * 100) / 100,
+      made: Math.round(made * 10) / 10,
+      ...(idV !== undefined ? { ringId: idV } : {}),
+      stretch: Math.round(stretch * 1e5) / 1e5,
+      stretchFrom: stV !== undefined ? "stretch" : idV !== undefined ? "id" : lenV !== undefined ? "length" : "default",
+      tension: Math.round(cordTension(cord, stretch) * 100) / 100,
+      ...(drive ? { drive } : {}),
+      ...(typeof torqueV === "number" ? { torque: torqueV } : {}),
+      span: s.span,
+    };
+    let recipe;
+    try {
+      recipe = roundBeltRecipe(layout, stretchedD(cs, stretch));
+    } catch (e) {
+      if (e instanceof RoundBeltError) throw new EvalError(e.message, argSpan("path"));
+      throw e;
+    }
+    // what to buy or make: an O-ring by its size, belting by the length to weld it to
+    const ringFor = Math.round((made / Math.PI - cs) * 10) / 10;
+    const desc = cord.kind === "pu" ? `Polyurethane round belt ${fmtNum(cs)} mm (${cord.shore}A), welded to ${fmtNum(r1(made))} mm` : idV !== undefined ? `O-ring ${fmtNum(idV)} × ${fmtNum(cs)} mm, ${cord.label}` : `O-ring ${fmtNum(ringFor)} × ${fmtNum(cs)} mm, ${cord.label} (or cord joined to ${fmtNum(r1(made))} mm)`;
+    const def: CompDef = {
+      kind: "round_belt",
+      label,
+      placement: "free",
+      solids: [{ suffix: "", label: `${s.name} (${fmtNum(r1(made))} mm)`, recipe, color: cord.color, material: cord.material, finish: "matte" }],
+      fields: { scalars: { cs, length: r1(layout.length), made: r1(made), ring_id: idV ?? ringFor, stretch: Math.round(stretch * 1000) / 10, tension: bd.tension } },
+      bom: { description: desc },
+    };
+    return { def, belt: bd };
   }
 
   /** lib.band: lay an O-ring round the parts it wraps and onto its hooks, and work out how it pulls. */
@@ -4763,7 +4919,7 @@ class Evaluator {
 // ---------------- helpers ----------------
 
 function hasMachine(m: MachineData): boolean {
-  return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length + m.boards.length > 0;
+  return m.components.length + m.wires.length + m.nets.length + m.calcs.length + m.firmware.length + m.tests.length + m.items.length + m.boards.length + m.roundBelts.length > 0;
 }
 
 const spinLike = (props: Record<string, Value>) => ["spin", "mesh", "turns_with", "rides", "slides", "swings", "links"].some((k) => props[k] !== undefined);

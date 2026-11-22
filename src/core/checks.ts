@@ -21,7 +21,8 @@ import { holdChecks } from "./holdChecks";
 import { linkChecks } from "./linkChecks";
 import { stashSweep, sweepChecks } from "./sweepChecks";
 import { stabilityChecks } from "./stability";
-import { gravityChecks, gravityLoads } from "./gravityChecks";
+import { gravityChecks, gravityHolds, gravityLoads } from "./gravityChecks";
+import { roundBeltChecks } from "./roundBeltChecks";
 import { ropeChecks, ropeTie } from "./ropeChecks";
 import { sheetChecks } from "./sheetChecks";
 import { chainChecks } from "./chainChecks";
@@ -445,6 +446,7 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
     items.push(...gravityChecks(model, holds, kernel, inputs.mesh, volumeOf));
     items.push(...ropeChecks(model, holds, kernel, inputs.mesh, volumeOf, gravityLoads(model, holds, kernel, inputs.mesh, volumeOf)));
   }
+  if (model.machine?.roundBelts?.length) items.push(...roundBeltChecks(model, holds, kernel && inputs.mesh ? gravityHolds(model, holds, kernel, inputs.mesh, volumeOf).pulls : []));
   items.push(...sheetChecks(model));
   items.push(...chainChecks(model));
   items.push(...uciChecks(model, inputs.mesh, (p) => partMass(p, geom(p.hash)?.volume, materialDensity(p.material))));

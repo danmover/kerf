@@ -161,9 +161,13 @@ export class RatioLink implements Constraint {
     public efficiency: number,
     /** stretch in the link (a belt), N·m/rad or N/m at b; rigid when left out */
     public stiffness = 0,
+    /** a friction belt: the most it carries at b before it slips, N·m or N (none: it never slips) */
+    public grip = 0,
   ) {
     this.play = new Play(slack);
   }
+  /** how far b has slipped against a, in b's units, since the start */
+  slip = 0;
   build(s: Solver, dt: number, emit: (r: Row) => void) {
     const r = this.b.axisTerms(this.row.reset(), 1);
     this.a.axisTerms(r, -this.ratio);
@@ -178,6 +182,14 @@ export class RatioLink implements Constraint {
   }
   after(_s: Solver, dt: number) {
     this.play.advance(this.row, dt);
+    // a friction belt stretches only as far as its grip can hold it: past that the pulley turns inside the belt
+    if (this.grip > 0 && this.stiffness > 0) {
+      const most = this.grip / this.stiffness;
+      if (Math.abs(this.play.s) > most) {
+        this.slip += Math.abs(this.play.s) - most;
+        this.play.s = Math.sign(this.play.s) * most;
+      }
+    }
     this.load = this.play.impulse(this.row) / dt;
     if (Math.abs(this.load) > this.peak) this.peak = Math.abs(this.load);
     if (this.loss.wasActive) this.b.axisImpulse += this.loss.acc;

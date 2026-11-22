@@ -8,7 +8,7 @@ import type { BandInfo, EvalPart, FrameInfo, Model, Motion, SplitRecord } from "
 import { moveDir, movePoint, moveXforms, type BodyMove } from "../core/mates";
 import { applyXformsToDir, type V3, type Xform } from "../kernel/recipe";
 import type { ChainInfo } from "../machine/chains";
-import type { BeltDef, RopeDef, BoardDef, BuyItem, CalcTrace, MachineComponent, NetDef, PinRef, WireDef } from "../machine/types";
+import type { BeltDef, RopeDef, RoundBeltDef, BoardDef, BuyItem, CalcTrace, MachineComponent, NetDef, PinRef, WireDef } from "../machine/types";
 import type { Span } from "./ast";
 import { Fn } from "./values";
 
@@ -140,6 +140,7 @@ export interface PlacedDesign {
   boards: BoardDef[];
   belts: BeltDef[];
   ropes: RopeDef[];
+  roundBelts: RoundBeltDef[];
   frames: FrameInfo[];
   splits: SplitRecord[];
   /** what stays behind in the design itself */
@@ -279,6 +280,16 @@ export function placeDesign(inner: Model, o: PlaceOptions): PlacedDesign {
       span,
     }),
   );
+  const roundBelts = (m?.roundBelts ?? []).map(
+    (r): RoundBeltDef => ({
+      ...r,
+      name: ren(r.name),
+      nodes: r.nodes.map((n) => ({ ...n, name: ren(n.name), c: pt(n.c), axis: dir(n.axis) })),
+      spans: r.spans.map((x) => ({ ...x, from: ren(x.from), to: ren(x.to), a3: pt(x.a3), b3: pt(x.b3) })),
+      ...(r.drive ? { drive: ren(r.drive) } : {}),
+      span,
+    }),
+  );
   const frames = (inner.frames ?? []).map(
     (f): FrameInfo => ({
       ...f,
@@ -305,6 +316,7 @@ export function placeDesign(inner: Model, o: PlaceOptions): PlacedDesign {
     boards: (m?.boards ?? []).map((b) => ({ ...b, name: ren(b.name), span })),
     belts,
     ropes,
+    roundBelts,
     frames,
     splits,
     left,

@@ -12,7 +12,9 @@ import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
 import { cylMid, lineDistance, partCylinders } from "../../analysis/fits/geometry";
 import { catalogPart } from "../../machine/catalog";
-import type { BeltDef, BeltNode, RopeDef } from "../../machine/types";
+import type { BeltDef, BeltNode, RopeDef, RoundBeltDef } from "../../machine/types";
+import { cordTension } from "../../machine/roundBelts";
+import { beltGrip } from "../../core/roundBeltChecks";
 import { MATERIALS, materialDensity } from "../../library/standards";
 import type { ScenarioSpec } from "../scenario";
 import type { MechItem, MechJointItem, MechSpec } from "./lang";
@@ -745,6 +747,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
     }
   if (spec.auto) for (const b of model.machine?.belts ?? []) beltLinks(b, joints, bodyOf, bodyById, links, notes);
   if (spec.auto) for (const r of model.machine?.ropes ?? []) ropeLinks(r, joints, bodyOf, links, notes);
+  if (spec.auto) for (const b of model.machine?.roundBelts ?? []) roundBeltLinks(b, model, joints, bodyOf, links, notes);
 
   for (const it of spec.items) {
     switch (it.k) {
@@ -1277,6 +1280,38 @@ function beltLinks(b: BeltDef, joints: MechJoint[], bodyOf: Map<string, string>,
  * of what it lifts, by the travel a turn of the drum winds, and as stiff as the rope between them. The tie holds
  * both ways, which a rope does only while something keeps it taut: the weight on a hoist does.
  */
+/**
+ * A round belt ties the pulleys it runs round by the diameters the middle of its cord runs on, as stiff as the cord
+ * is at the stretch it is fitted at, and no further than its grip: past that a pulley turns inside the belt.
+ */
+function roundBeltLinks(b: RoundBeltDef, model: Model, joints: MechJoint[], bodyOf: Map<string, string>, links: MechLink[], notes: string[]) {
+  const on = b.nodes.map((nd) => {
+    if (!bodyOf.has(nd.name)) return undefined;
+    const j = joints.find((x) => x.body === bodyOf.get(nd.name) && x.kind === "pivot" && Math.abs(dot(unit(nd.axis), x.axis)) > 0.99);
+    return j ? { nd, j, perM: (nd.dir * Math.sign(dot(nd.axis, j.axis))) / (nd.r / 1000) } : undefined;
+  });
+  const turning = on.filter((x): x is NonNullable<typeof x> => !!x);
+  const a = turning.find((x) => x.nd.name === b.drive) ?? turning[0];
+  if (!a) return;
+  const g = beltGrip(b, model);
+  if (!g) {
+    notes.push(`${b.name}: slack, so it passes nothing between its pulleys`);
+    return;
+  }
+  // the cord's stiffness where it is working: the pull one more per cent of stretch adds, both strands sharing the belt's length
+  const ea = (cordTension(b.cord, b.stretch + 0.01) - cordTension(b.cord, b.stretch)) / 0.01;
+  const kLin = (4 * ea) / (b.length / 1000);
+  const added: string[] = [];
+  for (const x of turning) {
+    if (x === a || x.j === a.j || links.some((l) => l.kind === "ratio" && ((l.a === a.j.name && l.b === x.j.name) || (l.a === x.j.name && l.b === a.j.name)))) continue;
+    const name = turning.length > 2 ? `${b.name}_${x.nd.name}` : b.name;
+    const r = x.nd.r / 1000;
+    links.push({ kind: "ratio", name, a: a.j.name, b: x.j.name, ratio: x.perM / a.perM, slack: 0, efficiency: 0.97, stiffness: Math.max(1e-6, kLin * r * r), grip: g.force * r });
+    added.push(`${x.nd.name} at ${Math.abs(a.perM / x.perM).toFixed(2)}:1`);
+  }
+  if (added.length) notes.push(`${b.name}: ${a.nd.name} drives ${added.join(", ")} by friction (slips past ${(g.force * (a.nd.r / 1000)).toFixed(2)} N·m at ${a.nd.name})`);
+}
+
 function ropeLinks(r: RopeDef, joints: MechJoint[], bodyOf: Map<string, string>, links: MechLink[], notes: string[]) {
   for (const dv of r.drives) {
     const nd = r.nodes.find((n) => n.kind === "drum" && n.name === dv.drum);

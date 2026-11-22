@@ -785,6 +785,17 @@ export const LIBRARY: Record<string, LibEntry> = {
     },
   },
 
+  round_belt: {
+    signature: "lib.round_belt(cs: 3, path: [motor_pulley, big_pulley], stretch: 6, torque: 0.2Nm)",
+    doc: 'A round belt driven by friction in grooved pulleys: polyurethane round belting welded to length (the default, rubber: "PU"; "PU 92A" is stiffer), or an O-ring used as a belt (rubber: "EPDM", "NBR" or "silicone", with id: its inside diameter). See Round belts below. cs: the cord\'s diameter. path: the pulleys in the order the belt meets them: lib.sheave (give it rope: the cord\'s diameter), a lib.bearing as an idler, or a round part of your own with a groove. flip: [idler]: pulleys the belt runs its back on. Give one of stretch: (percent as fitted; Kerf gives the length to weld it to), length: (the belt\'s own length round its middle) or id: (an O-ring\'s size); with none it is fitted at 5 % (polyurethane) or 10 % (an O-ring). drive: the pulley that drives it and torque: what it must pass there, which is checked against the grip the stretch gives. Fields: cs, length (round the path), made (the belt\'s own length), ring_id (the O-ring size that fits), stretch (percent), tension (N in each strand).',
+    positional: [],
+    params: ["cs", "path", "rubber", "shore", "id", "length", "stretch", "flip", "drive", "torque"],
+    group: "Motion",
+    make() {
+      throw new Error("lib.round_belt is laid out from its path");
+    },
+  },
+
   dowel: {
     signature: "lib.dowel(d: 3, length: 12) { at: (x, y, z), axis: Z }",
     doc: "Hardened steel dowel pin (ISO 8734). Fields: at, tip, axis.",
