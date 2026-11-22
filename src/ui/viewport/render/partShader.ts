@@ -1,9 +1,11 @@
 // Shader additions for part materials, patched into three's physical
 // material: procedural surface detail in part coordinates (bump, roughness
 // and colour variation), the dissolve used when a part is rebuilt, the scan
-// glow of the build-in reveal, a flash for parts that just changed (on the
-// surfaces that changed, when the view can tell them apart), and the ripple
-// that runs out from a click.
+// glow of the build-in reveal (along the way the part is printed or cut),
+// a flash for parts that just changed (on the surfaces that changed, when the
+// view can tell them apart) and the front that sweeps the change through the
+// part, the ripple that runs out from a click, and the pulse of a check that
+// just failed. The part's edges get the outline that traces itself in.
 
 import * as THREE from "three";
 import { Detail, Make, type Appearance } from "./appearance";
@@ -19,8 +21,10 @@ export interface PartUniforms {
   uNoiseScale: { value: number };
   /** HDR colour of glows (dissolve edge, scan line, flash) */
   uGlow: { value: THREE.Color };
-  /** scan reveal: on (0/1), world z of the cut, band height */
+  /** scan reveal: on (0/1), where the fill has reached along uScanDir (world), band height */
   uScan: { value: THREE.Vector3 };
+  /** the way the reveal fills (world, unit), and the pitch of the layer lines in its band (0: none), mm */
+  uScanDir: { value: THREE.Vector4 };
   uFlash: { value: number };
   /** extra strength for environment reflections (metals read brighter) */
   uEnvBoost: { value: number };
@@ -42,6 +46,16 @@ export interface PartUniforms {
   uRipple: { value: THREE.Vector4 };
   /** its strength (0: none) and the ring's width, mm */
   uRippleAmt: { value: THREE.Vector2 };
+  /** the front a change sweeps through the part with (see editSweep.ts): where it starts (world) and 0 off, 1 across, 2 out from there */
+  uSweep: { value: THREE.Vector4 };
+  /** the way it runs (world, unit) and how far, mm */
+  uSweepDir: { value: THREE.Vector4 };
+  /** how far it has run (0 to 1) and the width of its glowing band, as a part of the run */
+  uSweepFront: { value: THREE.Vector2 };
+  /** the outline drawing itself in (edges only): how far (0 to 1), on (0/1), and where the fill starts and how far it runs along uScanDir */
+  uTrace: { value: THREE.Vector4 };
+  /** a check's result landing on the part: its colour (HDR) and strength */
+  uPulse: { value: THREE.Vector4 };
   /** how round the part's edges are, mm (its rounded-edge bands, see bevel.ts; 0: sharp) */
   uBevelR: { value: number };
   /** shared by every part: the size of a pixel per mm of distance from the camera, and the fewest pixels a round is drawn across */
@@ -80,6 +94,7 @@ export function partUniforms(): PartUniforms {
     uNoiseScale: { value: 0.1 },
     uGlow: { value: new THREE.Color(0x6d8bff).multiplyScalar(2.2) },
     uScan: { value: new THREE.Vector3() },
+    uScanDir: { value: new THREE.Vector4(0, 0, 1, 0) },
     uFlash: { value: 0 },
     uEnvBoost: { value: 1 },
     uPly: { value: new THREE.Vector4(2, 0, 0, 0) },
@@ -89,6 +104,11 @@ export function partUniforms(): PartUniforms {
     uChangeView: { value: new THREE.Vector4(1, 1, 1, 1000) },
     uRipple: { value: new THREE.Vector4() },
     uRippleAmt: { value: new THREE.Vector2(0, 1) },
+    uSweep: { value: new THREE.Vector4() },
+    uSweepDir: { value: new THREE.Vector4(0, 0, 1, 1) },
+    uSweepFront: { value: new THREE.Vector2(0, 0.12) },
+    uTrace: { value: new THREE.Vector4() },
+    uPulse: { value: new THREE.Vector4() },
     uBevelR: { value: 0 },
     uBevelPx: BEVEL_PX,
     uMake: { value: new THREE.Vector2() },
@@ -172,6 +192,7 @@ uniform float uDissolve;
 uniform float uNoiseScale;
 uniform vec3 uGlow;
 uniform vec3 uScan;
+uniform vec4 uScanDir;
 uniform float uFlash;
 uniform float uEnvBoost;
 uniform vec4 uPly;
@@ -181,6 +202,10 @@ uniform sampler2D tChange;
 uniform vec4 uChangeView;
 uniform vec4 uRipple;
 uniform vec2 uRippleAmt;
+uniform vec4 uSweep;
+uniform vec4 uSweepDir;
+uniform vec2 uSweepFront;
+uniform vec4 uPulse;
 uniform vec2 uMake;
 uniform vec3 uKBox0;
 uniform vec3 uKBox1;
@@ -222,6 +247,12 @@ float kChangedHere(vec3 viewPos) {
   float facing = max(0.15, abs(dot(fn, normalize(viewPos))));
   float tol = uChange.y / facing + z * z / (uChangeView.z * 16777216.0) * 4.0;
   return smoothstep(tol, tol * 2.0, g);
+}
+
+// how far along the sweep a point is, 0 to 1
+float kSweepAt(vec3 p) {
+  vec3 d = p - uSweep.xyz;
+  return clamp((uSweep.w > 1.5 ? length(d) : dot(d, uSweepDir.xyz)) / max(uSweepDir.w, 1e-3), 0.0, 1.0);
 }
 
 // x: height (mm), y: pull toward the second tint, z: roughness change
@@ -529,10 +560,26 @@ vThread = aThread.yzw;`,
         "#include <clipping_planes_fragment>",
         `#include <clipping_planes_fragment>
   float kChanged = 1.0;
+  float kFront = 0.0;
   if (uChange.x > 0.5) {
     kChanged = kChangedHere(-vViewPosition);
     // the old shape where the new one matches it: the new one is drawn there
     if (uChange.x > 1.5 && kChanged < 0.5) discard;
+    // a sweeping change: the new surfaces arrive behind the front, and the old ones go where the new surface seen
+    // through the same pixel arrives, so the two swap over at once
+    if (uSweep.w > 0.5 && kChanged > 0.5) {
+      if (uChange.x > 1.5) {
+        float kdn = texture2D(tChange, gl_FragCoord.xy * uChangeView.xy).x;
+        vec3 kp = kdn < 0.99999 ? cameraPosition + (vKWorld - cameraPosition) * (kViewZ(kdn) / -vViewPosition.z) : vKWorld;
+        float kAhead = kSweepAt(kp) - uSweepFront.x;
+        if (kAhead < 0.0) discard;
+        kFront = 1.0 - smoothstep(0.0, uSweepFront.y, kAhead);
+      } else {
+        float kBehind = uSweepFront.x - kSweepAt(vKWorld);
+        if (kBehind < 0.0) discard;
+        kFront = 1.0 - smoothstep(0.0, uSweepFront.y, kBehind);
+      }
+    }
   }
   float kEdge = 0.0;
   if (uDissolve > 0.0) {
@@ -567,15 +614,60 @@ vThread = aThread.yzw;`,
     float kr = (distance(vKWorld, uRipple.xyz) - uRipple.w) / uRippleAmt.y;
     totalEmissiveRadiance += uGlow * uRippleAmt.x * exp(-kr * kr);
   }
+  totalEmissiveRadiance += uGlow * 2.6 * kFront;
   if (uScan.x > 0.5) {
-    float kz = uScan.y - vKWorld.z;
-    totalEmissiveRadiance += uGlow * 2.5 * step(0.0, kz) * (1.0 - smoothstep(0.0, uScan.z, kz));
-  }`,
+    float kAlong = dot(vKWorld, uScanDir.xyz);
+    float kz = uScan.y - kAlong;
+    float kBand = step(0.0, kz) * (1.0 - smoothstep(0.0, uScan.z, kz));
+    // a printed part's band shows its layers going down, fading out where they get too fine to see
+    if (uScanDir.w > 0.0) {
+      float kq = kAlong / uScanDir.w;
+      float kLine = smoothstep(0.55, 0.95, abs(fract(kq) - 0.5) * 2.0);
+      kBand *= mix(0.35 + 1.3 * kLine, 1.0, smoothstep(0.25, 0.6, fwidth(kq)));
+    }
+    totalEmissiveRadiance += uGlow * 2.5 * kBand;
+  }
+  totalEmissiveRadiance += uPulse.rgb * uPulse.w * (0.35 + 1.4 * kFres * kFres);`,
       );
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
   (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0], aBevel: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-10";
+  mat.customProgramCacheKey = () => "kerf-part-11";
+}
+
+/**
+ * Patch a part's edge material: while a new part arrives (uTrace on), each edge draws itself in from one end (aOrder,
+ * see traceOrder in arrival.ts), the ones low along the fill a little sooner, and the outline glows ahead of the fill.
+ */
+export function patchEdgeMaterial(mat: THREE.LineBasicMaterial, u: PartUniforms) {
+  mat.onBeforeCompile = (shader) => {
+    shader.uniforms.uTrace = u.uTrace;
+    shader.uniforms.uScan = u.uScan;
+    shader.uniforms.uScanDir = u.uScanDir;
+    shader.uniforms.uGlow = u.uGlow;
+    shader.vertexShader = shader.vertexShader
+      .replace("#include <common>", "#include <common>\nattribute float aOrder;\nvarying float vKOrder;\nvarying vec3 vKWorldE;")
+      .replace("#include <begin_vertex>", "#include <begin_vertex>\nvKOrder = aOrder;")
+      .replace("#include <project_vertex>", "#include <project_vertex>\nvKWorldE = (modelMatrix * vec4(transformed, 1.0)).xyz;");
+    shader.fragmentShader = shader.fragmentShader
+      .replace("#include <common>", "#include <common>\nuniform vec4 uTrace;\nuniform vec3 uScan;\nuniform vec4 uScanDir;\nuniform vec3 uGlow;\nvarying float vKOrder;\nvarying vec3 vKWorldE;")
+      .replace(
+        "#include <color_fragment>",
+        `#include <color_fragment>
+  if (uTrace.y > 0.5) {
+    float kAlong = dot(vKWorldE, uScanDir.xyz);
+    float kHead = uTrace.x - (vKOrder * 0.6 + clamp((kAlong - uTrace.z) / max(uTrace.w, 1e-3), 0.0, 1.0) * 0.4);
+    if (kHead < 0.0) discard;
+    float kTip = 1.0 - smoothstep(0.0, 0.06, kHead);
+    float kAbove = uScan.x > 0.5 ? step(uScan.y, kAlong) : 0.0;
+    float kLit = max(kAbove, kTip);
+    diffuseColor = vec4(mix(diffuseColor.rgb, uGlow * (0.45 + 2.4 * kTip), kLit), mix(diffuseColor.a, 1.0, kLit));
+  }`,
+      );
+  };
+  // edges drawn before their order is worked out (and the old ones of a rebuilt part) draw whole
+  (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aOrder: [0] };
+  mat.customProgramCacheKey = () => "kerf-edge-1";
 }
 
 /** Copy an appearance into a material and its uniforms. */

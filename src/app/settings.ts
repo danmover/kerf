@@ -101,6 +101,10 @@ export interface Settings {
   advanced: boolean;
   /** the wiring view keeps every part solid and shows the cables behind them faintly through (false: covers fade instead) */
   wiringSolid: boolean;
+  /** how the wiring view shows the design around the cables: ghosted back, solid, or covers see-through (missing: ghosted) */
+  wiringLook?: "ghost" | "solid" | "see";
+  /** the cables are drawn in the normal 3D view too, where any can be clicked for its details */
+  cablesInModel: boolean;
   /** minutes to keep the prompt cache warm after Claude's last request while you look (0 = off) */
   keepWarm: number;
   /** prompt tokens at which a long chat's older turns are summarised (see ai/compact) */
@@ -183,6 +187,7 @@ const DEFAULTS: Settings = {
   fastChanges: true,
   advanced: false,
   wiringSolid: true,
+  cablesInModel: true,
   keepWarm: 30,
   compactAt: 500_000,
   showCost: true,
