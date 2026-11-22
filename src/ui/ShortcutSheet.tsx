@@ -19,7 +19,7 @@ const FIXED: Row[] = [
   [[mod, "Z"], "Undo"],
   [[mod, "⇧", "Z"], "Redo"],
   [[mod, "S"], "Save now (Kerf also saves automatically)"],
-  [["Esc"], "Clear selection, close dialogs"],
+  [["Esc"], "Clear selection, close dialogs, skip what the 3D view is playing"],
 ];
 
 const MOUSE_COMMON: Row[] = [
