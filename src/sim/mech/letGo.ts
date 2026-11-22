@@ -172,6 +172,8 @@ export function planLetGo(model: Model, geom: (hash: string) => MeshEntry | unde
   for (const d of drives) {
     const root = jointOn(d.load.root);
     if (d.by === "carried" || d.by === "stated") {
+      // a rope to a winch the solver has tied in passes the weight on to the winch's motor, which holds it or does not
+      if (root && d.rope && mech.links.some((l) => l.kind === "ratio" && l.name === d.rope && l.b === root.name)) continue;
       if (root) hold(root, d.by === "stated" ? "as the design says it is held" : "by what carries it", RIGID);
       continue;
     }
@@ -196,7 +198,9 @@ export function planLetGo(model: Model, geom: (hash: string) => MeshEntry | unde
   // a lift nothing holds, drawn at the bottom of its travel, is let go from the top of it
   const raised: string[] = [];
   const tied = new Set<string>();
-  for (const l of mech.links) for (const k of ["a", "b", "pinion", "rack", "screw", "follower", "cam"] as const) if (k in l) tied.add((l as unknown as Record<string, string>)[k]);
+  // (a rope from a winch does not stop a lift being raised: it follows, and its drum is turned by the fall)
+  const ropes = new Set((model.machine?.ropes ?? []).map((r) => r.name));
+  for (const l of mech.links) if (!(l.kind === "ratio" && ropes.has(l.name))) for (const k of ["a", "b", "pinion", "rack", "screw", "follower", "cam"] as const) if (k in l) tied.add((l as unknown as Record<string, string>)[k]);
   for (const d of drives) {
     if (d.by !== "nothing" || d.load.kind !== "lift") continue;
     const j = jointOn(d.load.root);
@@ -213,7 +217,14 @@ export function planLetGo(model: Model, geom: (hash: string) => MeshEntry | unde
     raised.push(j.body);
   }
   for (const h of held) mech.drives.push({ kind: "turn", name: `hold ${h.joint}`, joint: h.joint, speed: [[0, 0]], limit: h.limit });
-  for (const j of mech.joints) if ((j.kind === "pivot" || j.kind === "slider") && !held.some((h) => h.joint === j.name) && !free.includes(j.body)) free.push(j.body);
+  // what a rope ties to a held winch is held through the rope
+  const roped = new Set<string>();
+  for (const l of mech.links) {
+    if (l.kind !== "ratio" || !ropes.has(l.name)) continue;
+    if (held.some((h) => h.joint === l.a)) roped.add(l.b);
+    if (held.some((h) => h.joint === l.b)) roped.add(l.a);
+  }
+  for (const j of mech.joints) if ((j.kind === "pivot" || j.kind === "slider") && !held.some((h) => h.joint === j.name) && !roped.has(j.name) && !free.includes(j.body)) free.push(j.body);
 
   // swings die away: each free pivot damped by a share of critical for what hangs on it
   const zeta = opts.damping ?? SETTLE_DAMPING;
@@ -360,7 +371,7 @@ export function letGoLine(run: LetGoRun): string {
   const raised = new Set(run.plan.raised.map((id) => run.plan.names.get(id)));
   const say = (m: LetGoMove) => {
     const n = (x: number) => (x >= 10 ? Math.round(x).toString() : (Math.round(x * 10) / 10).toString());
-    if (m.how === "swung") return `${m.name} swung ${n(m.amount)}°`;
+    if (m.how === "swung") return m.amount >= 360 ? `${m.name} turned ${n(m.amount / 360)} times` : `${m.name} swung ${n(m.amount)}°`;
     if (m.how === "slid") return `${m.name}${raised.has(m.name) ? ", raised to the top of its travel and let go," : ""} ${m.drop > 0.5 ? "dropped" : "slid"} ${n(m.amount)} mm`;
     return `${m.name} fell ${n(m.amount)} mm`;
   };

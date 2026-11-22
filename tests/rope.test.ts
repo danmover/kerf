@@ -6,6 +6,10 @@
 import { describe, expect, it } from "vitest";
 import { fullCheck, problems, type FullCheck } from "./helpers/fullcheck";
 import type { CheckItem } from "../src/core/checks";
+import type { MeshEntry } from "../src/core/engine";
+import { massVolume } from "../src/core/model";
+import { materialDensity } from "../src/library/standards";
+import { LetGoRun, letGoLine, planLetGo, type LetGoPlan } from "../src/sim/mech/letGo";
 
 const noErrors = (r: FullCheck) => expect(r.model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
 const find = (items: CheckItem[], id: string) => {
@@ -56,7 +60,43 @@ ${drum}
 component stay = lib.rope("dyneema_2mm", path: [${drum ? "reel" : "(0, 0, 400)"}, (300, 0, 56)])
 `;
 
+// the same hoist from the library's own drum and sheave
+const bought = `
+design "bought"
+part base { body box(300, 400, 10, at: (0, 40, -10))  held: "bolted to the floor"  material: "Steel" }
+part tower { body box(40, 40, 700)  held: "welded to the base"  material: "Steel" }
+part car { body box(160, 160, 20, at: (0, 0, 100))  cut box(40.2, 40.2, 40, at: (0, 0, 90))  slides: Z  travel: 400  material: "Aluminum 6061" }
+component top = lib.sheave(tread: 72, rope: 3) { at: (-4.13, 97.5, 650), axis: X  held: "its axle" }
+component drum = lib.drum(d: 72, width: 30, rope: 3) { at: (-19.32, 97.5, 45), axis: X  spin: 1  held: "its shaft" }
+component hoist = lib.rope("wire_rope_7x19_3mm", path: [drum, top, (0, 60, 120)], lifts: car)
+`;
+
 const SLOW = 60000;
+const G = 9.80665;
+
+/** The design as "Let go" sets it up: what holds each joint, and what it raises first. */
+async function letGo(src: string): Promise<LetGoPlan> {
+  const r = await fullCheck(src);
+  noErrors(r);
+  const mesh = (h: string) => (r.core.get(h) ? r.core.mesh(h, "preview") : undefined);
+  const geom = (h: string): MeshEntry | undefined => {
+    const e = r.core.get(h);
+    return e ? { preview: r.core.mesh(h, "preview"), volume: e.volume, bbox: [[0, 0, 0], [0, 0, 0]], rev: 0 } : undefined;
+  };
+  const p = planLetGo(r.model, geom, r.kernel, mesh, (q) => massVolume(q, r.core.get(q.hash)?.volume, materialDensity(q.material)));
+  if (!p || "error" in p) throw new Error(p ? p.error : "nothing to let go");
+  return p;
+}
+/** Runs it to rest; `down` is when the car reached the bottom of its travel, s. */
+function settle(p: LetGoPlan): { run: LetGoRun; down: number } {
+  const run = new LetGoRun(p);
+  let down = -1;
+  for (let t = 0; t < 20 && !run.settled; t += 0.001) {
+    run.advance(0.001);
+    if (down < 0 && run.sys.joints.get("car")!.coord < 0.001) down = run.t;
+  }
+  return { run, down };
+}
 
 describe("a rope from a winch drum", () => {
   it("works out the lift's travel per turn, stays taut and counts the turns on the drum", async () => {
@@ -255,5 +295,64 @@ describe("a weight hanging on a rope", () => {
     // a rope's end drawn into what it is tied to is not a clash
     expect(find(lean.report.items, "int:beam|line").title).toBe("line is tied to beam");
     expect(problems(lean.report).filter((x) => x.startsWith("int"))).toEqual([]);
+  }, SLOW);
+});
+
+describe("a hoist let go", () => {
+  const fall = Math.sqrt((2 * 0.4) / G);
+
+  it("drops the car and unwinds a drum nothing holds, by the rope's length a turn", async () => {
+    const p = await letGo(hoist());
+    expect(p.mech.links).toMatchObject([{ kind: "ratio", name: "hoist", a: "drum", b: "car" }]);
+    // 37.5 mm of rope a radian: the barrel's radius and half the rope
+    expect(Math.abs((p.mech.links[0] as { ratio: number }).ratio)).toBeCloseTo(0.0375, 4);
+    expect(p.holds).toEqual([]);
+    expect(p.raised).toEqual(["car"]);
+    const { run, down } = settle(p);
+    expect(run.settled).toBe(true);
+    expect(run.sys.joints.get("car")!.coord).toBeCloseTo(0, 3);
+    expect(Math.abs(run.sys.joints.get("drum")!.coord)).toBeCloseTo(0.4 / 0.0375, 2);
+    // a little slower than free fall: the car has the drum to spin up
+    expect(down).toBeGreaterThan(fall);
+    expect(down).toBeLessThan(fall * 1.2);
+    expect(letGoLine(run)).toBe("car, raised to the top of its travel and let go, dropped 400 mm; drum turned 1.7 times.");
+  }, SLOW);
+
+  it("stays where it is when the winch motor can hold the pull", async () => {
+    const p = await letGo(hoist({ more: motor("pololu_37d_70") }));
+    expect(p.holds).toMatchObject([{ joint: "drum", by: "by m1" }]);
+    expect(p.holds[0].limit).toBeCloseTo(2.648, 2);
+    expect(p.raised).toEqual([]);
+    expect(p.free).toEqual([]);
+    const { run } = settle(p);
+    expect(run.settled).toBe(true);
+    expect(run.moves()).toEqual([]);
+    expect(letGoLine(run)).toBe("Nothing moved: everything is held.");
+  }, SLOW);
+
+  it("drags a motor too weak for the load round, slower than it would fall", async () => {
+    const free = settle(await letGo(hoist({ material: "Steel" })));
+    const p = await letGo(hoist({ material: "Steel", more: motor("pololu_37d_19") }));
+    expect(p.holds).toMatchObject([{ joint: "drum", by: "by m1" }]);
+    expect(p.holds[0].limit).toBeCloseTo(0.785, 2);
+    expect(p.raised).toEqual(["car"]);
+    const { run, down } = settle(p);
+    expect(run.settled).toBe(true);
+    expect(run.sys.joints.get("car")!.coord).toBeCloseTo(0, 3);
+    expect(Math.abs(run.sys.joints.get("drum")!.coord)).toBeCloseTo(0.4 / 0.0375, 2);
+    expect(down).toBeGreaterThan(free.down * 1.2);
+  }, SLOW);
+});
+
+describe("the library's drum and sheave", () => {
+  it("are read like drawn ones: the rope on the barrel and in the groove, the turns that fit", async () => {
+    const r = await fullCheck(bought);
+    noErrors(r);
+    expect(problems(r.report).filter((x) => x.startsWith("rope"))).toEqual([]);
+    expect(find(r.report.items, "rope:run:hoist").status).toBe("pass");
+    // the barrel's 72 mm and the rope's 3: 75 mm × π a turn
+    expect(r.model.parts.find((p) => p.name === "car")!.motion!.perTurn).toBeCloseTo(2 * Math.PI * 37.5, 1);
+    expect(find(r.report.items, "rope:drum:hoist:drum").detail).toMatch(/10 turns fit side by side/);
+    expect(find(r.report.items, "rope:bend:hoist").status).toBe("pass");
   }, SLOW);
 });

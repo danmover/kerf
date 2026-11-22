@@ -702,6 +702,11 @@ export interface RopeDef {
   lifts: string[];
   /** which side of an end drum the rope leaves by */
   wind: "over" | "under";
+  /**
+   * Lifts its drum winds: mm the lift moves along `axis` (the way it travels) for each radian the drum turns
+   * about its own axis (the mechanism solver ties the two with this).
+   */
+  drives: { lift: string; drum: string; perRad: number; axis: [number, number, number] }[];
   /** the turns on its drums were given (wraps:), not worked out */
   wrapsGiven: boolean;
   /** a pull given outright, N (pull:), for a rope whose load Kerf cannot work out from weights */

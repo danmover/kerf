@@ -516,7 +516,8 @@ export function ropeChecks(model: Model, holds: Holds, kernel: ChecksResult, mes
       const lifts = h.carries.filter((c) => c.load.kind === "lift");
       let offLine = false;
       if (Math.abs(s) <= tol) {
-        out.push({ ...motion, id: `rope:run:${r.name}`, status: "pass", title: `${t} stays taut through the motion`, detail: `The path takes up ${N0(span)} mm of rope through the motion${drum >= 0 ? `, and the drum winds exactly that` : " and gives it back"}: the rope is never more than ${N0(Math.max(...run.slack.map(Math.abs)), 1)} mm slack or short.` });
+        const off = Math.abs(s);
+        out.push({ ...motion, id: `rope:run:${r.name}`, status: "pass", title: `${t} stays taut through the motion`, detail: `The path takes up ${N0(span)} mm of rope through the motion${drum >= 0 ? `, and the drum winds exactly that` : " and gives it back"}${off >= 0.05 ? `: the rope is never more than ${N0(off, 1)} mm slack or short` : ""}.` });
       } else {
         const at = `with the drive at ${N0(run.angles[worst] % 360)}°`;
         let fix: string;

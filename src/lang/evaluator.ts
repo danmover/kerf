@@ -2609,6 +2609,7 @@ class Evaluator {
     // lifts: how much rope the path takes for each millimetre the lift moves, with the nodes that go with it
     let perTurn: number | undefined;
     let extra = 0;
+    const drives: RopeDef["drives"] = [];
     const fit = () => {
       const drums = layout.nodes.map((nd, i) => ({ nd, i })).filter((x) => x.nd.kind === "drum");
       for (const name of lifts) {
@@ -2665,6 +2666,7 @@ class Evaluator {
           // unless something else already goes by the way it turns.
           if (drumPayout(drum.nd, drum.i === 0) * dm.ratio * taken < 0 && this.freeToReverse(dm)) dm.ratio = -dm.ratio;
           this.ropeTurned.add(dm);
+          drives.push({ lift: name, drum: drum.nd.name, perRad: drumPayout(drum.nd, drum.i === 0) / take, axis: a });
           if (lm.perTurn === undefined) {
             lm.perTurn = (Math.abs(dm.ratio) * 2 * Math.PI * drum.nd.r) / Math.abs(take);
             perTurn = lm.perTurn;
@@ -2687,6 +2689,7 @@ class Evaluator {
       cutLength: cut,
       lifts,
       wind: layout.wind,
+      drives,
       wrapsGiven: typeof wrapsV === "number",
       ...(typeof pullV === "number" ? { pull: pullV } : {}),
       span: s.span,

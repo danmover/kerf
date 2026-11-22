@@ -12,7 +12,7 @@ import type { MeshEntry } from "../../core/engine";
 import { applyXforms, type Xform } from "../../kernel/recipe";
 import { cylMid, lineDistance, partCylinders } from "../../analysis/fits/geometry";
 import { catalogPart } from "../../machine/catalog";
-import type { BeltDef, BeltNode } from "../../machine/types";
+import type { BeltDef, BeltNode, RopeDef } from "../../machine/types";
 import { MATERIALS, materialDensity } from "../../library/standards";
 import type { ScenarioSpec } from "../scenario";
 import type { MechItem, MechJointItem, MechSpec } from "./lang";
@@ -744,6 +744,7 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
       }
     }
   if (spec.auto) for (const b of model.machine?.belts ?? []) beltLinks(b, joints, bodyOf, bodyById, links, notes);
+  if (spec.auto) for (const r of model.machine?.ropes ?? []) ropeLinks(r, joints, bodyOf, links, notes);
 
   for (const it of spec.items) {
     switch (it.k) {
@@ -1269,6 +1270,27 @@ function beltLinks(b: BeltDef, joints: MechJoint[], bodyOf: Map<string, string>,
     added.push(`${js.name} ${(((2 * Math.PI) / Math.abs(perM(na, ja))) * 1000).toFixed(0)} mm a turn, ${fmtK(kLin)}`);
   }
   if (added.length) notes.push(`${b.name}: ${b.open ? "drives" : "turns"} ${added.join("; ")} from ${na.name} (belt stretch from EA ${Math.round(ea)} N; teeth never skip)`);
+}
+
+/**
+ * A rope from a winch drum (lib.rope with lifts:) on the mechanism's joints: the drum's pivot is tied to the slider
+ * of what it lifts, by the travel a turn of the drum winds, and as stiff as the rope between them. The tie holds
+ * both ways, which a rope does only while something keeps it taut: the weight on a hoist does.
+ */
+function ropeLinks(r: RopeDef, joints: MechJoint[], bodyOf: Map<string, string>, links: MechLink[], notes: string[]) {
+  for (const dv of r.drives) {
+    const nd = r.nodes.find((n) => n.kind === "drum" && n.name === dv.drum);
+    if (!nd?.axis || !bodyOf.has(dv.drum) || !bodyOf.has(dv.lift)) continue;
+    const ja = joints.find((j) => j.body === bodyOf.get(dv.drum) && j.kind === "pivot" && Math.abs(dot(unit(nd.axis!), j.axis)) > 0.99);
+    const js = joints.find((j) => j.body === bodyOf.get(dv.lift) && j.kind === "slider");
+    if (!ja || !js || links.some((l) => l.name === r.name)) continue;
+    // metres the lift's joint moves for each radian of the drum's
+    const ratio = (dv.perRad / 1000) * Math.sign(dot(unit(nd.axis), ja.axis)) * Math.sign(dot(unit(dv.axis), js.axis) || 1);
+    const stored = r.nodes.reduce((n, x) => n + (x.kind === "drum" ? (x.wraps ?? 0) * 2 * Math.PI * x.r : 0), 0);
+    const kLin = (r.rope.ea / Math.max(1, r.length - stored)) * 1000;
+    links.push({ kind: "ratio", name: r.name, a: ja.name, b: js.name, ratio, slack: 0, efficiency: 0.97, stiffness: kLin });
+    notes.push(`${r.name}: ${dv.drum} winds ${dv.lift} ${(Math.abs(dv.perRad) * 2 * Math.PI).toFixed(0)} mm a turn (rope stretch from EA ${Math.round(r.rope.ea)} N; it is taken as taut)`);
+  }
 }
 
 const fmtK = (k: number) => `${(k / 1000).toFixed(0)} N/mm of belt`;

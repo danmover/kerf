@@ -216,6 +216,8 @@ export interface DriveHold {
    * checks leave it alone: real friction keeps it where it is.
    */
   balanced?: boolean;
+  /** carried by this rope from a winch drum that a motor holds: the rope passes the weight on to that motor */
+  rope?: string;
 }
 
 /**
@@ -463,12 +465,12 @@ export function gravityHolds(model: Model, holds: Holds, kernel: ChecksResult, m
         const nd = rope.nodes.find((x) => x.name === w.drum);
         const atDrum = nd ? `${torque(w.torque)} about ${w.drum} (${force(h.tension)} at ${fmtNum(nd.r, 1)} mm from its axis)` : "";
         if (w.state === "fixed" || w.state === "motor") {
-          drives.push({ load: d, by: "carried" });
+          drives.push({ load: d, by: "carried", ...(w.state === "motor" ? { rope: rope.name } : {}) });
           const drumSays = w.state === "motor" ? ` ${w.drum} is held against that by ${listOf(w.motors)}, checked on its own.` : w.drum ? ` ${w.drum} does not turn, so the rope is as good as tied there.` : " Both its ends are tied.";
           out.push({ ...b, id: `gravity:carried:${name}`, status: "pass", title: `${name} is held up by ${who}`, detail: `${weighs}, carried through its ${fmtNum(travel, 0)} mm of travel by its rope: ${inRope}.${drumSays}${onRope.length > 1 ? " Each rope is checked as if it carried the weight alone." : ""}`, margin: 1 });
         } else if (w.state === "weak") {
           // the motor's own check says so
-          drives.push({ load: d, by: "nothing" });
+          drives.push({ load: d, by: "nothing", rope: rope.name });
         } else if (stated) {
           drives.push({ load: d, by: "stated" });
           out.push({ ...b, id: `gravity:stated:${name}`, status: "info", title: `${name} is held up by "${stated}", which is not drawn`, detail: `${weighs}. ${rope.name} carries that to ${w.drum}: ${atDrum}. Nothing drawn holds ${w.drum} against it, and the design says ${name} is held by "${stated}", so that must. Kerf cannot check that it does.`, fix: `Draw what holds ${w.drum} so it can be checked: a gearmotor or stepper on its shaft (turns_with: ${w.drum}).`, basis: "needs analysis" });

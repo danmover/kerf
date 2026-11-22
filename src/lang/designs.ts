@@ -275,6 +275,7 @@ export function placeDesign(inner: Model, o: PlaceOptions): PlacedDesign {
       nodes: r.nodes.map((n) => ({ ...n, name: clamp(n.name), c: pt(n.c), ...(n.axis ? { axis: dir(n.axis) } : {}), ...(n.mid ? { mid: pt(n.mid) } : {}) })),
       spans: r.spans.map((x) => ({ ...x, from: clamp(x.from), to: clamp(x.to), a3: pt(x.a3), b3: pt(x.b3) })),
       lifts: r.lifts.map(ren),
+      drives: r.drives.map((x) => ({ ...x, lift: ren(x.lift), drum: clamp(x.drum), axis: dir(x.axis) })),
       span,
     }),
   );
