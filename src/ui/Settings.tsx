@@ -611,6 +611,9 @@ function AppSettings() {
         <Row t="Focus on the selection" d="Once the view is still, the parts in front of and behind what you selected soften a little, as a camera's focus would.">
           <Toggle on={s.focusBlur} onChange={(v) => updateSettings({ focusBlur: v })} label="Focus on the selection" />
         </Row>
+        <Row t="Cables in the model" d="A machine's routed cables are drawn in the 3D view as part of it. Click one to see where each end plugs in.">
+          <Toggle on={s.cablesInModel} onChange={(v) => updateSettings({ cablesInModel: v })} label="Cables in the model" />
+        </Row>
       </Section>
       <Section title="Mouse and keys">
         <Row t="Mouse" d={MOUSE_SCHEMES[s.mouseScheme].d}>

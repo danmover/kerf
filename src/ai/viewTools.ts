@@ -8,10 +8,9 @@ import { useDesign } from "../core/engine";
 import { commitSource } from "../app/project";
 import { diffStats } from "../core/sourceEdit";
 import { useView } from "../app/view";
-import { updateSettings } from "../app/settings";
 import { partGroups } from "../app/partGroups";
 import { withGroup, cleanGroupName } from "../app/groups";
-import { toggleWiring } from "../ui/wiringView";
+import { setWiringLook, toggleWiring } from "../ui/wiringView";
 import type { ToolOutcome } from "./tools";
 
 export const VIEW_TOOL_DEFS = [
@@ -23,7 +22,7 @@ export const VIEW_TOOL_DEFS = [
       type: "object" as const,
       properties: {
         groups: { type: "array", items: { type: "string" }, maxItems: 20, description: "Show only these groups (names as the design writes them). An empty list shows every group again." },
-        wiring: { type: "string", enum: ["off", "solid", "see-through"], description: "The wiring view: solid keeps every part solid and draws cables behind parts faintly through them; see-through fades the covers over the wiring." },
+        wiring: { type: "string", enum: ["off", "ghosted", "solid", "see-through"], description: "The wiring view: ghosted fades the made parts back so the whole harness stands out; solid keeps every part solid and draws cables behind parts faintly through them; see-through fades the covers over the wiring." },
       },
       additionalProperties: false,
     },
@@ -49,7 +48,7 @@ export const VIEW_TOOL_TITLES: Record<string, string> = { set_view: "Changing th
 
 const SetViewInput = z.object({
   groups: z.array(z.string().min(1).max(80)).max(20).optional(),
-  wiring: z.enum(["off", "solid", "see-through"]).optional(),
+  wiring: z.enum(["off", "ghosted", "solid", "see-through"]).optional(),
 });
 const GroupInput = z.object({
   parts: z.array(z.string().min(1).max(120)).min(1).max(60),
@@ -90,9 +89,9 @@ export async function runViewTool(name: string, input: unknown): Promise<ToolOut
         const hasWires = !!model.machine && model.machine.wires.length + model.machine.nets.length > 0;
         if (p.data.wiring !== "off" && !hasWires) said.push("the design has no wiring to show");
         else {
-          if (p.data.wiring !== "off") updateSettings({ wiringSolid: p.data.wiring === "solid" });
+          if (p.data.wiring !== "off") setWiringLook(p.data.wiring === "solid" ? "solid" : p.data.wiring === "ghosted" ? "ghost" : "see");
           toggleWiring(p.data.wiring !== "off");
-          said.push(p.data.wiring === "off" ? "wiring hidden" : p.data.wiring === "solid" ? "wiring shown with every part solid (hidden cables show faintly through)" : "wiring shown with covers see-through");
+          said.push(p.data.wiring === "off" ? "wiring hidden" : p.data.wiring === "solid" ? "wiring shown with every part solid (hidden cables show faintly through)" : p.data.wiring === "ghosted" ? "wiring shown with the design ghosted back" : "wiring shown with covers see-through");
         }
       }
       if (!said.length) return err("Say what to show: groups or wiring.", "Nothing to change");
