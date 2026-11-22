@@ -577,9 +577,20 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
   });
   const spans: RopeSpan[] = path.spans.map((length, i) => ({ from: nodes[i].name, to: nodes[i + 1].name, a3: path.depart[i], b3: path.arrive[i + 1], length }));
 
-  // the centre line: the turns on a starting drum, each straight run, the arc round each sheave, the turns on an end
-  // drum. Round a wheel the line's corners stand just outside the rope's circle, so that with its corners rounded it
-  // touches the circle between them and never cuts inside it (a rope drawn through chords would sink into its sheave)
+  const { line, short, sleeves } = centreLine(pts, path, d, () => wraps, (i) => -lead[i].side, true);
+  const stored = nodes.reduce((n, nd) => n + (nd.kind === "drum" ? (nd.wraps ?? 0) * TAU * nd.r : 0), 0);
+  return { nodes, spans, length: path.free + stored, line, short, sleeves, wind };
+}
+
+/**
+ * A rope's centre line through a path, for drawing: the turns on a starting drum, each straight run, the arc round
+ * each sheave, the turns on an end drum. `line` has every turn on the drums; `short` a quarter turn of each, the rest
+ * being the `sleeves`. With `outside`, the line's corners round a wheel stand just outside the rope's circle, so that
+ * with its corners rounded it touches the circle between them and never cuts inside it (a rope swept through chords
+ * would sink into its sheave); without, they lie on the circle, for a tube drawn straight through them.
+ */
+function centreLine(pts: RopePoint[], path: RopePath, d: number, wrapsOf: (i: number) => number, stackOf: (i: number) => number, outside: boolean): Pick<RopeLayout, "line" | "short" | "sleeves"> {
+  const N = pts.length;
   const line: V3[] = [];
   const short: V3[] = [];
   const sleeves: RopeLayout["sleeves"] = [];
@@ -591,9 +602,11 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
     const a = nd.axis!;
     const e1 = vnorm(vsub(from, nd.c));
     const e2 = vcross(a, e1);
-    const n = Math.max(1, Math.ceil(T / stepMax));
+    // a tube through the points shows every corner: finer steps than a sweep that rounds them
+    const n = Math.max(1, Math.ceil(T / (outside ? stepMax : Math.min(stepMax, (5 * Math.PI) / 180))));
     const st = T / n;
     const at = (tau: number, R: number): V3 => vadd(nd.c, vadd(vscale(a, axial(tau)), vadd(vscale(e1, R * Math.cos(sgn * tau)), vscale(e2, R * Math.sin(sgn * tau)))));
+    if (!outside) return Array.from({ length: n + 1 }, (_, k) => at(k * st, nd.r));
     const out = Array.from({ length: n }, (_, k) => at((k + 0.5) * st, nd.r / Math.cos(st / 2)));
     if (end) out.push(at(T, nd.r));
     return out;
@@ -602,8 +615,9 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
   const turns = (i: number, from: V3, sgn: number) => {
     // along the rope from where it leaves (a starting drum) or meets (an end drum) the barrel, round to its anchor
     const nd = pts[i];
+    const wraps = wrapsOf(i);
     const T = wraps * TAU;
-    const stack = -lead[i].side;
+    const stack = stackOf(i);
     const axial = (tau: number) => (stack * d * tau) / TAU;
     // fast builds: a quarter turn of rope, the rest a sleeve
     if (wraps > 0.5) sleeves.push({ od: 2 * nd.r + 0.96 * d, id: 2 * nd.r - 0.96 * d, h: wraps * d, at: vadd(nd.c, vscale(nd.axis!, stack > 0 ? -d / 2 : -(wraps * d) + d / 2)), dir: nd.axis! });
@@ -629,8 +643,41 @@ export function layoutRope(input: RopeIn[], spec: RopeSpec, opts: LayoutOpts): R
     }
     both(...round(nd, path.arrive[i], nd.dir, Math.max(0, path.wrap[i]), rad(12), () => 0, false));
   }
-  const stored = nodes.reduce((n, nd) => n + (nd.kind === "drum" ? (nd.wraps ?? 0) * TAU * nd.r : 0), 0);
-  return { nodes, spans, length: path.free + stored, line, short, sleeves, wind };
+  return { line, short, sleeves };
+}
+
+/**
+ * The rope's centre line with its drums, sheaves and tied ends moved: `poses` gives each node where its part has
+ * gone from where it is drawn (a column-major 4×4; none: where it is drawn). The rope keeps its length, so what
+ * the path no longer takes is wound onto its drum and what it takes more of comes off it. Null where the rope
+ * cannot run (one wheel inside the circle the rope makes round the next).
+ */
+export function ropeLineAt(nodes: RopeNode[], d: number, length: number, poses: (number[] | null | undefined)[]): V3[] | null {
+  const put = (M: number[] | null | undefined, p: V3): V3 => (M ? [M[0] * p[0] + M[4] * p[1] + M[8] * p[2] + M[12], M[1] * p[0] + M[5] * p[1] + M[9] * p[2] + M[13], M[2] * p[0] + M[6] * p[1] + M[10] * p[2] + M[14]] : p);
+  const turn = (M: number[] | null | undefined, v: V3): V3 => (M ? [M[0] * v[0] + M[4] * v[1] + M[8] * v[2], M[1] * v[0] + M[5] * v[1] + M[9] * v[2], M[2] * v[0] + M[6] * v[1] + M[10] * v[2]] : v);
+  const drums = nodes.map((nd, i) => (nd.kind === "drum" ? i : -1)).filter((i) => i >= 0);
+  const wraps = nodes.map((nd) => nd.wraps ?? 0);
+  let pts: RopePoint[] = [];
+  let path: RopePath | undefined;
+  for (let it = 0; it < 3; it++) {
+    pts = nodes.map((nd, i): RopePoint => {
+      if (!nd.axis) return { c: put(poses[i], nd.c), r: 0, dir: 1 };
+      // a drum's rope leaves it further along the barrel as turns come off, and nearer its anchor as they go on
+      const lead = nd.kind === "drum" ? -(nd.stack ?? 1) * (wraps[i] - (nd.wraps ?? 0)) * d : 0;
+      return { c: put(poses[i], vadd(nd.c, vscale(nd.axis, lead))), axis: vnorm(turn(poses[i], nd.axis)), r: nd.r, dir: nd.dir };
+    });
+    path = ropePath(pts);
+    if (path.inside.length) return null;
+    const k = drums[0];
+    if (k === undefined) break;
+    const others = drums.slice(1).reduce((n, i) => n + wraps[i] * TAU * nodes[i].r, 0);
+    const now = Math.max(0, (length - path.free - others) / (TAU * nodes[k].r));
+    const settled = Math.abs(now - wraps[k]) < 1e-3;
+    wraps[k] = now;
+    if (settled) break;
+  }
+  if (!path) return null;
+  return centreLine(pts, path, d, (i) => wraps[i], (i) => nodes[i].stack ?? 1, false).line;
 }
 
 const nameOf = (x: RopeIn, i: number, n: number) => (x.k === "wheel" ? x.name : i === 0 ? "the first tie" : i === n - 1 ? "the second tie" : "a tie");

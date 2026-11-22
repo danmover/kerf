@@ -2,12 +2,13 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneController, type PhotoStatus } from "./viewport/scene";
+import { SceneController, type PhotoStatus, type RopeDraw } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
 import { turns, type Motion } from "../core/model";
 import { findHolds } from "../core/holds";
+import { ropeParts } from "../core/ropeChecks";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
@@ -278,6 +279,24 @@ export function Viewport() {
       return;
     }
     const t = window.setTimeout(() => ctl.current?.setHolds(findHolds(model, meshOf)), 400);
+    return () => window.clearTimeout(t);
+  }, [model, meshVersion, scene]);
+
+  // ropes are drawn moving with what they run on: which part each drum, sheave and tied end is
+  useEffect(() => {
+    const ropes = model?.machine?.ropes ?? [];
+    if (!model || !ropes.length) {
+      ctl.current?.setRopes(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      const out = new Map<string, RopeDraw>();
+      for (const r of ropes) {
+        const part = model.parts.find((p) => p.libKind === "rope" && p.name === r.name);
+        if (part) out.set(part.id, { nodes: r.nodes, d: r.rope.d, length: r.length, on: ropeParts(r, model, meshOf).map((p) => p?.id) });
+      }
+      ctl.current?.setRopes(out);
+    }, 400);
     return () => window.clearTimeout(t);
   }, [model, meshVersion, scene]);
 

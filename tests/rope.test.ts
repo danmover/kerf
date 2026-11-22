@@ -10,6 +10,7 @@ import type { MeshEntry } from "../src/core/engine";
 import { massVolume } from "../src/core/model";
 import { materialDensity } from "../src/library/standards";
 import { LetGoRun, letGoLine, planLetGo, type LetGoPlan } from "../src/sim/mech/letGo";
+import { ropeLineAt } from "../src/machine/ropes";
 
 const noErrors = (r: FullCheck) => expect(r.model.diagnostics.filter((d) => d.severity === "error").map((d) => d.message)).toEqual([]);
 const find = (items: CheckItem[], id: string) => {
@@ -354,5 +355,38 @@ describe("the library's drum and sheave", () => {
     expect(r.model.parts.find((p) => p.name === "car")!.motion!.perTurn).toBeCloseTo(2 * Math.PI * 37.5, 1);
     expect(find(r.report.items, "rope:drum:hoist:drum").detail).toMatch(/10 turns fit side by side/);
     expect(find(r.report.items, "rope:bend:hoist").status).toBe("pass");
+  }, SLOW);
+});
+
+describe("a rope drawn moving", () => {
+  it("keeps its length: what the path gives up is wound onto the drum", async () => {
+    const r = await fullCheck(bought);
+    const rope = r.model.machine!.ropes[0];
+    const up = (z: number) => [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, z, 1];
+    const len = (line: number[][]) => line.slice(1).reduce((n, p, i) => n + Math.hypot(p[0] - line[i][0], p[1] - line[i][1], p[2] - line[i][2]), 0);
+    // how far round the drum's axis the line goes before it leaves for the sheave, in turns
+    const turns = (line: number[][]) => {
+      let a = 0;
+      for (let i = 1; i < line.length && Math.abs(Math.hypot(line[i][1] - 97.5, line[i][2] - 45) - 37.5) < 1e-6; i++) {
+        let d = Math.atan2(line[i][2] - 45, line[i][1] - 97.5) - Math.atan2(line[i - 1][2] - 45, line[i - 1][1] - 97.5);
+        if (d > Math.PI) d -= 2 * Math.PI;
+        if (d < -Math.PI) d += 2 * Math.PI;
+        a += d;
+      }
+      return Math.abs(a) / (2 * Math.PI);
+    };
+    const drawn = ropeLineAt(rope.nodes, rope.rope.d, rope.length, [null, null, null])!;
+    expect(drawn[drawn.length - 1]).toEqual([0, 60, 120]);
+    expect(len(drawn)).toBeCloseTo(rope.length, 0);
+    expect(turns(drawn)).toBeCloseTo(3, 2);
+    // the car 200 mm up: the tied end goes with it, and 200 mm more rope is on the drum
+    const raised = ropeLineAt(rope.nodes, rope.rope.d, rope.length, [null, null, up(200)])!;
+    expect(raised[raised.length - 1]).toEqual([0, 60, 320]);
+    expect(len(raised)).toBeCloseTo(rope.length, 0);
+    expect(turns(raised)).toBeCloseTo(3 + 200 / (2 * Math.PI * 37.5), 2);
+    // the rope's anchor stays where it is along the barrel
+    expect(raised[0][0]).toBeCloseTo(drawn[0][0], 2);
+    // nowhere for it to run: the tied end inside the circle the rope makes round the sheave
+    expect(ropeLineAt(rope.nodes, rope.rope.d, rope.length, [null, null, [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 20, 530, 1]])).toBeNull();
   }, SLOW);
 });

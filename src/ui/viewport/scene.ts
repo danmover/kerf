@@ -10,6 +10,9 @@ import { turns, type EvalPart, type Motion } from "../../core/model";
 import { driveAngle, motionPose } from "../../core/kinematics";
 import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explode";
 import { ChainLinks } from "./chainLinks";
+import { RopeLine } from "./ropeLine";
+import { ropeLineAt } from "../../machine/ropes";
+import type { RopeNode } from "../../machine/types";
 import type { MeshEntry } from "../../core/engine";
 import { closeEnough, pickMesh, threadPitch } from "./threadLod";
 import { prepareRay } from "./fastPick";
@@ -103,6 +106,18 @@ interface PartObj {
   decor: Decor | null;
   /** a chain's links, drawn in place of its solid while the motion preview is turned */
   links?: ChainLinks | null;
+  /** a rope's line, drawn in place of its solid while what it runs on is away from where it is drawn */
+  line?: RopeLine | null;
+}
+
+/** A rope as the 3D view needs it to draw it moving: its nodes, and the part each is (or is tied to). */
+export interface RopeDraw {
+  nodes: RopeNode[];
+  /** the rope's diameter and its length from end to end, mm */
+  d: number;
+  length: number;
+  /** by node: the id of the drum or sheave, or of the part a tied end is on */
+  on: (string | undefined)[];
 }
 
 /** Detail drawn with a part in its own frame: a bought circuit board's components, copper and silkscreen. */
@@ -1264,11 +1279,77 @@ export class SceneController {
     return changed;
   }
 
+  /**
+   * A rope shows its solid while everything it runs on is where it is drawn, and a line laid from where they are
+   * once any of them has moved (the motion preview, a drag, "let go"). True when what is drawn changed.
+   */
+  private ropeLines(): boolean {
+    let changed = false;
+    const d = this.display;
+    for (const obj of this.parts.values()) {
+      const info = this.ropes?.get(obj.part.id);
+      if (!info && !obj.line) continue;
+      let line: [number, number, number][] | null = null;
+      if (info) {
+        // where each thing it runs on has gone from where it is drawn, the exploded view's spread left out
+        let moved = false;
+        const poses = info.on.map((id) => {
+          const o = id ? this.parts.get(id) : undefined;
+          if (!o) return null;
+          const m = this.ropeM.makeTranslation(-o.explode.pos.x, -o.explode.pos.y, -o.explode.pos.z).multiply(o.group.matrix).multiply(this.ropeI.copy(o.placement).invert());
+          const e = m.elements;
+          let off = 0;
+          for (let k = 0; k < 16; k++) off = Math.max(off, Math.abs(e[k] - (k % 5 === 0 ? 1 : 0)) * (k >= 12 ? 1 : 100));
+          if (off < 1e-3) return null;
+          moved = true;
+          return [...e];
+        });
+        if (moved) line = ropeLineAt(info.nodes, info.d, info.length, poses);
+      }
+      const on = !!line;
+      if (on && !obj.line) {
+        obj.line = new RopeLine(info!.d, obj.mat);
+        obj.group.add(obj.line.mesh);
+      }
+      if (!obj.line) continue;
+      if (obj.line.mesh.visible !== on) {
+        obj.line.mesh.visible = on;
+        obj.mesh.visible = !on;
+        obj.edges.visible = !on && ((d.edges && !this.photoLookOn) || d.selected.has(obj.id) || d.hovered === obj.id);
+        changed = true;
+      }
+      if (on) {
+        obj.line.mesh.layers.mask = obj.mesh.layers.mask;
+        // the line is laid in the design's own frame: the rope's group carries it out with the exploded view only
+        const m = this.ropeM.copy(obj.group.matrix).invert().multiply(this.ropeI.makeTranslation(obj.explode.pos.x, obj.explode.pos.y, obj.explode.pos.z));
+        if (!m.equals(obj.line.mesh.matrix)) {
+          obj.line.mesh.matrix.copy(m);
+          obj.line.mesh.matrixWorldNeedsUpdate = true;
+          changed = true;
+        }
+        if (obj.line.update(line!)) changed = true;
+      }
+      if (!info) {
+        obj.group.remove(obj.line.mesh);
+        obj.line.dispose();
+        obj.line = null;
+      }
+    }
+    return changed;
+  }
+  private readonly ropeM = new THREE.Matrix4();
+  private readonly ropeI = new THREE.Matrix4();
+
   private disposePart(obj: PartObj) {
     if (obj.links) {
       obj.group.remove(obj.links.object);
       obj.links.dispose();
       obj.links = null;
+    }
+    if (obj.line) {
+      obj.group.remove(obj.line.mesh);
+      obj.line.dispose();
+      obj.line = null;
     }
     this.undecorate(obj);
     this.root.remove(obj.group);
@@ -1446,7 +1527,7 @@ export class SceneController {
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
     const visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     obj.group.visible = visible;
-    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered) && !obj.links?.object.visible;
+    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered) && !obj.links?.object.visible && !obj.line?.mesh.visible;
     obj.mesh.layers.set(0);
     if (visible && obj.opacityTarget >= 1 && !obj.removing) {
       obj.mesh.layers.enable(L_OPAQUE);
@@ -1602,6 +1683,17 @@ export class SceneController {
     if (!h && !this.carried && !this.loose) return;
     this.carried = h?.carried ?? null;
     this.loose = h?.loose?.size ? h.loose : null;
+    this.changed = true;
+  }
+
+  private ropes: Map<string, RopeDraw> | null = null;
+  /** ropes were drawn as lines last frame: one more pass puts their solids back when the ropes go */
+  private hasRopeLines = false;
+
+  /** The design's ropes, by the id of the part each is drawn as, so they can be drawn moving with what they run on; null for none. */
+  setRopes(r: Map<string, RopeDraw> | null) {
+    if (!r?.size && !this.ropes) return;
+    this.ropes = r?.size ? r : null;
     this.changed = true;
   }
 
@@ -2420,6 +2512,8 @@ export class SceneController {
       }
     }
     if (asm && assemblyDone) this.assembly = null;
+    if ((this.ropes || this.hasRopeLines) && this.ropeLines()) moving = true;
+    this.hasRopeLines = !!this.ropes;
 
     for (const g of [...this.ghosts]) {
       const age = now - g.t0;
@@ -3196,6 +3290,7 @@ export class SceneController {
         o.group.matrix.copy(m);
         o.group.matrixWorldNeedsUpdate = true;
       }
+      if (this.ropes) this.ropeLines();
       // the section plane
       if (s.section) {
         const was = this.sectionAnim.on;
