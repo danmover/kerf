@@ -19,6 +19,69 @@ export enum Detail {
   Plywood = 8,
 }
 
+/**
+ * How a part was made, for the marks that shows on it (drawn by partShader.ts on top of its finish). Values are
+ * shader constants.
+ */
+export enum Make {
+  None = 0,
+  /** FDM: a seam down the back where each layer starts, and the build plate's texture underneath */
+  Printed = 1,
+  /** milled: face-mill arcs on flat faces, fine steps up the walls */
+  Milled = 2,
+  /** turned on a lathe about the part's Z: rings on its ends, fine feed lines round its sides */
+  Turned = 3,
+  /** moulded or die cast: a parting line round its middle, ejector pin marks underneath */
+  Moulded = 4,
+  /** cut from sheet: laser or plasma striations on the cut edges */
+  Sheet = 5,
+}
+
+/** The marks a process leaves, and the value the shader wants with them (FDM: layer height, mm). */
+export function makeFor(process: { id: string; settings?: Record<string, unknown> } | undefined): [Make, number] {
+  switch (process?.id) {
+    case "fdm": {
+      const layer = process.settings?.layer;
+      return [Make.Printed, typeof layer === "number" && layer > 0 ? layer : 0];
+    }
+    case "cnc_mill":
+      return [Make.Milled, 0];
+    case "cnc_lathe":
+      return [Make.Turned, 0];
+    case "injection":
+    case "die_cast":
+    case "vacuum_cast":
+      return [Make.Moulded, 0];
+    case "sheet_metal":
+    case "laser_cut":
+      return [Make.Sheet, 0];
+    default:
+      return [Make.None, 0];
+  }
+}
+
+/** Finishes a process leaves, best first: a moulding is never printed, a milled plastic part shows its tool marks. */
+const PROCESS_FINISHES: Record<string, string[]> = {
+  fdm: ["printed"],
+  sla: ["satin", "matte"],
+  sls: ["matte", "textured"],
+  injection: ["matte", "satin", "textured", "gloss"],
+  vacuum_cast: ["satin", "matte", "gloss"],
+  die_cast: ["bead-blasted", "machined"],
+  sand_cast: ["bead-blasted", "machined"],
+  investment_cast: ["bead-blasted", "machined"],
+  metal_print: ["bead-blasted", "machined"],
+  cnc_mill: ["machined", "satin", "matte"],
+  cnc_lathe: ["machined", "satin", "matte"],
+};
+
+/** The finish a part made by `process` shows when it names none itself (undefined: the material's own default). */
+export function processFinish(material: string, process: string | undefined): string | undefined {
+  const has = materialDef(material)?.finishes;
+  if (!process || !has) return undefined;
+  return PROCESS_FINISHES[process]?.find((f) => has.includes(f));
+}
+
 export interface Appearance {
   /** cache key: material|finish|color */
   key: string;
@@ -50,6 +113,10 @@ export interface Appearance {
   tint2: string;
   /** reflection strength multiplier: metals get more so they read as bright metal, not grey plastic */
   envBoost: number;
+  /** how round its sharp edges are drawn, mm: broken and deburred on machined metal, rounder on mouldings, prints and rubber */
+  bevel: number;
+  /** how much its highlights stretch across its grain (brushing, tool marks, carbon tows), 0..1 */
+  aniso: number;
 }
 
 type Look = Omit<Appearance, "key" | "material" | "finish" | "label" | "color" | "tint2" | "envBoost"> & { tint2?: string };
@@ -71,6 +138,8 @@ const BASE: Look = {
   detailScale: 1,
   roughVar: 0,
   tintAmt: 0,
+  bevel: 0.3,
+  aniso: 0,
 };
 
 const look = (p: Partial<Look>): Look => ({ ...BASE, ...p });
@@ -83,26 +152,26 @@ const PLASTIC: Record<string, Look> = {
   gloss: look({ roughness: 0.2, clearcoat: 0.5, clearcoatRoughness: 0.05 }),
   textured: look({ roughness: 0.62, detail: Detail.Peel, detailAmp: 0.018, detailScale: 0.35, roughVar: 0.1 }),
   machined: look({ roughness: 0.34, detail: Detail.Machined, detailAmp: 0.002, detailScale: 0.04, roughVar: 0.12 }),
-  clear: look({ roughness: 0.03, transmission: 1, thickness: 2.5, ior: 1.49, clearcoat: 0.3, clearcoatRoughness: 0.02 }),
+  clear: look({ roughness: 0.03, transmission: 1, thickness: 2.5, ior: 1.49, clearcoat: 0.3, clearcoatRoughness: 0.02, bevel: 0.15 }),
   frosted: look({ roughness: 0.42, transmission: 1, thickness: 2.5, ior: 1.49, detail: Detail.Grain, detailAmp: 0.002, detailScale: 0.05 }),
 };
 
 const METAL: Record<string, Look> = {
-  machined: look({ metalness: 1, roughness: 0.3, detail: Detail.Machined, detailAmp: 0.0018, detailScale: 0.035, roughVar: 0.16 }),
-  brushed: look({ metalness: 1, roughness: 0.3, detail: Detail.Brushed, detailAmp: 0.0025, detailScale: 0.03, roughVar: 0.22 }),
-  "bead-blasted": look({ metalness: 1, roughness: 0.5, detail: Detail.Grain, detailAmp: 0.003, detailScale: 0.03, roughVar: 0.08 }),
-  polished: look({ metalness: 1, roughness: 0.07 }),
+  machined: look({ metalness: 1, roughness: 0.3, detail: Detail.Machined, detailAmp: 0.0018, detailScale: 0.035, roughVar: 0.16, bevel: 0.2, aniso: 0.35 }),
+  brushed: look({ metalness: 1, roughness: 0.3, detail: Detail.Brushed, detailAmp: 0.0025, detailScale: 0.03, roughVar: 0.22, bevel: 0.2, aniso: 0.6 }),
+  "bead-blasted": look({ metalness: 1, roughness: 0.5, detail: Detail.Grain, detailAmp: 0.003, detailScale: 0.03, roughVar: 0.08, bevel: 0.25 }),
+  polished: look({ metalness: 1, roughness: 0.07, bevel: 0.15 }),
   anodized: look({ metalness: 0.72, roughness: 0.38, clearcoat: 0.35, clearcoatRoughness: 0.22, detail: Detail.Grain, detailAmp: 0.0015, detailScale: 0.03, roughVar: 0.06 }),
-  "black-oxide": look({ metalness: 0.78, roughness: 0.42, clearcoat: 0.4, clearcoatRoughness: 0.3, detail: Detail.Machined, detailAmp: 0.0015, detailScale: 0.035, roughVar: 0.1 }),
-  "zinc-plated": look({ metalness: 1, roughness: 0.24, iridescence: 0.3, detail: Detail.Grain, detailAmp: 0.001, detailScale: 0.03, roughVar: 0.06 }),
+  "black-oxide": look({ metalness: 0.78, roughness: 0.42, clearcoat: 0.4, clearcoatRoughness: 0.3, detail: Detail.Machined, detailAmp: 0.0015, detailScale: 0.035, roughVar: 0.1, bevel: 0.2 }),
+  "zinc-plated": look({ metalness: 1, roughness: 0.24, iridescence: 0.3, detail: Detail.Grain, detailAmp: 0.001, detailScale: 0.03, roughVar: 0.06, bevel: 0.2 }),
   "powder-coated": look({ roughness: 0.52, clearcoat: 0.12, clearcoatRoughness: 0.4, detail: Detail.Peel, detailAmp: 0.008, detailScale: 0.7, roughVar: 0.06 }),
 };
 
 const OTHER: Record<string, Look> = {
-  "solder-mask": look({ roughness: 0.42, clearcoat: 0.8, clearcoatRoughness: 0.12, detail: Detail.Grain, detailAmp: 0.001, detailScale: 0.05, roughVar: 0.04 }),
+  "solder-mask": look({ roughness: 0.42, clearcoat: 0.8, clearcoatRoughness: 0.12, detail: Detail.Grain, detailAmp: 0.001, detailScale: 0.05, roughVar: 0.04, bevel: 0.08 }),
   // plywood (the one wood material): the pattern sets how far each spot pulls toward the darker tone itself
-  raw: look({ roughness: 0.74, sheen: 0.25, sheenRoughness: 0.8, detail: Detail.Plywood, detailAmp: 0.012, detailScale: 7, roughVar: 0.12, tintAmt: 1 }),
-  varnished: look({ roughness: 0.4, clearcoat: 0.65, clearcoatRoughness: 0.12, detail: Detail.Plywood, detailAmp: 0.005, detailScale: 7, roughVar: 0.05, tintAmt: 1 }),
+  raw: look({ roughness: 0.74, sheen: 0.25, sheenRoughness: 0.8, detail: Detail.Plywood, detailAmp: 0.012, detailScale: 7, roughVar: 0.12, tintAmt: 1, bevel: 0.45 }),
+  varnished: look({ roughness: 0.4, clearcoat: 0.65, clearcoatRoughness: 0.12, detail: Detail.Plywood, detailAmp: 0.005, detailScale: 7, roughVar: 0.05, tintAmt: 1, bevel: 0.45 }),
 };
 
 /** Per-material adjustments on top of the finish look. */
@@ -112,7 +181,7 @@ const TWEAKS: Record<string, (l: Look, finish: string) => Partial<Look>> = {
   ABS: (l, f) => (f === "printed" ? { roughness: 0.56 } : {}),
   ASA: (l, f) => (f === "printed" ? { roughness: 0.6 } : {}),
   Nylon: (l, f) => (f === "matte" ? { roughness: 0.86, sheen: 0.45, sheenRoughness: 0.8, detailAmp: 0.006, detailScale: 0.06, roughVar: 0.06 } : {}),
-  TPU: () => ({ roughness: 0.64, sheen: 0.3, sheenRoughness: 0.6 }),
+  TPU: () => ({ roughness: 0.64, sheen: 0.3, sheenRoughness: 0.6, bevel: 0.5 }),
   POM: (l) => ({ roughness: l.roughness * 0.9, sheen: 0.2, sheenRoughness: 0.4 }),
   Titanium: (l, f) => (f === "bead-blasted" ? { roughness: 0.46 } : {}),
   // as-cast iron and as-printed metal are duller and grainier than a blasted machined face
@@ -121,10 +190,10 @@ const TWEAKS: Record<string, (l: Look, finish: string) => Partial<Look>> = {
   "Carbon fiber": (l, f) =>
     f === "gloss"
       ? // the tows differ by how they catch the light more than by colour: a small shift of tone, a bigger one of gloss
-        { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 2, roughVar: 0.26, tintAmt: 0.4 }
-      : { roughness: 0.55, detail: Detail.Weave, detailAmp: 0.012, detailScale: 2, roughVar: 0.18, tintAmt: 0.35 },
-  Silicone: () => ({ roughness: 0.82, sheen: 0.5, sheenRoughness: 0.7, detail: Detail.Grain, detailAmp: 0.002, detailScale: 0.06, roughVar: 0.05 }),
-  Neoprene: () => ({ roughness: 0.7, sheen: 0.35, sheenRoughness: 0.6, detail: Detail.Grain, detailAmp: 0.0015, detailScale: 0.05, roughVar: 0.06 }),
+        { roughness: 0.3, clearcoat: 1, clearcoatRoughness: 0.04, detail: Detail.Weave, detailAmp: 0.02, detailScale: 2, roughVar: 0.26, tintAmt: 0.4, aniso: 0.5 }
+      : { roughness: 0.55, detail: Detail.Weave, detailAmp: 0.012, detailScale: 2, roughVar: 0.18, tintAmt: 0.35, aniso: 0.4 },
+  Silicone: () => ({ roughness: 0.82, sheen: 0.5, sheenRoughness: 0.7, detail: Detail.Grain, detailAmp: 0.002, detailScale: 0.06, roughVar: 0.05, bevel: 0.6 }),
+  Neoprene: () => ({ roughness: 0.7, sheen: 0.35, sheenRoughness: 0.6, detail: Detail.Grain, detailAmp: 0.0015, detailScale: 0.05, roughVar: 0.06, bevel: 0.6 }),
   FR4: (l, f) => (f === "matte" ? { roughness: 0.72 } : {}),
 };
 

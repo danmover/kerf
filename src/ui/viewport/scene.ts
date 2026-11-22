@@ -19,13 +19,15 @@ import { xformMatrix } from "../../kernel/recipe";
 import type { ViewPreset } from "../../app/view";
 import type { FilmLayout, FilmShot, FilmView } from "../../app/viewportApi";
 import { buildShare } from "../../film/timeline";
-import { appearanceFor, Detail, type Appearance } from "./render/appearance";
-import { applyAppearance, capMaterial, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
+import { appearanceFor, Detail, makeFor, processFinish, type Appearance } from "./render/appearance";
+import { applyAppearance, applyMake, capMaterial, FILL_ENV, FILL_ON, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, setBevelPixel, type PartUniforms } from "./render/partShader";
+import { BevelBuilder, bevelGeometry, type BevelBands } from "./render/bevel";
 import { ARRIVE_MS, DROP_LAND, arrivalKind, dropHeight, fillAt, fillAxis, screwLeft, screwTravel, traceAt, traceOrder } from "./arrival";
 import { edgeSweep, editSweep, type Sweep } from "./editSweep";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { ChangeDepth } from "./render/changeDepth";
 import { ContactShadow } from "./render/contactShadow";
+import { FloorMirror, Ground, mirrorPlane, shadowCatcher } from "./render/ground";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
@@ -75,6 +77,8 @@ interface GeoEntry {
   /** (first point, point count, edge id) per B-rep edge, for the order the outline draws in (see traceOrder) */
   edgeGroups?: Int32Array;
   users: number;
+  /** its rounded-edge bands (render/bevel.ts), once found; null when it has none */
+  bevel?: THREE.BufferGeometry | null;
 }
 
 interface Spring {
@@ -121,6 +125,8 @@ interface PartObj {
   /** last state that affects the rendered image (for resetting the accumulation) */
   sig: string;
   decor: Decor | null;
+  /** its rounded edges, drawn with its own material (a child of mesh, so it shows and hides with it) */
+  bevel: THREE.Mesh | null;
   /** a chain's links, drawn in place of its solid while the motion preview is turned */
   links?: ChainLinks | null;
 }
@@ -245,6 +251,8 @@ export interface RenderSettings {
   photoreal: boolean;
   /** the app theme: a dark lighting set swaps to a pale backdrop in the light theme */
   theme?: "dark" | "light";
+  /** the floor mirrors the model as much as the set's floor would (on unless false) */
+  floorGloss?: boolean;
   /** once the view is still, the parts in front of and behind the selection soften a little (on unless false) */
   focusBlur?: boolean;
 }
@@ -348,6 +356,8 @@ export class SceneController {
   private lens: { radius: number; focus: number } | null = null;
   private lensSel: ReadonlySet<string> | null = null;
   private geos = new Map<string, GeoEntry>();
+  /** finds each refined mesh's rounded edges off the main thread */
+  private bevels = new BevelBuilder((key, bands) => this.bevelReady(key, bands));
   private seenHashByPart = new Map<string, string>();
   /** the meshes the parts were last set from, for switching a part between its drawn and real threads */
   private lastMeshes: Map<string, MeshEntry> | null = null;
@@ -360,14 +370,24 @@ export class SceneController {
   private ground: THREE.Mesh;
   /** soft darkening of the floor under the model, drawn again only when the model changes */
   private contact: ContactShadow;
-  /** times the key light's shadow map was drawn, by any pass; the shadow map is reused while only the camera moves */
-  private shadowWrites = 0;
-  private shadowSeen = -1;
-  private shadowAt = new THREE.Vector3(NaN, NaN, NaN);
-  private shadowStale = true;
+  /**
+   * Bumped whenever anything but the camera changes: each shadow-casting light redraws its map when the model changed
+   * since it last drew it, or the light moved. While only the camera moves, the maps are reused.
+   */
+  private shadowStamp = 0;
   private groundMat: THREE.ShadowMaterial;
+  /** each light's share of the light, for the shadow catcher (key first, then the casters) */
+  private shadowWeights: { value: number[] };
   private key: THREE.DirectionalLight;
   private keyDir = new THREE.Vector3();
+  /** the set's other shadow-casting lights (big softboxes, a window), and where each points from */
+  private casters: THREE.DirectionalLight[] = [];
+  private casterDirs: THREE.Vector3[] = [];
+  /** a set's real ground (bench top, floor), and the model mirrored in a glossy floor */
+  private groundLit: Ground;
+  private mirror: FloorMirror;
+  private mirrorPlane: { mesh: THREE.Mesh; fade: { value: THREE.Vector4 } };
+  private floorZ = 0;
   private sectionFrame: THREE.LineLoop;
   private sectionFill: THREE.Mesh;
   private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
@@ -520,29 +540,24 @@ export class SceneController {
     container.addEventListener("wheel", (e) => this.glideWheel(e), { capture: true, passive: false });
     this.controls.addEventListener("start", () => this.takeCamera());
 
-    this.key = new THREE.DirectionalLight(0xffffff, 2);
-    this.key.castShadow = true;
-    this.key.shadow.mapSize.set(2048, 2048);
-    this.key.shadow.bias = -0.0002;
-    this.scene.add(this.key, this.key.target);
+    this.key = this.shadowLight(2048);
 
     this.gridMat = gridMaterial();
     this.grid = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.gridMat);
     this.grid.renderOrder = -1;
     this.scene.add(this.grid);
-    this.groundMat = new THREE.ShadowMaterial({ opacity: 0.5, transparent: true });
+    const catcher = shadowCatcher();
+    this.groundMat = catcher.mat;
+    this.shadowWeights = catcher.weights;
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.groundMat);
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
+    this.mirror = new FloorMirror(this.renderer);
+    this.groundLit = new Ground(this.mirror);
+    this.mirrorPlane = mirrorPlane(this.mirror);
+    this.scene.add(this.groundLit.mesh, this.mirrorPlane.mesh);
     this.contact = new ContactShadow(this.renderer);
     this.scene.add(this.contact.mesh);
-    // count every drawing of the key light's shadow map, whoever draws it, so the live view knows when its own is still there
-    const shadow = this.key.shadow;
-    const updateMatrices = shadow.updateMatrices.bind(shadow);
-    shadow.updateMatrices = (light: THREE.Light) => {
-      this.shadowWrites++;
-      updateMatrices(light);
-    };
 
     this.scene.add(this.root);
     this.overlay.add(this.interGroup);
@@ -725,7 +740,13 @@ export class SceneController {
     for (const g of this.geos.values()) {
       g.mesh.dispose();
       g.edges.dispose();
+      g.bevel?.dispose();
     }
+    this.bevels.dispose();
+    this.groundLit.dispose();
+    this.mirror.dispose();
+    this.mirrorPlane.mesh.geometry.dispose();
+    (this.mirrorPlane.mesh.material as THREE.Material).dispose();
     this.pipe.dispose();
     this.contact.dispose();
     this.swatchPipe?.dispose();
@@ -751,7 +772,7 @@ export class SceneController {
   setRenderSettings(s: RenderSettings) {
     const prev = this.render$;
     this.render$ = { ...s };
-    if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle || prev.theme !== s.theme) this.applyLighting();
+    if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle || prev.theme !== s.theme || prev.floorGloss !== s.floorGloss) this.applyLighting();
     if (prev.photoreal !== s.photoreal) {
       if (!s.photoreal) {
         // the image buffers go now; the compiled shader and scene copy are freed a minute later,
@@ -791,9 +812,30 @@ export class SceneController {
     this.key.color.set(p.key.color);
     this.key.intensity = p.key.i;
     this.overlayKey.position.copy(this.keyDir);
+    // the set's other shadow-casting lights; the parts take their fill light from the set without those panels
+    const casters = p.casters ?? [];
+    while (this.casters.length > casters.length) {
+      const l = this.casters.pop()!;
+      this.scene.remove(l, l.target);
+      l.shadow.dispose();
+      l.dispose();
+    }
+    while (this.casters.length < casters.length) this.casters.push(this.shadowLight(1024));
+    this.casterDirs = casters.map((c) => dirFrom(c.az + this.render$.lightAngle, c.el));
+    casters.forEach((c, k) => {
+      this.casters[k].color.set(c.color);
+      this.casters[k].intensity = c.i;
+    });
+    const total = p.key.i + casters.reduce((a, c) => a + c.i, 0);
+    this.shadowWeights.value = [p.key.i, ...casters.map((c) => c.i), 0, 0, 0].slice(0, 4).map((i) => i / total);
+    FILL_ENV.value = this.envs.fill(p);
+    FILL_ON.value = p.panels.some((pn) => pn.cast) ? 1 : 0;
+    // a set with a real ground stands the model on it; the others catch its shadows over their backdrop
+    this.groundLit.set(p.ground ?? null);
+    this.ground.visible = !p.ground;
     this.groundMat.opacity = p.shadow;
-    this.contact.setStrength(p.contact?.near ?? 0.85, p.contact?.pool ?? 0.5, p.floorLight);
-    this.shadowStale = true;
+    this.contact.setStrength(p.contact?.near ?? 0.85, p.contact?.pool ?? 0.5, p.ground ? undefined : p.floorLight);
+    this.shadowStamp++;
     const look = this.pipe.look;
     look.exposure = p.exposure;
     look.bloom = p.bloom;
@@ -815,29 +857,97 @@ export class SceneController {
   }
 
   /** Before each accumulated sample: the key light where that sample has it, and the floor's contact shadow on the first sample when the model changed (or always, for a capture or film frame that posed the model its own way). */
-  private beforeSample(i: number, fresh = false) {
+  private beforeSample(i: number, fresh = false, cam: THREE.PerspectiveCamera = this.camera, heightPx = this.pipe.height) {
+    // a capture or film frame poses the model its own way: every shadow is drawn again for it
+    if (i === 0 && fresh) this.shadowStamp++;
+    if (i === 0) setBevelPixel(cam, heightPx);
     this.placeKey(i);
+    this.prepareShadows();
     if (i === 0 && (fresh || this.contact.dirty)) this.contact.render(this.scene, L_OPAQUE, this.sectionAnim.on ? [this.sectionPlane] : []);
+    if (i === 0) this.drawMirror(cam, heightPx);
   }
 
-  /** Position the key light for sample i: the centre for i = 0, then spread over the light's area. */
+  /** A light that casts shadows, its map `size` square, redrawn only when told (prepareShadows). */
+  private shadowLight(size: number): THREE.DirectionalLight {
+    const l = new THREE.DirectionalLight(0xffffff, 1);
+    l.castShadow = true;
+    l.shadow.mapSize.set(size, size);
+    l.shadow.bias = -0.0002;
+    l.shadow.autoUpdate = false;
+    l.userData.shadowAt = new THREE.Vector3(NaN, NaN, NaN);
+    l.userData.shadowStamp = -1;
+    // note where and for which model the map was last drawn, whoever drew it
+    const shadow = l.shadow;
+    const updateMatrices = shadow.updateMatrices.bind(shadow);
+    shadow.updateMatrices = (light: THREE.Light) => {
+      l.userData.shadowAt.copy(l.position);
+      l.userData.shadowStamp = this.shadowStamp;
+      updateMatrices(light);
+    };
+    this.scene.add(l, l.target);
+    return l;
+  }
+
+  /** Ask for each shadow map that is not of the model as it is now, from where its light now is. */
+  private prepareShadows() {
+    for (const l of [this.key, ...this.casters]) {
+      const fresh = !!l.shadow.map && l.userData.shadowStamp === this.shadowStamp && (l.userData.shadowAt as THREE.Vector3).equals(l.position);
+      l.shadow.needsUpdate = !fresh;
+    }
+  }
+
+  /** The model mirrored in a glossy floor, for this view (none when the floor is matte, glossy floors are off, or the camera is under the floor). */
+  private drawMirror(cam: THREE.PerspectiveCamera, heightPx: number) {
+    const p = this.preset;
+    const gloss = this.render$.floorGloss === false ? 0 : (p.gloss ?? 0);
+    const above = cam.position.z > this.floorZ;
+    this.groundLit.mesh.visible = !!p.ground && above;
+    this.mirrorPlane.mesh.visible = gloss > 0 && !p.ground && above;
+    const on = gloss > 0 && above && (!!p.ground || this.mirrorPlane.mesh.visible);
+    this.mirror.uniforms.uMirror.value.set(on ? gloss : 0, 0.004);
+    if (!on) {
+      if (this.mirror.ready) this.mirror.release();
+      return;
+    }
+    const aspect = cam.aspect || 1;
+    this.mirror.render(this.scene, cam, this.floorZ, L_OPAQUE, Math.round(heightPx * aspect), heightPx);
+  }
+
+  /**
+   * Position the shadow-casting lights for sample i: each at its centre for i = 0, then spread over its area. With
+   * casters, the key moves on even samples and the casters take turns on odd ones (the others stay put, their shadow
+   * maps still good), so each sample redraws one shadow map as before.
+   */
   private placeKey(i: number) {
+    const n = this.casters.length;
+    // each light walks its own disc samples 1, 2, 3...: well spread however many lights share the samples
+    this.placeLight(this.key, this.keyDir, this.preset.key.size, i === 0 ? 0 : n === 0 ? i : i % 2 === 0 ? i / 2 : -1);
+    const odd = i > 0 && i % 2 === 1;
+    const turn = odd ? ((i - 1) / 2) % n : -1;
+    const step = odd ? Math.floor((i - 1) / 2 / n) + 1 : 0;
+    const sizes = this.preset.casters ?? [];
+    this.casters.forEach((l, k) => this.placeLight(l, this.casterDirs[k], sizes[k]?.size ?? 10, i === 0 ? 0 : turn === k ? step : -1));
+  }
+
+  /** Put a light at sample `i` of its disc of angular radius `sizeDeg` (0: its centre; -1: leave it where it is). */
+  private placeLight(l: THREE.DirectionalLight, dir: THREE.Vector3 | undefined, sizeDeg: number, i: number) {
+    if (i < 0 || !dir) return;
     const size = Math.max(this.bounds.getSize(new THREE.Vector3()).length(), 20);
     const c = this.bounds.getCenter(new THREE.Vector3());
-    const d = this.keyDir.clone();
+    const d = dir.clone();
     if (i > 0) {
       const [x, y] = concentricDisc(halton(i, 5), halton(i, 7));
       const t1 = new THREE.Vector3().crossVectors(d, new THREE.Vector3(0, 0, 1));
       if (t1.lengthSq() < 1e-6) t1.set(1, 0, 0);
       t1.normalize();
       const t2 = new THREE.Vector3().crossVectors(d, t1).normalize();
-      const k = Math.tan(THREE.MathUtils.degToRad(this.preset.key.size));
+      const k = Math.tan(THREE.MathUtils.degToRad(sizeDeg));
       d.addScaledVector(t1, x * k).addScaledVector(t2, y * k).normalize();
     }
-    this.key.position.copy(c).addScaledVector(d, size * 2);
-    this.key.target.position.copy(c);
-    this.key.updateMatrixWorld();
-    this.key.target.updateMatrixWorld();
+    l.position.copy(c).addScaledVector(d, size * 2);
+    l.target.position.copy(c);
+    l.updateMatrixWorld();
+    l.target.updateMatrixWorld();
   }
 
   /** Accumulated samples so far and the target (for tests and diagnostics). */
@@ -1189,9 +1299,41 @@ export class SceneController {
       edges.setAttribute("position", new THREE.BufferAttribute(data.edges, 3));
       g = { mesh, edges, edgeGroups: data.edgeGroups, users: 0 };
       this.geos.set(key, g);
+      // the coarse first mesh is soon replaced: only the refined ones get rounded edges
+      if (!key.endsWith(":preview")) this.bevels.request(key, data);
     }
     g.users++;
     return g;
+  }
+
+  /** A mesh's rounded edges were found: every part showing it gets them. */
+  private bevelReady(key: string, bands: BevelBands | null) {
+    const g = this.geos.get(key);
+    if (!g || this.disposed) return;
+    g.bevel = bands ? bevelGeometry(bands) : null;
+    for (const obj of this.parts.values()) if (obj.geoKey === key) this.attachBevel(obj);
+    this.changed = true;
+  }
+
+  /** Give a part its mesh's rounded edges (hidden until they are found, and while the part is see-through). */
+  private attachBevel(obj: PartObj) {
+    const geo = this.geos.get(obj.geoKey)?.bevel;
+    if (!geo) {
+      if (obj.bevel) obj.bevel.visible = false;
+      return;
+    }
+    if (!obj.bevel) {
+      const m = new THREE.Mesh(geo, obj.mat);
+      m.castShadow = false;
+      m.receiveShadow = true;
+      m.userData.bevel = true;
+      // picking and every pass but the colour one see the part's own mesh
+      m.raycast = () => {};
+      m.layers.set(0);
+      obj.bevel = m;
+      obj.mesh.add(m);
+    } else obj.bevel.geometry = geo;
+    obj.bevel.visible = !obj.mat.transparent;
   }
 
   private release(key: string) {
@@ -1201,13 +1343,15 @@ export class SceneController {
     if (g.users <= 0) {
       g.mesh.dispose();
       g.edges.dispose();
+      g.bevel?.dispose();
+      this.bevels.drop(key);
       this.geos.delete(key);
     }
   }
 
   private lookFor(part: EvalPart): Appearance {
     const o = this.overrides.get(part.id);
-    return o ? appearanceFor(o.material, o.finish, o.color) : appearanceFor(part.material, part.finish, part.color);
+    return o ? appearanceFor(o.material, o.finish, o.color) : appearanceFor(part.material, part.finish ?? processFinish(part.material, part.process?.id), part.color);
   }
 
   private newPartMaterial(look: Appearance) {
@@ -1270,6 +1414,7 @@ export class SceneController {
       opacityTarget: 1,
       sig: "",
       decor: null,
+      bevel: null,
     };
   }
 
@@ -1285,6 +1430,9 @@ export class SceneController {
     obj.u.uThreads.value = g.mesh.getAttribute("aThread") ? 1 : 0;
     // refined while it is still drawing itself in
     if (obj.u.uTrace.value.y > 0) this.traceOrderFor(geoKey);
+    obj.u.uKBox0.value.copy(g.mesh.boundingBox!.min);
+    obj.u.uKBox1.value.copy(g.mesh.boundingBox!.max);
+    this.attachBevel(obj);
   }
 
   /** Real threads for photoreal (the path tracer draws geometry, not the shader's threads), films and close-ups. */
@@ -1397,6 +1545,10 @@ export class SceneController {
     u.uDetail.value.copy(obj.u.uDetail.value);
     u.uPly.value.copy(obj.u.uPly.value);
     u.uThreads.value = obj.u.uThreads.value;
+    u.uMake.value.copy(obj.u.uMake.value);
+    u.uKBox0.value.copy(obj.u.uKBox0.value);
+    u.uKBox1.value.copy(obj.u.uKBox1.value);
+    mat.anisotropy = obj.mat.anisotropy;
     mat.clippingPlanes = obj.mat.clippingPlanes;
     const mesh = new THREE.Mesh(g.mesh, mat);
     mesh.castShadow = true;
@@ -1692,6 +1844,9 @@ export class SceneController {
     // plywood's plies run through the sheet's thickness, which its box tells
     const bb = look.detail === Detail.Plywood ? obj.mesh.geometry.boundingBox : null;
     if (bb) obj.u.uPly.value.fromArray(plyLayout(bb.min.toArray(), bb.max.toArray()));
+    // the marks of how it was made: a print's seam, a mill's arcs, a lathe's rings, a moulding's parting line
+    const [make, makeValue] = makeFor(p.process);
+    applyMake(obj.mat, obj.u, look, make, makeValue, obj.mesh.geometry.boundingBox);
     const selected = d.selected.has(obj.id);
     const hovered = d.hovered === obj.id;
     const focusSet = d.focus.size ? d.focus : d.isolate && d.selected.size ? d.selected : null;
@@ -1729,6 +1884,8 @@ export class SceneController {
     obj.mat.opacity = o;
     obj.mat.depthWrite = !transparent;
     obj.mesh.castShadow = !transparent && !obj.removing && !obj.arrive;
+    // a see-through part's bands would show as lines over its faces
+    if (obj.bevel) obj.bevel.visible = !transparent && !!this.geos.get(obj.geoKey)?.bevel;
     if (obj.decor) {
       for (const mat of obj.decor.mats) {
         const t = transparent || !!mat.userData.decal;
@@ -2187,6 +2344,11 @@ export class SceneController {
     this.grid.position.set(center.x, center.y, zFloor);
     this.ground.scale.set(r * 8, r * 8, 1);
     this.ground.position.set(center.x, center.y, zFloor + 0.01);
+    this.floorZ = zFloor;
+    this.groundLit.layout(center, zFloor - Math.max(0.01, r * 0.0002), r * 1.6, r * 5);
+    this.mirrorPlane.mesh.scale.set(r * 8, r * 8, 1);
+    this.mirrorPlane.mesh.position.set(center.x, center.y, zFloor + 0.005);
+    this.mirrorPlane.fade.value.set(center.x, center.y, r * 0.4, r * 2.2);
     const cell = Math.pow(10, Math.floor(Math.log10(r / 4)));
     this.gridMat.uniforms.uCell.value = Math.max(cell, 1);
     this.gridMat.uniforms.uFade.value = r * 3.5;
@@ -2202,12 +2364,23 @@ export class SceneController {
     sc.far = Math.max(diag, 20) * 4;
     sc.updateProjectionMatrix();
     this.key.shadow.normalBias = Math.max(0.02, r * 0.0025);
+    for (const l of this.casters) {
+      const cc = l.shadow.camera as THREE.OrthographicCamera;
+      cc.left = sc.left;
+      cc.right = sc.right;
+      cc.top = sc.top;
+      cc.bottom = sc.bottom;
+      cc.near = sc.near;
+      cc.far = sc.far;
+      cc.updateProjectionMatrix();
+      l.shadow.normalBias = this.key.shadow.normalBias;
+    }
     this.placeKey(0);
     this.pipe.look.aoRadius = THREE.MathUtils.clamp(r * 0.06, 0.8, 60);
     // contact shadow: surfaces up to a third of the model's size above the floor darken it, the closest the most
     const reach = r * 0.3;
     this.contact.layout(center, zFloor, Math.max(size.x, size.y) * 0.5 + reach * 1.2, reach, new THREE.Vector2(size.x * 0.5, size.y * 0.5));
-    this.shadowStale = true;
+    this.shadowStamp++;
     this.camera.near = Math.max(0.1, r / 400);
     this.camera.far = r * 60;
     this.camera.updateProjectionMatrix();
@@ -2755,7 +2928,7 @@ export class SceneController {
     // anything but the camera changed the scene: the contact shadow and the key light's shadow map are drawn again
     if (this.changed || animating) {
       this.contact.dirty = true;
-      this.shadowStale = true;
+      this.shadowStamp++;
     }
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
@@ -2826,20 +2999,12 @@ export class SceneController {
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
     let rastered = false;
     if (this.pipe.samples < rasterMax) {
-      const r = this.renderer;
       this.pipe.lens = this.lens;
       this.pipe.renderSample(this.scene, this.camera, (i) => {
         this.beforeSample(i);
         this.drawChangeDepth();
-        // while only the camera moves, every frame is sample 0 with the key light in the same place: its shadow map is still good
-        const k = this.key;
-        r.shadowMap.autoUpdate = this.shadowStale || this.shadowSeen !== this.shadowWrites || !k.shadow.map || !k.position.equals(this.shadowAt);
       });
       this.pipe.lens = null;
-      r.shadowMap.autoUpdate = true;
-      this.shadowAt.copy(this.key.position);
-      this.shadowSeen = this.shadowWrites;
-      this.shadowStale = false;
       this.needComposite = true;
       rastered = true;
     }
@@ -3228,7 +3393,7 @@ export class SceneController {
       }
       this.frameMatricesOnly();
       const n = opts.samples ?? Math.max(16, Math.min(96, this.pipe.maxSamples));
-      for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.beforeSample(k, true));
+      for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.beforeSample(k, true, this.camera, pipe.height));
       pipe.composite(out, { time: 0 });
       this.renderer.setRenderTarget(out);
       if (showOverlays) this.overlayDepth();
@@ -3580,7 +3745,7 @@ export class SceneController {
         for (let i = 0; i < n; i++) {
           // with a shutter, each sample is a moment a little later: what moves smears
           pose(to ? mix(shot, to, n > 1 ? i / (n - 1) : 0) : shot);
-          pipe.renderSample(this.scene, cam, (k) => this.beforeSample(k, i === 0));
+          pipe.renderSample(this.scene, cam, (k) => this.beforeSample(k, i === 0, cam, pipe.height));
         }
         if (to) pose(shot);
         pipe.composite(out, { time: shot.clock });

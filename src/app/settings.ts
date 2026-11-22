@@ -17,7 +17,7 @@ export const MODELS = [
 ] as const;
 
 /** Lighting presets the viewport offers; kept here so settings stay free of three.js. */
-export const LIGHTING_IDS = ["studio", "showroom", "blueprint", "workshop", "daylight"];
+export const LIGHTING_IDS = ["studio", "showroom", "blueprint", "workshop", "workbench", "daylight"];
 
 export type ModelId = (typeof MODELS)[number]["id"];
 export type Effort = "low" | "medium" | "high" | "xhigh" | "max";
@@ -53,6 +53,8 @@ export interface Settings {
   edges: boolean;
   /** once the 3D view is still, the parts in front of and behind the selection soften a little */
   focusBlur: boolean;
+  /** the floor under the model mirrors it, as much as the lighting set's floor would */
+  floorGloss: boolean;
   /** viewport lighting preset (see ui/viewport/render/studio) */
   lighting: string;
   /** how far the lighting is turned about the vertical axis, degrees */
@@ -160,6 +162,7 @@ const DEFAULTS: Settings = {
   grid: true,
   edges: true,
   focusBlur: true,
+  floorGloss: true,
   lighting: "studio",
   lightAngle: 0,
   quality: "balanced",

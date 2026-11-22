@@ -5,7 +5,7 @@
 
 import * as THREE from "three";
 
-export type LightingId = "studio" | "showroom" | "blueprint" | "workshop" | "daylight";
+export type LightingId = "studio" | "showroom" | "blueprint" | "workshop" | "workbench" | "daylight";
 
 interface Panel {
   az: number;
@@ -20,6 +20,31 @@ interface Panel {
   disc?: boolean;
   /** rotate the panel about its own normal, degrees */
   roll?: number;
+  /**
+   * The panel lights the model through a shadow-casting light (the key or one of `casters`), so the fill light baked
+   * from the set leaves it out; reflections still show it.
+   */
+  cast?: boolean;
+}
+
+/** A light beside the key that casts shadows too: a big softbox's soft shadow, a window's. */
+export interface Caster {
+  az: number;
+  el: number;
+  color: string;
+  i: number;
+  /** angular radius, degrees */
+  size: number;
+}
+
+/** What the model stands on, drawn and lit (render/ground.ts); its pattern is in mm, at real scale. */
+export interface GroundLook {
+  kind: "wood" | "concrete" | "pavement";
+  color: string;
+  color2: string;
+  roughness: number;
+  /** clear coat: an oiled bench, a sealed floor */
+  coat: number;
 }
 
 export interface LightingPreset {
@@ -29,6 +54,12 @@ export interface LightingPreset {
   sky: { zenith: string; horizon: string; ground: string; i: number };
   panels: Panel[];
   key: { az: number; el: number; color: string; i: number; /** angular radius of the light, degrees: bigger is softer */ size: number };
+  /** further lights that cast shadows (big softboxes, a window) */
+  casters?: Caster[];
+  /** a real ground the model stands on (a bench top, a floor), lit and shadowed; without one the set's backdrop shows under it */
+  ground?: GroundLook;
+  /** how much the floor mirrors the model (0..1) when glossy floors are on */
+  gloss?: number;
   envIntensity: number;
   exposure: number;
   /** viewport background, sRGB */
@@ -45,7 +76,7 @@ export interface LightingPreset {
   /** a light background (UI chrome over it should switch to dark text) */
   light?: boolean;
   /** the set in the light theme, for presets whose own set is dark: same lights, a pale backdrop */
-  lightSet?: Pick<LightingPreset, "backdrop" | "grid" | "edge" | "vignette" | "bloom" | "shadow" | "contact" | "floorLight">;
+  lightSet?: Pick<LightingPreset, "backdrop" | "grid" | "edge" | "vignette" | "bloom" | "shadow" | "contact" | "floorLight" | "gloss">;
 }
 
 export const LIGHTING: LightingPreset[] = [
@@ -55,8 +86,8 @@ export const LIGHTING: LightingPreset[] = [
     note: "Neutral softboxes on a dark set",
     sky: { zenith: "#8a909c", horizon: "#5a606b", ground: "#25272b", i: 1 },
     panels: [
-      { az: -100, el: 42, w: 4, h: 4, i: 8, color: "#fff6ec", soft: 0.35 },
-      { az: -40, el: 86, w: 8, h: 6, i: 4, color: "#ffffff", soft: 0.5 },
+      { az: -100, el: 42, w: 4, h: 4, i: 8, color: "#fff6ec", soft: 0.35, cast: true },
+      { az: -40, el: 86, w: 8, h: 6, i: 4, color: "#ffffff", soft: 0.5, cast: true },
       { az: 22, el: 12, w: 6, h: 3.5, i: 2.2, color: "#e6eeff", soft: 0.6 },
       { az: 128, el: 18, w: 0.9, h: 6.5, i: 5.5, color: "#e3ebff", soft: 0.25 },
       { az: 205, el: 22, w: 0.9, h: 6.5, i: 3.5, color: "#fff2e6", soft: 0.25 },
@@ -65,7 +96,9 @@ export const LIGHTING: LightingPreset[] = [
       { az: -70, el: 4, w: 14, h: 2.6, i: 1.3, color: "#dde2ea", soft: 0.7 },
       { az: 110, el: 4, w: 14, h: 2.6, i: 0.7, color: "#dde2ea", soft: 0.7 },
     ],
-    key: { az: -100, el: 42, color: "#fff4e8", i: 2.1, size: 7 },
+    key: { az: -100, el: 42, color: "#fff4e8", i: 2.5, size: 7 },
+    casters: [{ az: -40, el: 86, color: "#ffffff", i: 0.85, size: 16 }],
+    gloss: 0.6,
     envIntensity: 1,
     exposure: 1,
     backdrop: { top: "#1d222c", bottom: "#090b0f", glow: "#2f3850", glowAmt: 0.55 },
@@ -83,6 +116,7 @@ export const LIGHTING: LightingPreset[] = [
       bloom: 0.04,
       vignette: 0.1,
       floorLight: { color: "#000000", amount: 0 },
+      gloss: 0.4,
     },
   },
   {
@@ -91,13 +125,15 @@ export const LIGHTING: LightingPreset[] = [
     note: "Bright white cyclorama for presentation shots",
     sky: { zenith: "#ffffff", horizon: "#e6e9ef", ground: "#a7acb4", i: 1.35 },
     panels: [
-      { az: -100, el: 45, w: 4, h: 4, i: 6, color: "#ffffff", soft: 0.4 },
-      { az: -30, el: 88, w: 9, h: 7, i: 3.2, color: "#ffffff", soft: 0.5 },
+      { az: -100, el: 45, w: 4, h: 4, i: 6, color: "#ffffff", soft: 0.4, cast: true },
+      { az: -30, el: 88, w: 9, h: 7, i: 3.2, color: "#ffffff", soft: 0.5, cast: true },
       { az: 30, el: 15, w: 6, h: 3.5, i: 2.2, color: "#f4f7ff", soft: 0.6 },
       { az: 135, el: 20, w: 1.1, h: 7, i: 4.5, color: "#ffffff", soft: 0.25 },
       { az: 210, el: 20, w: 1.1, h: 7, i: 4.5, color: "#ffffff", soft: 0.25 },
     ],
-    key: { az: -100, el: 48, color: "#ffffff", i: 1.9, size: 10 },
+    key: { az: -100, el: 48, color: "#ffffff", i: 2.25, size: 10 },
+    casters: [{ az: -30, el: 88, color: "#ffffff", i: 0.85, size: 18 }],
+    gloss: 0.45,
     envIntensity: 1,
     exposure: 0.92,
     backdrop: { top: "#f4f6f9", bottom: "#cfd4dc", glow: "#ffffff", glowAmt: 0.35 },
@@ -114,13 +150,14 @@ export const LIGHTING: LightingPreset[] = [
     note: "Deep blue set with accent rim lights",
     sky: { zenith: "#4a5f8f", horizon: "#26345a", ground: "#0b1020", i: 1 },
     panels: [
-      { az: -100, el: 48, w: 3, h: 3, i: 6, color: "#e8eeff", soft: 0.35 },
+      { az: -100, el: 48, w: 3, h: 3, i: 6, color: "#e8eeff", soft: 0.35, cast: true },
       { az: -40, el: 85, w: 6, h: 4, i: 1.6, color: "#c9d6ff", soft: 0.5 },
       { az: 135, el: 16, w: 0.8, h: 7, i: 9, color: "#6d8bff", soft: 0.25 },
       { az: 205, el: 20, w: 0.8, h: 7, i: 6, color: "#4fd1c5", soft: 0.25 },
       { az: 30, el: 10, w: 5, h: 2.5, i: 0.9, color: "#8fa8ff", soft: 0.6 },
     ],
-    key: { az: -100, el: 48, color: "#e3eaff", i: 1.8, size: 6 },
+    key: { az: -100, el: 48, color: "#e3eaff", i: 2.05, size: 6 },
+    gloss: 0.5,
     envIntensity: 1,
     exposure: 1.02,
     backdrop: { top: "#13203d", bottom: "#05070d", glow: "#22356b", glowAmt: 0.7 },
@@ -147,16 +184,20 @@ export const LIGHTING: LightingPreset[] = [
     note: "Warm lamp with cool window light",
     sky: { zenith: "#8f7f6e", horizon: "#5c4f43", ground: "#231d18", i: 1 },
     panels: [
-      { az: -115, el: 38, w: 2.4, h: 2.4, i: 9, color: "#ffd2a0", soft: 0.35 },
-      { az: 55, el: 24, w: 6, h: 4, i: 2.8, color: "#cfe0ff", soft: 0.3 },
+      { az: -115, el: 38, w: 2.4, h: 2.4, i: 9, color: "#ffd2a0", soft: 0.35, cast: true },
+      { az: 55, el: 24, w: 6, h: 4, i: 2.8, color: "#cfe0ff", soft: 0.3, cast: true },
       { az: -30, el: 85, w: 5, h: 4, i: 1.2, color: "#ffe7cc", soft: 0.5 },
       { az: 150, el: 18, w: 0.9, h: 6, i: 4, color: "#ffc58a", soft: 0.25 },
     ],
-    key: { az: -115, el: 38, color: "#ffcf99", i: 2.3, size: 8 },
+    key: { az: -115, el: 38, color: "#ffcf99", i: 2.55, size: 8 },
+    casters: [{ az: 55, el: 24, color: "#cfe0ff", i: 0.5, size: 12 }],
+    // a sealed concrete floor
+    ground: { kind: "concrete", color: "#8a8680", color2: "#5f5c58", roughness: 0.5, coat: 0.25 },
+    gloss: 0.2,
     envIntensity: 1,
     exposure: 1.02,
     backdrop: { top: "#26211c", bottom: "#0c0a09", glow: "#45362a", glowAmt: 0.55 },
-    grid: { minor: "#2e2822", major: "#4a3e31", alpha: 0.85 },
+    grid: { minor: "#2e2822", major: "#4a3e31", alpha: 0.4 },
     shadow: 0.55,
     edge: { color: "#0a0806", alpha: 0.5 },
     bloom: 0.12,
@@ -173,16 +214,52 @@ export const LIGHTING: LightingPreset[] = [
     },
   },
   {
+    id: "workbench",
+    label: "Workbench",
+    note: "An oiled beech bench under a warm lamp and a big window",
+    sky: { zenith: "#9a8f82", horizon: "#5e5246", ground: "#6b5039", i: 1 },
+    panels: [
+      // the lamp over the bench
+      { az: -130, el: 58, w: 1.8, h: 1.8, i: 16, color: "#ffd9ab", soft: 0.3, disc: true, cast: true },
+      // a big window across the bench
+      { az: 35, el: 28, w: 7, h: 5, i: 3, color: "#dfe9ff", soft: 0.35, cast: true },
+      { az: -20, el: 85, w: 6, h: 3, i: 1.6, color: "#fff1e0", soft: 0.5 },
+      // the wall behind the bench
+      { az: 150, el: 12, w: 10, h: 2.5, i: 0.9, color: "#e9dccb", soft: 0.7 },
+    ],
+    key: { az: -130, el: 58, color: "#ffd6a3", i: 2.4, size: 5 },
+    casters: [{ az: 35, el: 28, color: "#dfe9ff", i: 0.65, size: 14 }],
+    ground: { kind: "wood", color: "#c3a27e", color2: "#957255", roughness: 0.42, coat: 0.3 },
+    gloss: 0.12,
+    envIntensity: 1,
+    exposure: 1,
+    backdrop: { top: "#2b241e", bottom: "#100d0a", glow: "#4a3a2c", glowAmt: 0.5 },
+    grid: { minor: "#3a3027", major: "#5a4a3a", alpha: 0.2 },
+    shadow: 0.55,
+    edge: { color: "#0a0806", alpha: 0.5 },
+    bloom: 0.1,
+    vignette: 0.3,
+    lightSet: {
+      backdrop: { top: "#f4efe7", bottom: "#d8ccba", glow: "#fffaf0", glowAmt: 0.4 },
+      grid: { minor: "#d9d0c2", major: "#b5a690", alpha: 0.6 },
+      shadow: 0.45,
+      edge: { color: "#241b12", alpha: 0.44 },
+      bloom: 0.05,
+      vignette: 0.14,
+    },
+  },
+  {
     id: "daylight",
-    label: "Daylight",
-    note: "Clear sky and sun, crisp shadows",
-    sky: { zenith: "#3f74cf", horizon: "#c4d8f0", ground: "#5d574e", i: 1.5 },
-    panels: [{ az: -120, el: 55, w: 0.9, h: 0.9, i: 160, color: "#fff3df", soft: 0.4, disc: true }],
-    key: { az: -120, el: 55, color: "#fff1dc", i: 2.9, size: 1.2 },
+    label: "Outdoor",
+    note: "Clear sky and sun on a concrete pad, crisp shadows",
+    sky: { zenith: "#5884cc", horizon: "#cddcee", ground: "#7d776c", i: 1.5 },
+    panels: [{ az: -120, el: 55, w: 0.9, h: 0.9, i: 160, color: "#fff3df", soft: 0.4, disc: true, cast: true }],
+    key: { az: -120, el: 55, color: "#fff1dc", i: 3.3, size: 1.2 },
+    ground: { kind: "pavement", color: "#b7b1a6", color2: "#8e897f", roughness: 0.85, coat: 0 },
     envIntensity: 0.85,
     exposure: 0.9,
     backdrop: { top: "#7fa6db", bottom: "#e2e9f1", glow: "#ffffff", glowAmt: 0.25 },
-    grid: { minor: "#b4c1d1", major: "#8e9fb6", alpha: 0.8 },
+    grid: { minor: "#b4c1d1", major: "#8e9fb6", alpha: 0.4 },
     shadow: 0.5,
     edge: { color: "#0f131b", alpha: 0.45 },
     bloom: 0.08,
@@ -270,10 +347,11 @@ function panelMesh(pn: Panel): THREE.Mesh {
   return mesh;
 }
 
-function studioScene(p: LightingPreset) {
+/** The set as an HDR scene. `fill`: without the panels that light the model through shadow-casting lights. */
+function studioScene(p: LightingPreset, fill = false) {
   const scene = new THREE.Scene();
   scene.add(new THREE.Mesh(new THREE.SphereGeometry(40, 64, 32), skyMaterial(p)));
-  for (const pn of p.panels) scene.add(panelMesh(pn));
+  for (const pn of p.panels) if (!(fill && pn.cast)) scene.add(panelMesh(pn));
   return scene;
 }
 
@@ -288,20 +366,33 @@ function disposeScene(scene: THREE.Scene) {
 
 /** Bakes and caches the environment map for each preset. */
 export class StudioEnvironments {
-  private cache = new Map<LightingId, THREE.WebGLRenderTarget>();
+  private cache = new Map<string, THREE.WebGLRenderTarget>();
   private cubes = new Map<LightingId, THREE.WebGLCubeRenderTarget>();
   constructor(private renderer: THREE.WebGLRenderer) {}
 
   /** Prefiltered for the interactive view. */
   get(p: LightingPreset): THREE.Texture {
-    let rt = this.cache.get(p.id);
+    return this.bake(p, false);
+  }
+
+  /**
+   * The light a surface gets from the set apart from the panels standing in for shadow-casting lights (those light it
+   * directly, shadowed): the view takes diffuse light from this one and reflections from get(). Same size as get().
+   */
+  fill(p: LightingPreset): THREE.Texture {
+    return p.panels.some((pn) => pn.cast) ? this.bake(p, true) : this.bake(p, false);
+  }
+
+  private bake(p: LightingPreset, fill: boolean): THREE.Texture {
+    const key = fill ? `${p.id}:fill` : p.id;
+    let rt = this.cache.get(key);
     if (!rt) {
-      const scene = studioScene(p);
+      const scene = studioScene(p, fill);
       const pmrem = new THREE.PMREMGenerator(this.renderer);
       rt = pmrem.fromScene(scene, 0, 0.1, 100);
       pmrem.dispose();
       disposeScene(scene);
-      this.cache.set(p.id, rt);
+      this.cache.set(key, rt);
     }
     return rt.texture;
   }
