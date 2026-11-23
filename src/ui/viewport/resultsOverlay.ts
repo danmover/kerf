@@ -121,8 +121,8 @@ export class ResultsOverlay implements SceneOverlay {
     uReveal: { value: new THREE.Vector4() },
     uMode: { value: 0 },
     uBands: { value: BANDS },
-    // a section cut: the face it leaves is coloured by the field inside, read from a 3D texture of the result
-    uCapOn: { value: 0 },
+    // a section cut: the face it leaves is coloured by the field inside, read from a 3D texture of the result (the
+    // shader only has that code while a cut shows the inside: see KERF_CAP)
     uPlane: { value: new THREE.Vector4(1, 0, 0, 0) },
     uVolT: { value: null as THREE.Data3DTexture | null },
     uVolD: { value: null as THREE.Data3DTexture | null },
@@ -174,14 +174,15 @@ export class ResultsOverlay implements SceneOverlay {
         .replace(
           "vec4 diffuseColor = vec4( diffuse, opacity );",
           // ahead of a new result's front the model is still plain grey; a bright line runs up where the colours arrive
-          "vec4 diffuseColor = vec4( kerfResultColor(vT, uMode, uBands), opacity );\nfloat kerfCap = 0.0;\nif (!gl_FrontFacing) kerfCap = kerfCapColor(diffuseColor.rgb);\nfloat kerfFront = 0.0;\nif (uReveal.w > 0.5) {\n  float kerfAhead = (vWorldR.z - uReveal.x) / max(uReveal.y, 1e-3) - uReveal.z;\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42), step(0.0, kerfAhead));\n  kerfFront = 1.0 - smoothstep(0.0, 0.05, abs(kerfAhead));\n}",
+          "vec4 diffuseColor = vec4( kerfResultColor(vT, uMode, uBands, 1.0), opacity );\n" + GLSL_CAP_MAIN + "\nfloat kerfFront = 0.0;\nif (uReveal.w > 0.5) {\n  float kerfAhead = (vWorldR.z - uReveal.x) / max(uReveal.y, 1e-3) - uReveal.z;\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42), step(0.0, kerfAhead));\n  kerfFront = 1.0 - smoothstep(0.0, 0.05, abs(kerfAhead));\n}",
         )
-        .replace("#include <normal_fragment_begin>", "#include <normal_fragment_begin>\nif (kerfCap > 0.5) normal = normalize((viewMatrix * vec4(-uPlane.xyz, 0.0)).xyz);")
+        .replace("#include <normal_fragment_begin>", "#include <normal_fragment_begin>\n#ifdef KERF_CAP\nnormal = normalize(mix(normal, (viewMatrix * vec4(-uPlane.xyz, 0.0)).xyz, kerfCap));\n#endif")
         // the cut face is drawn on the far wall behind it, so that wall's shadows would speckle it: it takes none
         .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replaceAll("&& receiveShadow )", "&& receiveShadow && kerfCap < 0.5 )"))
         .replace("vec3 totalEmissiveRadiance = emissive;", "vec3 totalEmissiveRadiance = emissive + diffuseColor.rgb * 0.22 + (diffuseColor.rgb + 0.4) * kerfFront * 1.6;");
     };
-    this.material.customProgramCacheKey = () => "kerf-results-v3";
+    // KERF_CAP is in the material's defines, which three keys its programs by as well
+    this.material.customProgramCacheKey = () => "kerf-results-v4";
     this.zSpan = [lo.z, hi.z];
     this.buildVolume();
     this.disposables.push(this.material, this.ghostMat);
@@ -232,7 +233,7 @@ export class ResultsOverlay implements SceneOverlay {
     this.cfg = cfg;
     if (modeChanged || !this.filled)
       for (const p of this.parts) p.mesh.geometry.setAttribute("aDisp", new THREE.BufferAttribute(mode !== null ? this.result.parts[p.index].modes![mode] : this.result.parts[p.index].disp, 3));
-    this.uniforms.uCapOn.value = this.cut && this.vol && mode === null ? 1 : 0;
+    this.syncCap();
     if (mode !== null) {
       this.uniforms.uMode.value = 0;
       if (fieldChanged || !this.filled) this.fill();
@@ -390,7 +391,8 @@ export class ResultsOverlay implements SceneOverlay {
   }
 
   tick(now: number): boolean {
-    let active = false;
+    // the section plane moves as it slides in: marks on the side it cuts away go with it
+    let active = this.cut ? this.hideCutMarks() : false;
     if (this.sweep) {
       const k = (now - this.sweep.t0) / this.sweep.dur;
       if (k >= 1) {
@@ -402,7 +404,7 @@ export class ResultsOverlay implements SceneOverlay {
     if (this.modeShown() !== null) {
       // a mode swings both ways about the rest shape
       const target = this.cfg.animate ? this.modeAmp * Math.sin(((now - this.t0) / 1400) * Math.PI * 2) : this.modeAmp;
-      active = this.cfg.animate || this.uniforms.uScale.value !== target;
+      active = active || this.cfg.animate || this.uniforms.uScale.value !== target;
       this.uniforms.uScale.value = target;
     } else if (this.cfg.animate && this.cfg.scale > 0) {
       const k = 0.5 - 0.5 * Math.cos(((now - this.t0) / 2400) * Math.PI * 2);
@@ -436,8 +438,56 @@ export class ResultsOverlay implements SceneOverlay {
     this.material.needsUpdate = true;
     this.ghostMat.needsUpdate = true;
     this.cut = planes?.[0] ?? null;
-    this.uniforms.uCapOn.value = this.cut && this.vol && this.modeShown() === null ? 1 : 0;
+    this.syncCap();
     this.syncCut();
+    this.clipMarks();
+  }
+
+  /** Load arrows and support markers are cut with the model; labels and hot spot rings on the side cut away go. */
+  private clipMarks() {
+    const planes = this.cut ? [this.cut] : null;
+    this.markers.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+      if (!m || o instanceof THREE.Sprite || !!m.clippingPlanes?.length === !!planes) return;
+      m.clippingPlanes = planes;
+      m.needsUpdate = true;
+    });
+    this.hideCutMarks();
+  }
+
+  /** Labels and rings whose point the section cuts away are hidden (they are drawn over everything); true when any changed. */
+  private hideCutMarks(): boolean {
+    const c = this.cut;
+    let changed = false;
+    for (const g of [this.markers, this.labels])
+      for (const o of g.children) {
+        if (!(o instanceof THREE.Sprite)) continue;
+        const show = !c || c.distanceToPoint(o.position) >= -1e-3;
+        if (o.visible !== show) changed = true;
+        o.visible = show;
+      }
+    return changed;
+  }
+
+  /**
+   * The cut face's code goes into the shader only while a section shows the inside of a result that has one. On
+   * Direct3D (Windows) the graphics driver took about 6 s to compile the shader with it, long enough for the card to
+   * drop the 3D view's drawing context every time a result was shown; without it the shader compiles in a tenth of a
+   * second. Switching it on or off makes the material compile again, once per state.
+   */
+  private syncCap() {
+    const on = !!this.cut && !!this.vol && this.modeShown() === null;
+    const defines = { ...this.material.defines };
+    if (on === "KERF_CAP" in defines) return;
+    if (on) defines.KERF_CAP = "";
+    else delete defines.KERF_CAP;
+    this.material.defines = defines;
+    this.material.needsUpdate = true;
+  }
+
+  /** whether the shader has the cut face's code (tests) */
+  get capCompiled(): boolean {
+    return "KERF_CAP" in (this.material.defines ?? {});
   }
 
   /** The field value under a ray, interpolated inside the triangle hit. */
@@ -641,6 +691,7 @@ export class ResultsOverlay implements SceneOverlay {
     }
     else if (this.cfg.field === "disp") add(`${fmtNum(r.maxDisp.value, 3)} mm`, r.maxDisp.at);
     else add(`${fmtNum(r.maxStrain.value * 100, 3)} % strain`, r.maxStrain.at);
+    this.hideCutMarks();
   }
 
   private arrow(from: THREE.Vector3, dir: THREE.Vector3, len: number, color: number) {
@@ -780,8 +831,11 @@ function volumeT(v: ResultVolume, field: ResultField, q: number, lo: number, hi:
 
 // The face a section cut leaves: a back face seen through the cut is coloured by the field where the view ray meets
 // the plane, read from the result's 3D texture after undoing the drawn displacement, and lit as the flat cut face.
+// Only compiled in while a section shows the inside (KERF_CAP), and written without branches, early returns or
+// derivatives (textureLod, a fixed three steps): Direct3D's shader compiler takes seconds over each of those.
 const GLSL_CAP = /* glsl */ `
-uniform float uCapOn;
+varying vec3 vWorldR;
+#ifdef KERF_CAP
 uniform vec4 uPlane;
 uniform highp sampler3D uVolT;
 uniform highp sampler3D uVolD;
@@ -790,20 +844,32 @@ uniform vec3 uVolO;
 uniform vec3 uVolS;
 uniform vec3 uVolN;
 uniform float uScale;
-varying vec3 vWorldR;
 vec3 kerfVolUV(vec3 x) { return ((x - uVolO) / uVolS + 0.5) / uVolN; }
-float kerfCapColor(inout vec3 rgb) {
-  rgb = vec3(0.09, 0.1, 0.13);
-  if (uCapOn < 0.5) return 0.0;
+vec3 kerfCapColor() {
   vec3 ray = vWorldR - cameraPosition;
   float den = dot(uPlane.xyz, ray);
-  if (abs(den) < 1e-12) return 0.0;
+  den = abs(den) < 1e-9 ? 1e-9 : den;
   vec3 xp = cameraPosition - ((dot(uPlane.xyz, cameraPosition) + uPlane.w) / den) * ray;
-  vec3 x0 = xp;
-  if (uVolHasD > 0.0) for (int k = 0; k < 3; k++) x0 = xp - uScale * uVolHasD * texture(uVolD, kerfVolUV(x0)).xyz;
-  rgb = kerfResultColor(texture(uVolT, kerfVolUV(x0)).r, uMode, uBands);
-  return 1.0;
+  vec3 k = vec3(uScale * uVolHasD);
+  vec3 x0 = xp - k * textureLod(uVolD, kerfVolUV(xp), 0.0).xyz;
+  x0 = xp - k * textureLod(uVolD, kerfVolUV(x0), 0.0).xyz;
+  x0 = xp - k * textureLod(uVolD, kerfVolUV(x0), 0.0).xyz;
+  return kerfResultColor(textureLod(uVolT, kerfVolUV(x0), 0.0).r, uMode, uBands, 0.0);
 }
+#endif
+`;
+
+// In main(): kerfCap is 1 on a back face seen through the cut (then coloured by the field inside), else 0. Without the
+// cut's code (no section, or a result with no inside to show: beams, shells), a back face (the inside of a tube's wall
+// seen through a section) keeps the field's colour, darker.
+const GLSL_CAP_MAIN = /* glsl */ `
+float kerfCap = 0.0;
+#ifdef KERF_CAP
+kerfCap = gl_FrontFacing ? 0.0 : 1.0;
+diffuseColor.rgb = mix(diffuseColor.rgb, kerfCapColor(), kerfCap);
+#else
+diffuseColor.rgb = gl_FrontFacing ? diffuseColor.rgb : diffuseColor.rgb * 0.45;
+#endif
 `;
 
 // GLSL copies of src/analysis/colormap.ts; colours are converted to linear for lighting
@@ -833,7 +899,8 @@ vec3 kerfMap(float t, float mode) {
   if (mode > 0.5) return kerfSafety(t);
   return kerfTurbo(t);
 }
-vec3 kerfResultColor(float t, float mode, float bands) {
+// lines: 1 draws thin contour lines between the bands (they need the screen derivative of t), 0 leaves them out
+vec3 kerfResultColor(float t, float mode, float bands, float lines) {
   t = clamp(t, 0.0, 1.0);
   vec3 c;
   if (mode > 0.5 && mode < 1.5) {
@@ -841,11 +908,12 @@ vec3 kerfResultColor(float t, float mode, float bands) {
   } else {
     float tb = (floor(min(t, 0.9999) * bands) + 0.5) / bands;
     c = mix(kerfMap(t, mode), kerfMap(tb, mode), 0.7);
-    // thin contour lines between bands
-    float f = fract(t * bands);
-    float w = fwidth(t * bands);
-    float line = 1.0 - smoothstep(0.0, w * 1.3, min(f, 1.0 - f));
-    c *= 1.0 - 0.28 * line;
+    if (lines > 0.5) {
+      float f = fract(t * bands);
+      float w = fwidth(t * bands);
+      float line = 1.0 - smoothstep(0.0, w * 1.3, min(f, 1.0 - f));
+      c *= 1.0 - 0.28 * line;
+    }
   }
   return kerfToLinear(c);
 }
