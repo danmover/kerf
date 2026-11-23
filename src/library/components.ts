@@ -37,7 +37,8 @@ import { pitchDiameter, rootDiameter, tipDiameter } from "./gears";
 import { CHAINS, CHAIN_IDS, sprocketPd, sprocketProfile, sprocketRoot, sprocketTip, toothWidth } from "../machine/chains";
 import { MACHINE_LIBRARY } from "../machine/library";
 import { SPRING_WIRE, springRate } from "./springs";
-import type { SpringInfo } from "../core/model";
+import { RUBBERS, rubberOf } from "./bands";
+import type { OringInfo, SpringInfo } from "../core/model";
 import type { Footprint } from "../machine/pcb/types";
 
 export type Placement = "axis" | "facing" | "free";
@@ -72,6 +73,7 @@ export interface CompDef {
   gear?: { m: number; z: number; width: number; pa: number; bore: number };
   bearing?: { code: string; bore: number; od: number; width: number; dynamicLoadN: number };
   spring?: Omit<SpringInfo, "center" | "axis">;
+  oring?: Omit<OringInfo, "center" | "axis">;
   bom: { description: string; standard?: string; catalogId?: string; length?: number; price?: number; priceNote?: string; search?: string; key?: string };
   /** catalog-backed purchasable part */
   catalog?: { id: string; length?: number; travel?: number };
@@ -483,6 +485,100 @@ export const LIBRARY: Record<string, LibEntry> = {
     },
   },
 
+  sheave: {
+    signature: "lib.sheave(tread: 50, rope: 3, bore: 8) { at: (x, y, z), axis: Y }",
+    doc: "Grooved rope pulley to make (printed or turned): a round-bottomed groove sized for the rope, on a bore for its bearing or axle. tread: the diameter at the bottom of the groove, where the rope sits (wire rope wants 24 times its diameter for 7x19, 42 times for 7x7; fibre rope 8 to 10 times); rope: the rope's diameter, which sets the groove; bore: the hole through it (a bearing's outside diameter, or the axle's); width: overall, when the default is too narrow for its bearing. `at` is the centre of one face and it extends along `axis`. List it in a lib.rope path: between the rope's ends. Fields: tread, od, width, bore, rope, groove_w, at, center (the middle of the groove, where the rope runs), end, axis.",
+    positional: ["tread"],
+    params: ["tread", "rope", "bore", "width"],
+    group: "Motion",
+    make(a) {
+      const tread = a.num("tread", 50);
+      const rope = a.num("rope", 3);
+      const bore = a.num("bore", 8);
+      if (!(rope > 0)) throw new Error("lib.sheave: rope: the rope's diameter in mm, more than 0");
+      if (!(tread > 2 * rope)) throw new Error("lib.sheave: tread: (the diameter at the bottom of the groove) should be many times the rope's diameter: 8 times at least for fibre rope, 24 for 7x19 wire rope");
+      if (bore < 0 || bore >= tread - 2) throw new Error(`lib.sheave: bore ${bore} mm leaves no wall under the ${tread} mm groove`);
+      // groove: a radius just over half the rope, one and a half rope diameters deep, its sides opening 45°
+      const rg = 0.53 * rope;
+      const depth = 1.5 * rope;
+      const od = tread + 2 * depth;
+      const th = (67.5 * Math.PI) / 180;
+      const lip = Math.max(1.2, 0.4 * rope);
+      const cr = tread / 2 + rg;
+      const flank = (od / 2 - (cr - rg * Math.cos(th))) / Math.tan(th);
+      const half = rg * Math.sin(th) + flank;
+      const w = Math.max(a.num("width", 0), 2 * (half + lip));
+      const cz = w / 2;
+      const pts: V2[] = [[bore / 2, 0], [od / 2, 0], [od / 2, cz - half]];
+      for (let i = 0; i <= 8; i++) {
+        const phi = -th + (2 * th * i) / 8;
+        pts.push([cr - rg * Math.cos(phi), cz + rg * Math.sin(phi)]);
+      }
+      pts.push([od / 2, cz + half], [od / 2, w], [bore / 2, w]);
+      const recipe: PartRecipe = { base: { t: "revolve", pts: bore > 0 ? pts : [[0, 0], ...pts.slice(1, -1), [0, w]], at: Z0, dir: ZP }, ops: [] };
+      const r1 = (x: number) => Math.round(x * 100) / 100;
+      return {
+        kind: "sheave",
+        label: `Sheave, ${r1(tread)} mm tread`,
+        placement: "axis",
+        solids: [{ suffix: "", label: `Sheave ${r1(tread)} mm for ${r1(rope)} mm rope`, recipe, color: "#e9e7e0", material: "Nylon", finish: "machined" }],
+        fields: {
+          scalars: { tread, root_d: tread, od: r1(od), width: r1(w), bore, rope, groove_w: r1(2 * half), flange: r1(depth) },
+          points: { at: Z0, center: [0, 0, cz], end: [0, 0, w] },
+          dirs: { axis: ZP },
+        },
+        bom: { description: `Rope sheave, ${r1(tread)} mm tread, groove for ${r1(rope)} mm rope, ${r1(bore)} mm bore` },
+      };
+    },
+  },
+
+  drum: {
+    signature: "lib.drum(d: 40, width: 30, rope: 3, bore: 8) { at: (x, y, z), axis: Y, spin: 1 }",
+    doc: "Winch drum to make: a barrel between two flanges, on a bore for its shaft. d: the barrel's diameter, where the rope winds (the same many-times-the-rope rule as a sheave's tread); width: between the flanges, which sets how many turns fit side by side (width / rope); rope: the rope's diameter, which sets how high the flanges stand (flange: to change it); bore: the shaft hole. `at` is the centre of one outer face and it extends along `axis`. Give it spin: (or turns_with: its motor or gearbox) and put it at an end of a lib.rope path:. Fields: d, root_d, width, flange, od, length, bore, rope, at, center (the middle of the barrel), end, axis.",
+    positional: ["d"],
+    params: ["d", "width", "rope", "bore", "flange", "wall"],
+    group: "Motion",
+    make(a) {
+      const d = a.num("d", 40);
+      const width = a.num("width", 30);
+      const rope = a.num("rope", 3);
+      const bore = a.num("bore", 8);
+      if (!(rope > 0)) throw new Error("lib.drum: rope: the rope's diameter in mm, more than 0");
+      if (!(d > 2 * rope)) throw new Error("lib.drum: d: (the barrel's diameter) should be many times the rope's diameter: 8 times at least for fibre rope, 24 for 7x19 wire rope");
+      if (!(width >= rope)) throw new Error("lib.drum: width: (between the flanges) must take at least one turn of rope");
+      if (bore < 0 || bore >= d - 2) throw new Error(`lib.drum: bore ${bore} mm leaves no wall in the ${d} mm barrel`);
+      // flanges stand two and a half rope diameters above the barrel: one layer of rope and one and a half diameters over it
+      const flange = a.num("flange", 2.5 * rope);
+      const t = a.num("wall", Math.max(2, 0.06 * d));
+      const od = d + 2 * flange;
+      const L = width + 2 * t;
+      const pts: V2[] = [
+        [bore / 2, 0],
+        [od / 2, 0],
+        [od / 2, t],
+        [d / 2, t],
+        [d / 2, t + width],
+        [od / 2, t + width],
+        [od / 2, L],
+        [bore / 2, L],
+      ];
+      const recipe: PartRecipe = { base: { t: "revolve", pts, at: Z0, dir: ZP }, ops: [] };
+      const r1 = (x: number) => Math.round(x * 100) / 100;
+      return {
+        kind: "drum",
+        label: `Winch drum, ${r1(d)} mm`,
+        placement: "axis",
+        solids: [{ suffix: "", label: `Drum ${r1(d)} × ${r1(width)} mm`, recipe, color: "#c4c9d0", material: "Aluminum 6061", finish: "machined" }],
+        fields: {
+          scalars: { d, root_d: d, width, flange: r1(flange), od: r1(od), length: r1(L), bore, rope },
+          points: { at: Z0, center: [0, 0, L / 2], end: [0, 0, L] },
+          dirs: { axis: ZP },
+        },
+        bom: { description: `Winch drum, ${r1(d)} mm barrel, ${r1(width)} mm between flanges, ${r1(bore)} mm bore` },
+      };
+    },
+  },
+
   nema17: {
     signature: "lib.nema17(length: 40) { at: face_center, axis: Y }",
     doc: "NEMA 17 stepper motor. `at` is the centre of the mounting face, the shaft points along `axis` and the body extends behind it. Fields: face, holes (4 M3 holes on a 31 mm square, on the face), hole_spacing, pilot_d (22), pilot_h (2), shaft_d (5), shaft_len (24), shaft_tip, body (42.3), length, axis. Add `spin: 1` to drive the mechanism from the shaft.",
@@ -688,6 +784,51 @@ export const LIBRARY: Record<string, LibEntry> = {
     group: "Bands",
     make() {
       throw new Error("lib.band is laid out round the parts it wraps");
+    },
+  },
+
+  oring: {
+    signature: 'lib.oring("NBR", id: 25, cs: 2.62) { at: (x, y, z), axis: Z }',
+    doc: 'An O-ring that seals: in a groove round a piston or plug, in a groove inside a bore round a rod, or in a groove in a flat face under a cover. See O-ring seals below. rubber: "NBR" (oil), "EPDM" (water, outdoors) or "silicone" (heat, food); id: and cs: the ring\'s inside diameter and cord as bought, mm; shore: hardness (default 70 A). `at` is the middle of the ring (the middle of its cord, along the axis) and `axis` the way its hole faces; it is drawn at its own size. Draw the groove and the part it seals against: the checks measure the gland where the ring is, and work out the squeeze, the stretch, how full the groove is and how much of the cord the groove holds. duty: "static" or "moving" says which squeeze applies; left out, Kerf sees whether the two sides move against each other. pressure: "inside" or "outside" says which side of a face seal the pressure is on, so the ring can be checked to lie against the other wall of its groove. A ring in a moving part needs rides: that part. Fields: id, cs, od, shore.',
+    positional: ["rubber"],
+    params: ["rubber", "id", "cs", "shore", "duty", "pressure"],
+    group: "Seals",
+    make(a) {
+      const name = a.str("rubber", "NBR");
+      const r = rubberOf(name);
+      if (!r || r === RUBBERS.natural) throw new Error(`lib.oring: rubber must be "NBR", "EPDM" or "silicone" (got "${name}")`);
+      const id = a.num("id", 20);
+      const cs = a.num("cs", 2);
+      const shore = a.num("shore", r.shore);
+      const duty = a.str("duty", "");
+      if (!(cs >= 0.5 && cs <= 12)) throw new Error("lib.oring: cs (the cord's diameter) must be 0.5 to 12 mm");
+      if (!(id >= 2 * cs && id <= 1000)) throw new Error("lib.oring: id (the ring's inside diameter) must be at least twice the cord and no more than 1000 mm");
+      if (!(shore >= 40 && shore <= 95)) throw new Error("lib.oring: shore must be 40 to 95 (Shore A)");
+      if (duty && duty !== "static" && duty !== "moving") throw new Error('lib.oring: duty must be "static" or "moving"');
+      const pressure = a.str("pressure", "");
+      if (pressure && pressure !== "inside" && pressure !== "outside") throw new Error('lib.oring: pressure must be "inside" or "outside" (which side of the ring it is on)');
+      const label = `O-ring ${fmt(id)} × ${fmt(cs)} mm`;
+      const recipe: PartRecipe = { base: { t: "revolve2", p: { t: "circle", d: cs, c: [(id + cs) / 2, 0] }, f: { o: Z0, u: [1, 0, 0], n: ZP }, angle: 360 }, ops: [] };
+      return {
+        kind: "oring",
+        label,
+        placement: "axis",
+        solids: [{ suffix: "", label, recipe, color: "#1b1d21", material: r.material, finish: "matte" }],
+        fields: { scalars: { id, cs, od: id + 2 * cs, shore }, points: { at: Z0, center: Z0 }, dirs: { axis: ZP } },
+        oring: { rubber: r.label, material: r.material, shore, id, cs, temp: r.temp, ...(duty ? { duty: duty as "static" | "moving" } : {}), ...(pressure ? { pressure: pressure as "inside" | "outside" } : {}) },
+        bom: { description: `O-ring ${fmt(id)} × ${fmt(cs)} mm, ${r.label} ${fmt(shore)}A` },
+      };
+    },
+  },
+
+  round_belt: {
+    signature: "lib.round_belt(cs: 3, path: [motor_pulley, big_pulley], stretch: 6, torque: 0.2Nm)",
+    doc: 'A round belt driven by friction in grooved pulleys: polyurethane round belting welded to length (the default, rubber: "PU"; "PU 92A" is stiffer), or an O-ring used as a belt (rubber: "EPDM", "NBR" or "silicone", with id: its inside diameter). See Round belts below. cs: the cord\'s diameter. path: the pulleys in the order the belt meets them: lib.sheave (give it rope: the cord\'s diameter), a lib.bearing as an idler, or a round part of your own with a groove. flip: [idler]: pulleys the belt runs its back on. Give one of stretch: (percent as fitted; Kerf gives the length to weld it to), length: (the belt\'s own length round its middle) or id: (an O-ring\'s size); with none it is fitted at 5 % (polyurethane) or 10 % (an O-ring). drive: the pulley that drives it and torque: what it must pass there, which is checked against the grip the stretch gives. Fields: cs, length (round the path), made (the belt\'s own length), ring_id (the O-ring size that fits), stretch (percent), tension (N in each strand).',
+    positional: [],
+    params: ["cs", "path", "rubber", "shore", "id", "length", "stretch", "flip", "drive", "torque"],
+    group: "Motion",
+    make() {
+      throw new Error("lib.round_belt is laid out from its path");
     },
   },
 

@@ -3,7 +3,8 @@
 // before): a LiPo pack's printed shrink wrap and its balance lead with the
 // white JST-XH plug tucked on top, an ESC's label band, a servo's sticker,
 // the lettering moulded into XT plugs, and the ribbed lid of a MAXI fuse
-// holder. Also the decorator that runs several decorators side by side.
+// holder, and a ball bearing's rubber seals with its code moulded in. Also the
+// decorator that runs several decorators side by side.
 
 import * as THREE from "three";
 import type { EvalPart } from "../../../core/model";
@@ -13,7 +14,7 @@ import { servoStickerBox } from "../../../machine/geometry";
 import type { CatalogPart } from "../../../machine/types";
 import type { Decorator, PartDecoration, PartSurface } from "../scene";
 import { boardOrigin } from "../boards/decorate";
-import { escBand, labelTexture, moulded, packSide, packTop, servoSticker, type LabelSpec, type PackText } from "./labels";
+import { bearingSeal, escBand, labelTexture, moulded, packSide, packTop, servoSticker, type LabelSpec, type PackText } from "./labels";
 
 /** How far a label stands off its face, mm: enough not to flicker, too little to see. */
 const LIFT = 0.06;
@@ -138,6 +139,62 @@ function ribs(len: number, d: number, z0: number, z1: number, color: string): TH
       g.add(rib);
     }
   return g;
+}
+
+/**
+ * A rubber seal across a bearing's annulus, `ri` to `ro`, facing +Z with its face at z = 0: a lip that dips onto
+ * the inner race, a shallow dish and a bead at the rim. UVs map the square `od` across, centred on the axis.
+ */
+function sealDisc(ri: number, ro: number, od: number, mat: THREE.Material): THREE.Mesh {
+  const geo = new THREE.RingGeometry(ri, ro, 96, 8);
+  const pos = geo.attributes.position as THREE.BufferAttribute;
+  const uv = geo.attributes.uv as THREE.BufferAttribute;
+  const band = ro - ri;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i);
+    const y = pos.getY(i);
+    const t = (Math.hypot(x, y) - ri) / band;
+    const lip = t < 0.12 ? -0.1 * (1 - t / 0.12) ** 2 : 0;
+    const dish = -0.035 * Math.sin(Math.PI * Math.min(1, Math.max(0, (t - 0.12) / 0.74)));
+    const bead = 0.03 * Math.exp(-(((t - 0.92) / 0.05) ** 2));
+    pos.setZ(i, (lip + dish + bead) * Math.min(1, band / 2));
+    uv.setXY(i, x / od + 0.5, y / od + 0.5);
+  }
+  geo.computeVertexNormals();
+  const m = new THREE.Mesh(geo, mat);
+  m.userData.shadow = false;
+  return m;
+}
+
+/** A ball bearing from lib.bearing: rubber seals in the recess on both faces, its code moulded round them. */
+function bearingPlan(p: EvalPart): Plan | null {
+  const b = p.bearing;
+  const s = p.recipe.base;
+  if (!b || !s || s.t !== "tube" || Math.abs(s.od - b.od) > 1e-6 || Math.abs(s.h - b.width) > 1e-6) return null;
+  if (s.at.some((v) => Math.abs(v) > 1e-6) || Math.abs(s.dir[2] - 1) > 1e-9) return null;
+  // the races as lib.bearing models them; the seal fills the 0.4 mm recess between them, a little below the faces
+  const span = b.od - b.bore;
+  const ro = (b.od - span * 0.36) / 2 + 0.02;
+  const ri = (b.bore + span * 0.32) / 2 - 0.02;
+  const depth = 0.4 - Math.min(0.15, b.width * 0.03);
+  const k = `bearing:${b.code}`;
+  return {
+    key: `${k}:${b.od}x${b.width}`,
+    hides: [],
+    build: (tex) => {
+      const o = new THREE.Group();
+      const map = tex(k, () => bearingSeal(b.od, ri, ro, `${b.code}-2RS`, "#141518", "#43474f"));
+      const mat = new THREE.MeshPhysicalMaterial({ map, bumpMap: map, bumpScale: 1.2, roughness: 0.58, sheen: 0.35, sheenRoughness: 0.5, sheenColor: new THREE.Color("#3a3d44") });
+      const top = sealDisc(ri, ro, b.od, mat);
+      top.position.z = b.width - depth;
+      o.add(top);
+      const under = sealDisc(ri, ro, b.od, mat);
+      under.rotation.x = Math.PI;
+      under.position.z = depth;
+      o.add(under);
+      return o;
+    },
+  };
 }
 
 function planFor(p: EvalPart, c: CatalogPart): Plan | null {
@@ -292,6 +349,13 @@ export class PartDetailDecorator implements Decorator {
   private plan(p: EvalPart): Plan | null {
     // the main solid of a bought part (a component's extra solids carry a suffix after a dot)
     if (p.imported || p.kind !== "component" || p.id.includes(".")) return null;
+    if (p.bearing && p.libKind === "bearing") {
+      try {
+        return bearingPlan(p);
+      } catch {
+        return null;
+      }
+    }
     const id = p.bom?.catalogId;
     const c = id ? catalogPart(id) : undefined;
     if (!c) return null;

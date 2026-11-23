@@ -46,7 +46,8 @@ import { addScript, openScripts, runSaved } from "../scripts/runtime";
 import { projectScripts } from "../app/project";
 import { LEFT_TABS } from "./LeftPanel";
 import { toggleMarkup } from "./Markup";
-import { toggleWiring } from "./wiringView";
+import { openWiringTab, setWiringLook, toggleWiring, wiringLook } from "./wiringView";
+import { toggleLetGo, useLetGo } from "./letGoView";
 import { openFirmwareSection, openSchematic } from "./MachinePanel";
 import { useSimPane } from "./sim/DebugPanel";
 import { openPrintPlates } from "./make/MakePanel";
@@ -389,6 +390,7 @@ export function findItems(ctx: FindContext): FindItem[] {
     // ── views ──
     const hasMotion = !!model?.parts.some((p) => turns(p.motion));
     const hasWires = !!model?.machine && model.machine.wires.length + model.machine.nets.length > 0;
+    const letGo = useLetGo.getState().on;
     const drawings = useDrawings.getState().open;
     const cams: [ViewPreset, string, string?][] = [["iso", "Iso"], ["front", "Front", "2"], ["back", "Back", "Shift+2"], ["left", "Left", "Shift+3"], ["right", "Right", "3"], ["top", "Top", "4"], ["bottom", "Bottom", "Shift+4"]];
     push(
@@ -477,21 +479,23 @@ export function findItems(ctx: FindContext): FindItem[] {
     }
     if (v.selected.length || v.isolate) push({ id: "view:isolate", group: "View", title: "Isolate the selection", detail: "Show only the selected parts", keywords: "hide others solo only focus", icon: <Icon.Target size={14} />, keys: "I", tag: v.isolate ? "on" : undefined, run: () => useView.setState({ isolate: !v.isolate }) });
     if (hasMotion) push({ id: "view:play", group: "View", title: v.playing ? "Stop the mechanism" : "Run the mechanism", detail: "Turn the input and watch everything that moves", keywords: "play animate motion move run gears", icon: v.playing ? <Icon.Pause size={14} /> : <Icon.Play size={14} />, keys: "Space", tag: v.playing ? "on" : undefined, run: () => useView.setState({ playing: !v.playing }) });
+    if (model?.parts.length) push({ id: "view:letgo", group: "View", title: letGo ? "Put everything back" : "Let go", detail: "Gravity on, hands off: whatever is not held falls", keywords: "gravity drop fall let go physics held support weight", icon: <Icon.Drop size={14} />, keys: "Shift+Space", tag: letGo ? "on" : undefined, run: () => toggleLetGo() });
     if (hasWires)
       push(
         { id: "view:wiring", group: "Machines", title: "Wiring view", detail: "Every cable and plug, in place", keywords: "wires cables harness plugs connectors electrical", icon: <Icon.Plug size={14} />, keys: "W", run: () => toggleWiring() },
         {
-          id: "view:wiring-solid",
+          id: "view:wiring-look",
           group: "Machines",
-          title: s.wiringSolid ? "Wiring with see-through covers" : "Wiring with solid parts",
-          detail: s.wiringSolid ? "Covers over the wiring fade so the plugs under them show" : "Every part stays solid; cables behind parts show faintly through them",
-          keywords: "wires cables wiring solid opaque transparent see through x-ray xray hidden behind show through whole complete covers fade",
+          title: wiringLook() === "ghost" ? "Wiring with solid parts" : wiringLook() === "solid" ? "Wiring with see-through covers" : "Wiring with the design ghosted",
+          detail: wiringLook() === "ghost" ? "Every part stays solid; cables behind parts show faintly through them" : wiringLook() === "solid" ? "Covers over the wiring fade so the plugs under them show" : "The made parts fade back so the whole harness stands out",
+          keywords: "wires cables wiring solid opaque transparent see through x-ray xray hidden behind show through whole complete covers fade ghost ghosted harness",
           icon: <Icon.Plug size={14} />,
           run: () => {
-            updateSettings({ wiringSolid: !s.wiringSolid });
+            setWiringLook(wiringLook() === "ghost" ? "solid" : wiringLook() === "solid" ? "see" : "ghost");
             toggleWiring(true);
           },
         },
+        { id: "view:wiring-tab", group: "Machines", title: "Wiring tab", detail: "The harness in 3D: filter it, trace a circuit, step through the build order", keywords: "wires cables harness plugs connectors electrical tab list build order circuit trace", icon: <Icon.Plug size={14} />, run: () => openWiringTab() },
       );
     if (model?.machine?.components.length)
       push({

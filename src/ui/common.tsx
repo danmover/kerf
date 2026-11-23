@@ -4,6 +4,7 @@ import { AnimatePresence, motion } from "framer-motion";
 import { useEffect, useLayoutEffect, useRef, useState, type KeyboardEvent as ReactKeyboardEvent, type ReactNode } from "react";
 import { createPortal } from "react-dom";
 import { Icon } from "./icons";
+import { reduceMotionNow } from "../app/motion";
 
 export function Toggle({ on, onChange, label }: { on: boolean; onChange: (v: boolean) => void; label: string }) {
   return <button type="button" role="switch" aria-checked={on} aria-label={label} className={`toggle ${on ? "on" : ""}`} onClick={() => onChange(!on)} />;
@@ -192,6 +193,37 @@ export function MenuItem({ icon, children, hint, onClick, disabled, danger }: { 
       {hint && <span className="hint">{hint}</span>}
     </button>
   );
+}
+
+/**
+ * A number that counts up (or down) to its value when it changes, over about half a second, slowing as it lands: a
+ * check count, a result. Shown at once with reduced motion, and the first time it appears.
+ */
+export function CountUp({ value, format = (n) => String(Math.round(n)), ms = 520 }: { value: number; format?: (n: number) => string; ms?: number }) {
+  const [shown, setShown] = useState(value);
+  const from = useRef(value);
+  const raf = useRef(0);
+  useEffect(() => {
+    cancelAnimationFrame(raf.current);
+    const start = from.current;
+    if (start === value || !Number.isFinite(start) || !Number.isFinite(value) || reduceMotionNow()) {
+      from.current = value;
+      setShown(value);
+      return;
+    }
+    const t0 = performance.now();
+    const step = () => {
+      const k = Math.min(1, (performance.now() - t0) / ms);
+      const v = start + (value - start) * (1 - Math.pow(1 - k, 3));
+      from.current = v;
+      setShown(v);
+      if (k < 1) raf.current = requestAnimationFrame(step);
+      else from.current = value;
+    };
+    raf.current = requestAnimationFrame(step);
+    return () => cancelAnimationFrame(raf.current);
+  }, [value, ms]);
+  return <span className="count-up">{format(shown)}</span>;
 }
 
 export function Kbd({ children }: { children: ReactNode }) {

@@ -1,8 +1,9 @@
 // Draws a simulation run in the viewport: the environment (a cut-away sand
 // pit with its walls, floor and exit opening), the design's own parts posed on
 // the bodies the world moves, screws turning with their motors, the tunnel it
-// leaves behind, sand streaming along the flights, and LED boards lit in the
-// colours the firmware showed. Plugs into the scene
+// leaves behind, sand streaming along the flights, LED boards lit in the
+// colours the firmware showed (and lighting what is near them), and OLEDs
+// showing what it drew on them (screens.ts). Plugs into the scene
 // through SceneOverlay, which hides the normal solids while it is shown.
 
 import * as THREE from "three";
@@ -15,6 +16,8 @@ import { frameAt, valueAt } from "../../sim/frames";
 import { catalogPart } from "../../machine/catalog";
 import { ledPoints } from "../../machine/geometry";
 import type { SceneOverlay } from "./scene";
+import { ledLight, setLedLight, SimScreens } from "./screens";
+import type { DisplayRun } from "../../sim/engine/run";
 
 const D2R = Math.PI / 180;
 
@@ -85,7 +88,9 @@ export class SimOverlay implements SceneOverlay {
   private grains: { pts: THREE.Points; data: Float32Array; motor: string; from: number; to: number; r: number; turn: number; body: Body }[] = [];
   private playing = false;
   /** LED boards: a dot and a soft glow per LED, coloured from the run's <comp>.led<i> series */
-  private lights: { comp: string; n: number; dots: THREE.InstancedMesh; glow: THREE.InstancedMesh }[] = [];
+  private lights: { comp: string; n: number; dots: THREE.InstancedMesh; glow: THREE.InstancedMesh; light: THREE.PointLight }[] = [];
+  /** OLEDs showing what the firmware drew on them */
+  private screens = new SimScreens();
   /** the design's own extent, for a bench under it and framing */
   private modelBox = new THREE.Box3();
 
@@ -288,6 +293,7 @@ export class SimOverlay implements SceneOverlay {
       (spinIdx >= 0 ? body.spins[spinIdx].group : body.group).add(mesh);
       const cat = p.bom?.catalogId && p.id === p.name ? catalogPart(p.bom.catalogId) : undefined;
       if (cat?.kind === "led") this.addLights(p.name, ledPoints(cat), m, spinIdx >= 0 ? body.spins[spinIdx].group : body.group);
+      if (cat?.kind === "display") this.screens.add(p.name, p, cat, m, spinIdx >= 0 ? body.spins[spinIdx].group : body.group);
     }
   }
 
@@ -298,6 +304,7 @@ export class SimOverlay implements SceneOverlay {
     const dots = new THREE.InstancedMesh(dotGeo, this.keep(new THREE.MeshBasicMaterial({ color: 0xffffff })), pts.length);
     const glow = new THREE.InstancedMesh(glowGeo, this.keep(new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.32, blending: THREE.AdditiveBlending, depthWrite: false })), pts.length);
     const off = new THREE.Color(0x2a2c30);
+    const light = ledLight(pts.map((p) => new THREE.Vector3(...p).applyMatrix4(m)));
     pts.forEach((p, i) => {
       const at = new THREE.Matrix4().makeTranslation(...(new THREE.Vector3(...p).applyMatrix4(m).toArray() as [number, number, number]));
       dots.setMatrixAt(i, at);
@@ -306,8 +313,8 @@ export class SimOverlay implements SceneOverlay {
       glow.setColorAt(i, new THREE.Color(0));
     });
     glow.renderOrder = 2;
-    group.add(dots, glow);
-    this.lights.push({ comp, n: pts.length, dots, glow });
+    group.add(dots, glow, light);
+    this.lights.push({ comp, n: pts.length, dots, glow, light });
   }
 
   /** each LED in the colour it showed at the frame on or before t (colours are not blended between frames) */
@@ -317,10 +324,13 @@ export class SimOverlay implements SceneOverlay {
     const off = new THREE.Color(0x2a2c30);
     const c = new THREE.Color();
     for (const l of this.lights) {
+      const lit: (THREE.Color | null)[] = [];
       for (let k = 0; k < l.n; k++) {
         const v = f.series[`${l.comp}.led${k}`]?.[i] ?? 0;
+        lit.push(null);
         if (v > 0) {
           c.setRGB(((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, THREE.SRGBColorSpace);
+          lit[k] = c.clone();
           // the dot shows the hue at full strength, so a dim LED still reads as lit; the glow follows its brightness
           const m = Math.max(c.r, c.g, c.b, 1e-3);
           l.dots.setColorAt(k, c.clone().multiplyScalar(1 / m));
@@ -330,6 +340,8 @@ export class SimOverlay implements SceneOverlay {
           l.glow.setColorAt(k, new THREE.Color(0));
         }
       }
+      // and the light they cast on what is around them
+      setLedLight(l.light, lit);
       if (l.dots.instanceColor) l.dots.instanceColor.needsUpdate = true;
       if (l.glow.instanceColor) l.glow.instanceColor.needsUpdate = true;
     }
@@ -373,8 +385,15 @@ export class SimOverlay implements SceneOverlay {
     this.playing = on;
   }
 
+  /** The run's displays, drawn on the screens of the parts they belong to as playback goes. */
+  setDisplays(d: DisplayRun[] | undefined) {
+    this.screens.setRuns(d);
+    this.screens.show(this.t);
+  }
+
   setTime(t: number) {
     this.t = t;
+    this.screens.show(t);
     const f = this.frames;
     if (!f) return;
     this.showLights(f, t);
@@ -541,6 +560,7 @@ export class SimOverlay implements SceneOverlay {
 
   dispose() {
     if (this.trail) this.trail.mesh.geometry.dispose();
+    this.screens.dispose();
     for (const d of this.disposables) d.dispose();
     this.disposables = [];
   }

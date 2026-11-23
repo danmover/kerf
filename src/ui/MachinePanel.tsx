@@ -9,7 +9,7 @@ import { useView, revealSpan, select } from "../app/view";
 import { useProject } from "../app/project";
 import { exportBuildPack } from "../app/exports";
 import { checkItems, cutList, madeParts, readiness, testPlan, type PlanItem, type Readiness } from "../machine/pack";
-import { showWire } from "./wiringView";
+import { openWiringTab, showWire } from "./wiringView";
 import { routedRuns, updateHarness, useHarness } from "../machine/harness/runtime";
 import { componentBodies, componentPositions, wireList, wiresCsv, wiringDiagram, wireHex, type WireEnd, type WireKind, type WireRow } from "../machine/wiring";
 import { generateFirmware, type FirmwareOutput } from "../machine/firmware";
@@ -442,6 +442,11 @@ function Wiring({ model, m, rows, items, name }: { model: Model; m: MachineData;
         {rows.length > 0 && (
           <button className="btn sm" onClick={() => download(wiresCsv(rows), file("csv"), "text/csv")} data-tip="Wire list for a spreadsheet">
             <Icon.Download size={13} /> CSV
+          </button>
+        )}
+        {rows.length > 0 && (
+          <button className="btn sm" onClick={openWiringTab} data-tip="The harness in 3D: click any cable for where it goes and how it plugs in">
+            <Icon.Plug size={13} /> 3D wiring
           </button>
         )}
       </div>

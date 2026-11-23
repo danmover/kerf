@@ -99,6 +99,137 @@ export function nema17(id: string, name: string, maker: string | undefined, gene
   };
 }
 
+/**
+ * A rope bought by the metre (lib.rope lays it from a drum over sheaves to where it is tied). mbl: minimum breaking
+ * load, N; gm: grams per metre; bend: the smallest pulley its makers recommend, as tread diameter over rope diameter.
+ */
+function ropeEntry(o: { id: string; name: string; summary: string; d: number; rope: "wire" | "fibre"; construction: string; mbl: number; gm: number; bend: number; color: string; material: string; search: string; source: string; maker?: string; notes: string[]; buy?: CatalogPart["buy"] }): CatalogPart {
+  return {
+    id: o.id,
+    kind: "rope",
+    name: o.name,
+    ...(o.maker ? { maker: o.maker } : { generic: true }),
+    summary: o.summary,
+    // below half the recommended pulley a rope is bent sharply enough to take a set; working load is a fifth of the breaking load
+    specs: { d: o.d, rope: o.rope, construction: o.construction, mbl_n: o.mbl, mass_g_m: o.gm, bend_ratio: o.bend, bend_min: o.bend / 2, factor: 5 },
+    pins: [],
+    geom: { g: "rope", dims: {}, color: o.color, material: o.material },
+    price_per: "m",
+    cut_to_length: true,
+    buy: o.buy ?? [{ vendor: "Marketplace", search: o.search }],
+    source: o.source,
+    notes: o.notes,
+  };
+}
+
+const WIRE_NOTES = (kind: string, bend: number) => [
+  `Run it on pulleys and drums at least ${bend} times its diameter at the bottom of the groove (Loos & Co's minimum for ${kind}); smaller ones break its wires early.`,
+  "End it with an eye round a thimble and a crimped ferrule, or a swaged terminal. Its working load is a fifth of its breaking load; a tenth for anything overhead or safety-critical.",
+];
+const S3I_7X7 = "https://www.s3i.co.uk/image/s3i/stainless-steel-wire-rope-7x7-data.pdf";
+const S3I_7X19 = "https://www.s3i.co.uk/7x19.php";
+const D12 = "https://jimmygreen.com/marlow-excel-d12-max78-rigging/49354-marlow-excel-d12-max-78-50m-hank-deal";
+const FIBRE_NOTES = [
+  "Run it on sheaves 8 to 10 times its diameter (Marlow's figure for most fibre ropes), in a round groove about a tenth wider than the rope; V grooves pinch it.",
+  "End it with a spliced eye: a good splice keeps about 90 % of its strength, a knot can lose up to 60 %. Dyneema creeps under a steady load and loses strength for good above 80 °C.",
+];
+
+// ---- ropes (lib.rope: the path from the drum over the sheaves sets the length) ----
+// Breaking loads and weights are sellers' published tables: S3i for stainless wire rope (their 7x19 figures are
+// about a tenth lower than GS Products' for the same sizes, and are the ones used), Marlow's D12 MAX 78 as listed
+// by Jimmy Green, and Binks Marine's 2 mm SK78. Pulley sizes are Loos & Co's minimum recommended pulley tables
+// (24 times the diameter for 7x19, 42 for 7x7) and Marlow's rope care advisory for fibre rope.
+const ROPES: CatalogPart[] = [
+  ...([
+    [1, 560, 3.8],
+    [1.5, 1260, 8.6],
+    [2, 2240, 15.4],
+    [3, 5030, 34.6],
+  ] as const).map(([d, mbl, gm]) =>
+    ropeEntry({
+      id: `wire_rope_7x7_${String(d).replace(".", "_")}mm`,
+      name: `Stainless wire rope 7x7, ${d} mm`,
+      summary: `Seven strands of seven wires: the stiffer small cable, for stays, pull cables and runs over large pulleys. Breaks at ${(mbl / 1000).toFixed(2)} kN, ${gm} g/m. Needs pulleys of ${42 * d} mm or more.`,
+      d,
+      rope: "wire",
+      construction: "7x7 stainless",
+      mbl,
+      gm,
+      bend: 42,
+      color: "#b9bfc7",
+      material: "Stainless 316",
+      search: `7x7 stainless steel wire rope ${d}mm`,
+      source: S3I_7X7,
+      notes: WIRE_NOTES("7x7", 42),
+    }),
+  ),
+  ...([
+    [2, 2080, 14.9],
+    [3, 4690, 33.5],
+    [4, 8340, 59.5],
+    [5, 13000, 93],
+    [6, 18800, 134],
+  ] as const).map(([d, mbl, gm]) =>
+    ropeEntry({
+      id: `wire_rope_7x19_${d}mm`,
+      name: `Stainless wire rope 7x19, ${d} mm`,
+      summary: `Seven strands of nineteen wires: the flexible cable for winches, hoists and anything that runs over pulleys. Breaks at ${(mbl / 1000).toFixed(2)} kN, ${gm} g/m. Needs pulleys of ${24 * d} mm or more.`,
+      d,
+      rope: "wire",
+      construction: "7x19 stainless",
+      mbl,
+      gm,
+      bend: 24,
+      color: "#b9bfc7",
+      material: "Stainless 316",
+      search: `7x19 stainless steel wire rope ${d}mm`,
+      source: S3I_7X19,
+      notes: WIRE_NOTES("7x19", 24),
+    }),
+  ),
+  ropeEntry({
+    id: "dyneema_2mm",
+    name: "Dyneema SK78 cord, 2 mm",
+    summary: "Twelve-strand Dyneema: about twice the breaking load of stainless cable its size at an eighth of the weight, and happy on small sheaves. Breaks at 4.02 kN (410 kg), 1.8 g/m, under 1 % working stretch.",
+    d: 2,
+    rope: "fibre",
+    construction: "12-strand Dyneema SK78",
+    mbl: 4021,
+    gm: 1.8,
+    bend: 8,
+    color: "#8d9399",
+    material: "Nylon",
+    search: "Dyneema SK78 2mm 12 strand",
+    source: "https://binksmarine.com.au/products/hrl-2",
+    notes: FIBRE_NOTES,
+    buy: [{ vendor: "Binks Marine", url: "https://binksmarine.com.au/products/hrl-2" }, { vendor: "Marketplace", search: "Dyneema SK78 2mm 12 strand" }],
+  }),
+  ...([
+    [3, 13729, 6.8],
+    [4, 22555, 11.1],
+    [5, 29224, 15.6],
+    [6, 41678, 22.3],
+  ] as const).map(([d, mbl, gm]) =>
+    ropeEntry({
+      id: `dyneema_${d}mm`,
+      name: `Marlow D12 MAX 78 Dyneema, ${d} mm`,
+      maker: "Marlow",
+      summary: `Twelve-strand Dyneema SK78: two to three times the breaking load of stainless cable its size at a fifth of the weight. Breaks at ${(mbl / 1000).toFixed(1)} kN (${Math.round(mbl / 9.80665)} kg), ${gm} g/m.`,
+      d,
+      rope: "fibre",
+      construction: "12-strand Dyneema SK78",
+      mbl,
+      gm,
+      bend: 8,
+      color: "#8d9399",
+      material: "Nylon",
+      search: `Marlow D12 MAX 78 ${d}mm`,
+      source: D12,
+      notes: FIBRE_NOTES,
+    }),
+  ),
+];
+
 export const MOTION: CatalogPart[] = [
   // ---- DC gearmotors ----
   gobilda("188", 188, 30, 250, 5281.1, 59, 45, 524),
@@ -495,6 +626,8 @@ export const MOTION: CatalogPart[] = [
     buy: [{ vendor: "Marketplace", search: "GT2 closed loop timing belt 6mm" }],
     source: "https://reprap.org/wiki/Belt_Compliance_Measurement",
   },
+
+  ...ROPES,
 
   // ---- printer heads, beds and fans ----
   {

@@ -52,6 +52,10 @@
 /assets/bvh.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
 
+# The 3D view's rounded-edge worker: plain geometry, no network.
+/assets/bevel.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
 # The 3D wiring's cable router: plain geometry on meshes, no network.
 /assets/cables.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

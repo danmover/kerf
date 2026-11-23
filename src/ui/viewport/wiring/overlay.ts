@@ -7,7 +7,10 @@
 // stands out and the rest fade. Either covers over the wiring fade so it shows
 // (see-through), or every part stays solid and the cables behind them are
 // drawn faintly through them (solid), so the whole machine and all its wiring
-// show at once.
+// show at once. In the model view the cables are simply there, as part of
+// the machine, and any can be clicked; in the wiring tab the design can
+// ghost back so the harness stands out, cables can be filtered and a whole
+// circuit lit, and a cable's plugs can be shown going into their sockets.
 
 import * as THREE from "three";
 import type { SceneOverlay, OverlayHit } from "../scene";
@@ -26,6 +29,13 @@ interface Host {
   partGroup(id: string): THREE.Group | undefined;
   requestRender(): void;
 }
+
+/**
+ * How the wiring sits with the parts: in the model view as part of the machine; in the wiring view with every part
+ * solid and the hidden cables showing through them (solid), with covers over the wiring faded (see), or with the
+ * whole design ghosted back so the harness stands out (ghost).
+ */
+export type WiringMode = "model" | "solid" | "see" | "ghost";
 
 /** What a hit on the wiring is: a cable, the plug at one of its ends, or a drag chain or loop (wire ""). */
 export interface WireHit extends OverlayHit {
@@ -47,6 +57,8 @@ interface Follow {
 /** A run of a cable between two plugs, or between a plug and a chain or loop, or between two of those. */
 interface Seg {
   cable: THREE.Mesh;
+  /** which plug of the cable each end of the run is (null where it leaves a chain or loop, or a splice) */
+  plugAt: [0 | 1 | null, 0 | 1 | null];
   base: Float32Array;
   span: Float32Array;
   /** the run's two ends in the assembly, to measure how far each has moved */
@@ -63,6 +75,14 @@ interface WireObj {
   plugs: [THREE.Group, THREE.Group];
   plugFollows: [Follow, Follow];
   mats: THREE.MeshStandardMaterial[];
+  /** the cable's own material (its wires' colours, or a tint) */
+  cableMat: THREE.MeshStandardMaterial;
+  /** pin 1 marks on its plugs, shown while it is picked */
+  marks: THREE.Object3D[];
+  /** how far each plug stands out of its socket, mm along its way in (0: seated) */
+  seat: [number, number];
+  /** a plug being pushed home: when it started */
+  seating: number | null;
   key: string;
 }
 
@@ -81,6 +101,12 @@ interface SocketObj {
 }
 
 const DIM = 0.16;
+/** how far a plug starts out of its socket when it is shown going in, mm, and how long that takes, ms */
+const SEAT_FROM = 16;
+const SEAT_MS = 900;
+/** made parts in the ghosted look */
+const GHOST = 0.09;
+const PIN1_COLOR = "#ffcf4a";
 /** how strongly a cable hidden behind a solid part shows through it */
 const XRAY = 0.42;
 /** heat-shrink over a splice, and a black nylon cable tie */
@@ -92,8 +118,17 @@ export class WiringOverlay implements SceneOverlay {
   readonly replaces = new Set<string>();
   /** parts that fade so the wiring under them shows (see-through look) */
   private fade = new Map<string, number>();
-  /** keep every part solid and draw hidden cables through them instead of fading covers */
-  private solid = false;
+  /** how the wiring sits with the parts */
+  private mode: WiringMode = "see";
+  /** every made part, faded, for the ghosted look */
+  private ghostAll = new Map<string, number>();
+  /** the cables drawn (a filter, or the build order so far); null draws them all */
+  private shown: Set<string> | null = null;
+  /** cables lit together (a traced circuit): the rest fade */
+  private lit: Set<string> | null = null;
+  /** a colour per cable in place of its wires' own (by kind, by load), or null */
+  private tint: ((wire: string) => string | null) | null = null;
+  private markMat = new THREE.MeshBasicMaterial({ color: PIN1_COLOR, depthTest: false, transparent: true });
   /** each wiring mesh's copy that draws only where something is in front of it */
   private xrays: { src: THREE.Mesh; copy: THREE.Mesh; wire?: string }[] = [];
   private xrayMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: XRAY, depthWrite: false, depthFunc: THREE.GreaterDepth, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
@@ -120,15 +155,88 @@ export class WiringOverlay implements SceneOverlay {
   }
 
   get ghosts(): ReadonlyMap<string, number> {
-    return this.solid ? NO_GHOSTS : this.fade;
+    return this.mode === "see" ? this.fade : this.mode === "ghost" ? this.ghostAll : NO_GHOSTS;
+  }
+
+  /** How the wiring sits with the parts (see WiringMode). Call the scene's overlaysChanged() after. */
+  setMode(mode: WiringMode) {
+    if (mode === this.mode) return;
+    this.mode = mode;
+    this.applyLook();
+    this.host.requestRender();
   }
 
   /** Solid: parts stay as they are and hidden cables show through them; otherwise covers over the wiring fade. Call the scene's overlaysChanged() after. */
   setSolid(on: boolean) {
-    if (on === this.solid) return;
-    this.solid = on;
+    this.setMode(on ? "solid" : "see");
+  }
+
+  /** Draw only these cables (null: all of them). */
+  setShown(ids: ReadonlySet<string> | null) {
+    if (sameSet(ids, this.shown)) return;
+    this.shown = ids ? new Set(ids) : null;
     this.applyLook();
     this.host.requestRender();
+  }
+
+  /** Light these cables together, the rest faded (null: none). */
+  setLit(ids: ReadonlySet<string> | null) {
+    if (sameSet(ids, this.lit)) return;
+    this.lit = ids && ids.size ? new Set(ids) : null;
+    this.applyLook();
+    this.host.requestRender();
+  }
+
+  /** Colour each cable by `tint` (a CSS colour, or null to keep its wires' own), or every cable in its own colours. */
+  setTint(tint: ((wire: string) => string | null) | null) {
+    this.tint = tint;
+    for (const o of this.wires.values()) {
+      const c = tint?.(o.w.id) ?? null;
+      o.cableMat.vertexColors = !c;
+      o.cableMat.color.set(c ?? "#ffffff");
+      o.cableMat.needsUpdate = true;
+    }
+    this.applyLook();
+    this.host.requestRender();
+  }
+
+  /** Show a cable's plugs going into their sockets (both ends), from SEAT_FROM mm out. */
+  seatIn(id: string) {
+    const o = this.wires.get(id);
+    if (!o) return;
+    o.seat = [SEAT_FROM, SEAT_FROM];
+    o.seating = performance.now();
+    o.key = "";
+    this.host.requestRender();
+  }
+
+  /** The cable's box in the assembly as it is drawn now (plugs included), for the camera to frame it. */
+  wireBox(id: string): THREE.Box3 | null {
+    const o = this.wires.get(id);
+    if (!o) return null;
+    const box = new THREE.Box3();
+    for (const sg of o.segs) {
+      sg.cable.geometry.computeBoundingBox();
+      if (sg.cable.geometry.boundingBox) box.union(sg.cable.geometry.boundingBox.clone().applyMatrix4(sg.cable.matrixWorld));
+    }
+    for (const g of o.plugs) box.expandByObject(g);
+    return box.isEmpty() ? null : box;
+  }
+
+  /** One end's plug: its box in the assembly, and the way it goes in (for a close-up of it). */
+  plugView(id: string, end: 0 | 1): { box: THREE.Box3; out: THREE.Vector3; across: THREE.Vector3; latch: THREE.Vector3 } | null {
+    const o = this.wires.get(id);
+    if (!o) return null;
+    const g = o.plugs[end];
+    const box = new THREE.Box3().expandByObject(g);
+    const f = o.w.ends[end].frame;
+    const d = o.plugFollows[end].delta;
+    const at = new THREE.Vector3(...f.o).applyMatrix4(d);
+    if (box.isEmpty()) box.setFromCenterAndSize(at, new THREE.Vector3(6, 6, 6));
+    // the socket's surroundings too
+    box.expandByPoint(at.clone().addScaledVector(new THREE.Vector3(...f.z).transformDirection(d), -4));
+    box.expandByScalar(Math.max(4, box.getSize(new THREE.Vector3()).length() * 0.35));
+    return { box, out: new THREE.Vector3(...f.z).transformDirection(d), across: new THREE.Vector3(...f.x).transformDirection(d), latch: new THREE.Vector3(...f.y).transformDirection(d) };
   }
 
   /**
@@ -141,7 +249,11 @@ export class WiringOverlay implements SceneOverlay {
     this.byWire = new Map(h.wires.map((w) => [w.id, w]));
     const byId = new Map(parts.map((p) => [p.id, p]));
     for (const p of parts) if (p.removable) this.fade.set(p.id, 0.14);
+    // the ghosted look fades every part the cables do not plug into: frame, covers, brackets. The boards, motors and
+    // sensors the plugs go into stay
     const ends = h.wires.flatMap((w) => w.ends);
+    const plugged = new Set(ends.map((e) => e.partId));
+    for (const p of parts) if (!plugged.has(p.id) && !p.hidden) this.ghostAll.set(p.id, GHOST);
     for (const p of parts) {
       const box = p.kind === "component" || p.removable || p.hidden ? undefined : boxOf?.(p);
       if (!box) continue;
@@ -230,6 +342,7 @@ export class WiringOverlay implements SceneOverlay {
       this.sockets.push({ group, follow: follow(id) });
     }
     this.addXrays();
+    if (this.tint) this.setTint(this.tint);
     this.applyLook();
     this.host.requestRender();
   }
@@ -238,7 +351,7 @@ export class WiringOverlay implements SceneOverlay {
   private addXrays() {
     const meshes: THREE.Mesh[] = [];
     this.object.traverse((o) => {
-      if ((o as THREE.Mesh).isMesh && !o.userData.xray) meshes.push(o as THREE.Mesh);
+      if ((o as THREE.Mesh).isMesh && !o.userData.xray && !o.userData.pin1) meshes.push(o as THREE.Mesh);
     });
     for (const src of meshes) {
       const copy = new THREE.Mesh(src.geometry, this.xrayMat);
@@ -258,6 +371,7 @@ export class WiringOverlay implements SceneOverlay {
   private buildWire(w: HarnessWire, runs: { a: { end: SegEnd; follow: Follow }; b: { end: SegEnd; follow: Follow }; route?: RoutedWire }[], plugFollows: [Follow, Follow]): WireObj {
     const cableMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.42, metalness: 0 });
     const segs = runs.map((r) => this.buildSeg(w, r.a.end, r.b.end, r.route, [r.a.follow, r.b.follow], cableMat));
+    const marks: THREE.Object3D[] = [];
     const plugMats = [this.plastic.clone(), this.metal.clone()];
     const plugs = w.ends.map((e, k) => {
       const p = new MeshBuilder();
@@ -273,6 +387,13 @@ export class WiringOverlay implements SceneOverlay {
       }
       const g = new THREE.Group();
       g.matrixAutoUpdate = false;
+      // pin 1, marked on the back of the housing beside its contact, as the real part has it moulded
+      if ((!e.splice || e.splice.host === w.id) && HOUSINGS.has(e.spec.kind)) {
+        const mark = pin1Mark(e, this.markMat);
+        mark.visible = false;
+        marks.push(mark);
+        g.add(mark);
+      }
       for (const [b, mat] of [
         [p, plugMats[0]],
         [m, plugMats[1]],
@@ -287,7 +408,19 @@ export class WiringOverlay implements SceneOverlay {
       return g;
     }) as [THREE.Group, THREE.Group];
     const [A, B] = w.ends;
-    return { w, segs, origins: [new THREE.Vector3(...A.frame.o), new THREE.Vector3(...B.frame.o)], plugs, plugFollows, mats: [cableMat, ...plugMats], key: "" };
+    return {
+      w,
+      segs,
+      origins: [new THREE.Vector3(...A.frame.o), new THREE.Vector3(...B.frame.o)],
+      plugs,
+      plugFollows,
+      mats: [cableMat, ...plugMats],
+      cableMat,
+      marks,
+      seat: [0, 0],
+      seating: null,
+      key: "",
+    };
   }
 
   /** One run of a cable: its wires spread to the contacts at a plug, bundled and twisted elsewhere. */
@@ -340,8 +473,10 @@ export class WiringOverlay implements SceneOverlay {
     cable.matrixAutoUpdate = false;
     this.object.add(cable);
     const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    const plugOf = (e: SegEnd): 0 | 1 | null => ("plug" in e && !(e.plug.splice && e.plug.splice.host !== w.id) ? (w.ends[0] === e.plug ? 0 : 1) : null);
     return {
       cable,
+      plugAt: [plugOf(A), plugOf(B)],
       base: (pos.array as Float32Array).slice(),
       span: (geo.getAttribute("span") as THREE.BufferAttribute).array as Float32Array,
       origins: [new THREE.Vector3(...backA), new THREE.Vector3(...backB)],
@@ -362,20 +497,32 @@ export class WiringOverlay implements SceneOverlay {
 
   /** a cable fades when another is picked, or when a chain or loop it is not in is picked */
   private dimmed(wire: string) {
-    if (this.picked) return this.picked !== wire;
+    if (this.picked) return this.picked !== wire && !this.lit?.has(wire);
+    if (this.lit) return !this.lit.has(wire);
     if (this.pickedLink) return !this.flexes.find((f) => f.d.link.id === this.pickedLink)?.d.link.wires.includes(wire);
     return false;
   }
 
   private applyLook() {
+    // in the wiring view the cables glow a little in their colour, so they read against the faded design
+    const glow = this.mode !== "model";
     for (const o of this.wires.values()) {
       const dim = this.dimmed(o.w.id);
       const lit = this.picked === o.w.id || this.hovered === o.w.id;
+      const tint = glow ? (this.tint?.(o.w.id) ?? null) : null;
+      const shown = !this.shown || this.shown.has(o.w.id);
+      for (const sg of o.segs) sg.cable.visible = shown;
+      for (const g of o.plugs) g.visible = shown;
+      for (const mk of o.marks) mk.visible = shown && this.picked === o.w.id;
       for (const m of o.mats) {
         m.transparent = dim;
         m.opacity = dim ? DIM : 1;
         m.depthWrite = !dim;
-        m.emissive.setRGB(lit ? 0.16 : 0, lit ? 0.16 : 0, lit ? 0.19 : 0);
+        if (lit) m.emissive.setRGB(0.16, 0.16, 0.19);
+        else if (glow && m === o.cableMat) {
+          if (tint) m.emissive.set(tint).multiplyScalar(0.3);
+          else m.emissive.setRGB(0.05, 0.05, 0.06);
+        } else m.emissive.setRGB(0, 0, 0);
         m.clippingPlanes = this.planes;
         m.needsUpdate = true;
       }
@@ -387,7 +534,7 @@ export class WiringOverlay implements SceneOverlay {
     if ((this.xrayMat.clippingPlanes?.length ?? 0) !== (this.planes?.length ?? 0)) this.xrayMat.needsUpdate = true;
     this.xrayMat.clippingPlanes = this.planes;
     // a faded cable does not show through: only the ones in focus do
-    for (const x of this.xrays) x.copy.visible = this.solid && !(x.wire && this.dimmed(x.wire));
+    for (const x of this.xrays) x.copy.visible = this.mode === "solid" && !(x.wire && (this.dimmed(x.wire) || (this.shown && !this.shown.has(x.wire))));
   }
 
   setClipping(planes: THREE.Plane[] | null) {
@@ -399,6 +546,7 @@ export class WiringOverlay implements SceneOverlay {
   hitTest(ray: THREE.Raycaster): WireHit | null {
     const targets: THREE.Object3D[] = [];
     for (const o of this.wires.values()) {
+      if (this.shown && !this.shown.has(o.w.id)) continue;
       // a faded cable can still be picked: that is how you move to another one
       targets.push(...o.segs.map((sg) => sg.cable), ...o.plugs.flatMap((g) => g.children));
     }
@@ -432,8 +580,24 @@ export class WiringOverlay implements SceneOverlay {
   }
 
   /** Follow the parts: plugs and headers move with them, cables stretch between their ends. */
-  tick(): boolean {
+  tick(now = performance.now()): boolean {
     let moved = false;
+    // a plug shown going home moves on every frame until it is seated
+    for (const o of this.wires.values()) {
+      if (o.seating === null) continue;
+      const t = Math.min(1, (now - o.seating) / SEAT_MS);
+      // eases in, then a small overshoot as the latch clicks home
+      const e = t < 0.8 ? 1 - Math.pow(1 - t / 0.8, 3) : 1 + Math.sin(((t - 0.8) / 0.2) * Math.PI) * 0.04;
+      const mm = SEAT_FROM * (1 - e);
+      o.seat = [mm, mm];
+      o.key = "";
+      for (const sg of o.segs) sg.key = "";
+      if (t >= 1) {
+        o.seat = [0, 0];
+        o.seating = null;
+      }
+      moved = true;
+    }
     for (const f of this.follows.values()) {
       const g = this.host.partGroup(f.partId);
       if (!g) continue;
@@ -447,20 +611,23 @@ export class WiringOverlay implements SceneOverlay {
       }
     }
     if (!moved) return false;
+    const seatOff = (o: WireObj, k: 0 | 1) => (o.seat[k] ? new THREE.Vector3(...o.w.ends[k].frame.z).transformDirection(o.plugFollows[k].delta).multiplyScalar(o.seat[k]) : null);
     for (const s of this.sockets) {
       s.group.matrix.copy(s.follow.delta);
       s.group.matrixWorldNeedsUpdate = true;
     }
     for (const o of this.wires.values()) {
-      const key = o.plugFollows[0].key + "|" + o.plugFollows[1].key;
+      const key = o.plugFollows[0].key + "|" + o.plugFollows[1].key + "|" + o.seat.join();
       if (key !== o.key) {
         o.key = key;
         o.plugs.forEach((g, k) => {
           g.matrix.copy(o.plugFollows[k].delta);
+          const off = seatOff(o, k as 0 | 1);
+          if (off) g.matrix.premultiply(new THREE.Matrix4().makeTranslation(off.x, off.y, off.z));
           g.matrixWorldNeedsUpdate = true;
         });
       }
-      for (const sg of o.segs) stretch(sg);
+      for (const sg of o.segs) stretch(sg, sg.plugAt.map((k) => (k === null ? null : seatOff(o, k))) as [THREE.Vector3 | null, THREE.Vector3 | null]);
     }
     for (const f of this.flexes) {
       // the moving end where the child is now, in the parent's frame where the design shows it
@@ -490,10 +657,12 @@ export class WiringOverlay implements SceneOverlay {
     this.follows.clear();
     this.fade.clear();
     this.xrays = [];
+    this.ghostAll.clear();
   }
 
   dispose() {
     this.clear();
+    this.markMat.dispose();
     this.plastic.dispose();
     this.metal.dispose();
     this.xrayMat.dispose();
@@ -502,15 +671,58 @@ export class WiringOverlay implements SceneOverlay {
 
 const NO_GHOSTS: ReadonlyMap<string, number> = new Map();
 
+const sameSet = (a: ReadonlySet<string> | null, b: ReadonlySet<string> | null) => (!a && !b) || (!!a && !!b && a.size === b.size && [...a].every((x) => b.has(x)));
+
+/** Plug kinds with a moulded housing, where pin 1 is marked. */
+const HOUSINGS = new Set(["xh", "ph", "sh", "dupont"]);
+
+/** A small triangle on the back of a plug's housing pointing at contact 1, drawn over everything so it never hides. */
+function pin1Mark(e: PlugEnd, mat: THREE.Material): THREE.Mesh {
+  const f = e.frame;
+  const ways = Math.max(1, e.spec.ways ?? 1);
+  const pitch = e.spec.pitch ?? 2.5;
+  const x = (0 - (ways - 1) / 2) * pitch;
+  const z = PLUG_BACK[e.spec.kind] + 0.25;
+  const s = Math.max(0.9, pitch * 0.42);
+  // in the housing's frame: x along the contacts, y the latch side, z out of the part
+  const y = -Math.max(1.4, pitch * 0.7);
+  const P = (px: number, py: number): V3 => [f.o[0] + f.x[0] * px + f.y[0] * py + f.z[0] * z, f.o[1] + f.x[1] * px + f.y[1] * py + f.z[1] * z, f.o[2] + f.x[2] * px + f.y[2] * py + f.z[2] * z];
+  const pts = [P(x, y + s * 0.2), P(x - s * 0.6, y - s), P(x + s * 0.6, y - s)];
+  const g = new THREE.BufferGeometry();
+  g.setAttribute("position", new THREE.Float32BufferAttribute(pts.flat(), 3));
+  g.setIndex([0, 1, 2, 0, 2, 1]);
+  const m = new THREE.Mesh(g, mat);
+  m.userData.pin1 = true;
+  m.renderOrder = 9;
+  m.raycast = () => undefined;
+  return m;
+}
+
 const add = (a: V3, b: V3, s = 1): V3 => [a[0] + b[0] * s, a[1] + b[1] * s, a[2] + b[2] * s];
 
 /** A run follows its two ends: rigid when they move together, stretched between them when they part (explode). */
-function stretch(sg: Seg) {
-  const key = sg.follows[0].key + "|" + sg.follows[1].key;
+function stretch(sg: Seg, extra: [THREE.Vector3 | null, THREE.Vector3 | null] = [null, null]) {
+  const key =
+    sg.follows[0].key +
+    "|" +
+    sg.follows[1].key +
+    "|" +
+    extra
+      .map((v) =>
+        v
+          ? v
+              .toArray()
+              .map((x) => x.toFixed(2))
+              .join()
+          : "",
+      )
+      .join("|");
   if (key === sg.key) return;
   sg.key = key;
   const da = sg.origins[0].clone().applyMatrix4(sg.follows[0].delta).sub(sg.origins[0]);
   const db = sg.origins[1].clone().applyMatrix4(sg.follows[1].delta).sub(sg.origins[1]);
+  if (extra[0]) da.add(extra[0]);
+  if (extra[1]) db.add(extra[1]);
   const pos = sg.cable.geometry.getAttribute("position") as THREE.BufferAttribute;
   const arr = pos.array as Float32Array;
   for (let i = 0; i < sg.span.length; i++) {

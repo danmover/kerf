@@ -2,15 +2,18 @@
 
 import { AnimatePresence, motion } from "framer-motion";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { SceneController, type PhotoStatus } from "./viewport/scene";
+import { SceneController, type PhotoStatus, type RopeDraw } from "./viewport/scene";
 import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
-import { turns } from "../core/model";
+import { turns, type Motion } from "../core/model";
 import { findHolds } from "../core/holds";
+import { ropeParts } from "../core/ropeChecks";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
 import { useSettings, updateSettings } from "../app/settings";
+import { useReduceMotion } from "../app/motion";
+import { useChat } from "../ai/chat";
 import { useTheme } from "../app/theme";
 import { lightingPreset } from "./viewport/render/studio";
 import { registerViewport } from "../app/viewportApi";
@@ -50,6 +53,8 @@ import { FitLayer, playFitting, useFitView } from "./FitLayer";
 import { PmiButton, PmiLayer } from "./PmiLayer";
 import { hasFitting } from "../analysis/fitting";
 import { toggleWiring, useWiringView } from "./wiringView";
+import { LetGoCard, LetGoLayer } from "./LetGoLayer";
+import { toggleLetGo, useLetGo } from "./letGoView";
 import { BoardDecorator } from "./viewport/boards/decorate";
 import { Decorators, PartDetailDecorator } from "./viewport/parts/decorate";
 import { DecalDecorator } from "./viewport/parts/decals";
@@ -89,6 +94,11 @@ export function Viewport() {
   const stage = useDesign((s) => s.stage);
   const view = useView();
   const settings = useSettings();
+  // the setting, or the system's: either turns the 3D effects off
+  const reduceMotion = useReduceMotion();
+  const claudeBusy = useChat((s) => s.busy);
+  const report = useDesign((s) => s.report);
+  const projectId = useProject((s) => s.current?.id);
   const theme = useTheme();
   const [webglError, setWebglError] = useState("");
   // the 3D view's start-up attempt; a failed start is retried a few times before the error card
@@ -223,6 +233,7 @@ export function Viewport() {
       focus: (ids) => c.focusOn(ids),
       sectionThrough: (point, normal) => c.sectionThrough(point, normal),
       film: (o) => c.beginFilm(o),
+      skipEffects: () => c.skipEffects(),
     });
     setScene(c);
     return () => {
@@ -246,8 +257,8 @@ export function Viewport() {
   }, [glTry, glGen]);
 
   useEffect(() => {
-    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur });
-  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, scene]);
+    ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur, floorGloss: settings.floorGloss });
+  }, [settings.lighting, settings.lightAngle, settings.quality, settings.photoreal, theme, settings.focusBlur, settings.floorGloss, scene]);
 
   useEffect(() => {
     ctl.current?.setMouse(settings.mouseScheme, settings.wheelReverse);
@@ -279,6 +290,24 @@ export function Viewport() {
     return () => window.clearTimeout(t);
   }, [model, meshVersion, scene]);
 
+  // ropes are drawn moving with what they run on: which part each drum, sheave and tied end is
+  useEffect(() => {
+    const ropes = model?.machine?.ropes ?? [];
+    if (!model || !ropes.length) {
+      ctl.current?.setRopes(null);
+      return;
+    }
+    const t = window.setTimeout(() => {
+      const out = new Map<string, RopeDraw>();
+      for (const r of ropes) {
+        const part = model.parts.find((p) => p.libKind === "rope" && p.name === r.name);
+        if (part) out.set(part.id, { nodes: r.nodes, d: r.rope.d, length: r.length, on: ropeParts(r, model, meshOf).map((p) => p?.id) });
+      }
+      ctl.current?.setRopes(out);
+    }, 400);
+    return () => window.clearTimeout(t);
+  }, [model, meshVersion, scene]);
+
   useEffect(() => {
     if (stage === "refining" || stage === "done") ctl.current?.settle();
     ctl.current?.setModelSettling(stage !== "idle" && stage !== "done");
@@ -297,9 +326,34 @@ export function Viewport() {
       xray: view.xray,
       edges: settings.edges,
       grid: settings.grid,
-      reduceMotion: settings.reduceMotion,
+      reduceMotion,
     });
-  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, settings.reduceMotion, model, meshVersion, scene]);
+  }, [view.hiddenIds, soloIds, view.selected, view.hovered, view.focusParts, view.isolate, view.xray, settings.edges, settings.grid, reduceMotion, model, meshVersion, scene]);
+
+  // while Claude builds, the camera goes to see a change out of view and comes back
+  useEffect(() => ctl.current?.setFollowChanges(claudeBusy), [claudeBusy, scene]);
+
+  // a check's result lands on its parts: a new failure pulses red, one put right green (not the first report of a design)
+  const lastFails = useRef<{ project: string | undefined; fails: Map<string, string[]> } | null>(null);
+  useEffect(() => {
+    const c = ctl.current;
+    if (!c || !report) return;
+    const last = lastFails.current;
+    const prev = last && last.project === projectId ? last.fails : null;
+    const fails = new Map<string, string[]>();
+    const status = new Map(report.items.map((i) => [i.id, i.status]));
+    for (const i of report.items) if (i.status === "fail" && i.parts?.length) fails.set(i.id, i.parts);
+    // a check running again still counts as failing until it says otherwise
+    if (prev) for (const [id, parts] of prev) if (status.get(id) === "pending") fails.set(id, parts);
+    lastFails.current = { project: projectId, fails };
+    if (!prev) return;
+    const failing = new Set<string>();
+    const fixed = new Set<string>();
+    for (const [id, parts] of fails) if (!prev.has(id)) for (const p of parts) failing.add(p);
+    for (const [id, parts] of prev) if (!fails.has(id)) for (const p of parts) if (!failing.has(p)) fixed.add(p);
+    if (failing.size) c.pulseParts(failing, "fail");
+    if (fixed.size) c.pulseParts(fixed, "fixed");
+  }, [report, projectId, scene]);
 
   useEffect(() => ctl.current?.setSection(view.section), [view.section, model, scene]);
   useEffect(() => ctl.current?.setExplode(view.explode), [view.explode, scene]);
@@ -312,9 +366,9 @@ export function Viewport() {
   // after setParts above, so overlays attach to the current part groups
   useEffect(() => {
     // a route hovered in the make tab shows only that process's issues on its part
-    if (model) mfgOverlay.current?.update(model.parts, processPreview ?? processResults, view.focusCheck, showProcessIssues || !!processPreview, settings.reduceMotion);
+    if (model) mfgOverlay.current?.update(model.parts, processPreview ?? processResults, view.focusCheck, showProcessIssues || !!processPreview, reduceMotion);
     ctl.current?.setProcessMarks(!!mfgOverlay.current?.size);
-  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, settings.reduceMotion, scene]);
+  }, [model, meshVersion, processResults, processPreview, view.focusCheck, showProcessIssues, reduceMotion, scene]);
   const gap = useGap(view.selected);
   useEffect(() => ctl.current?.setMeasure(gap ? { a: gap.a, b: gap.b } : null), [gap, scene]);
   useEffect(() => {
@@ -325,6 +379,7 @@ export function Viewport() {
   }, [view.cameraRequest]);
 
   const hasMotion = !!model?.parts.some((p) => turns(p.motion));
+  const lettingGo = useLetGo((s) => s.on);
   const canFit = useMemo(() => !!model && hasFitting(model), [model]);
   const fitting = useFitView((f) => f.on);
   // the photoreal look hides the grid and CAD edges while it runs
@@ -424,6 +479,9 @@ export function Viewport() {
         <button className={`icon-btn ${view.playing ? "active" : ""}`} disabled={!hasMotion} onClick={() => useView.setState({ playing: !view.playing })} data-tip={hasMotion ? "Run the mechanism (Space)" : "Nothing in this design moves"} aria-label="Run the mechanism">
           {view.playing ? <Icon.Pause /> : <Icon.Play />}
         </button>
+        <button className={`icon-btn ${lettingGo ? "active" : ""}`} disabled={!visibleParts} onClick={() => toggleLetGo()} data-tip="Let go: gravity on, hands off. Whatever is not held falls (Shift+Space)" aria-label="Let go" aria-pressed={lettingGo}>
+          <Icon.Drop />
+        </button>
         <div className="sep" />
         <div className="vp-look">
           <LightingMenu photoLook={photoLook} />
@@ -518,6 +576,10 @@ export function Viewport() {
       </LayerBoundary>
       <LayerBoundary label="Wiring" retry={model}>
         {scene && !inSketch && hasWires && <WiringLayer scene={scene} />}
+      </LayerBoundary>
+      <LayerBoundary label="Let go" retry={model}>
+        {scene && !inSketch && <LetGoLayer scene={scene} />}
+        {!inSketch && <LetGoCard />}
       </LayerBoundary>
       <LayerBoundary label="Fits" retry={model}>
         {scene && !inSketch && canFit && <FitLayer scene={scene} />}
@@ -771,6 +833,14 @@ function PhotoPill({ s }: { s: PhotoStatus }) {
   );
 }
 
+/** How a moving part moves, in a line: a lift by its travel, a wheel by what it rolls on, the rest by their rate. */
+function motionLine(m: Motion): string {
+  if (m.kind === "slide" && m.travel) return `travels ${fmtNum(Math.abs(m.travel), 1)} mm and back${m.perTurn ? `, ${fmtNum(m.perTurn, 2)} mm per turn of the drive` : ""}`;
+  if (m.kind === "roll" && m.roll) return `rolls on ${m.roll.onName} without slipping (rolling radius ${fmtNum(m.roll.r, 1)} mm)`;
+  if (m.link && m.kind) return m.kind === "rod" ? "a connecting rod" : `${m.kind === "slide" ? "slides" : "swings"}, driven by ${m.link.name}`;
+  return `turns at ${fmtNum(Math.abs(m.ratio), 3)}× the input`;
+}
+
 function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
   const model = useDesign((s) => s.model);
   const report = useDesign((s) => s.report);
@@ -822,7 +892,7 @@ function SelectionCard({ ids, gap }: { ids: string[]; gap: Gap | null }) {
             {gap.distance < 1e-4 ? " · touching or overlapping" : ` · Δ ${gap.b.map((v, k) => fmtNum(Math.abs(v - gap.a[k]), 2)).join(", ")}`}
           </div>
         )}
-        {p.motion && parts.length === 1 && <div>turns at {fmtNum(Math.abs(p.motion.ratio), 3)}× the input</div>}
+        {p.motion && parts.length === 1 && <div>{motionLine(p.motion)}</div>}
       </div>
       <MaterialButton parts={parts} />
       {issues.length > 0 && (

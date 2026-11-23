@@ -188,6 +188,14 @@ export const Icon = {
       <path d="M7 4v16l13-8z" fill="currentColor" stroke="none" />
     </I>
   ),
+  Drop: (p: P) => (
+    <I {...p}>
+      <rect x="8" y="2.5" width="8" height="6.5" rx="1.2" />
+      <path d="M12 12v5.5" />
+      <path d="m9.4 15.2 2.6 2.6 2.6-2.6" />
+      <path d="M4 21.5h16" />
+    </I>
+  ),
   Pause: (p: P) => (
     <I {...p}>
       <path d="M7 4h3v16H7zM14 4h3v16h-3z" fill="currentColor" stroke="none" />

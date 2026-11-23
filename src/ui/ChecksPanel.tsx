@@ -1,13 +1,13 @@
 // Engineering check results, with the conflict solver's proposals on top.
 
 import { AnimatePresence, motion } from "framer-motion";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useDesign, setHold, evaluateOnly } from "../core/engine";
 import { useView, revealSpan } from "../app/view";
 import { commitSource, endPreview, previewSource, realSource, useProject } from "../app/project";
 import { setParamValue } from "../core/sourceEdit";
 import { StatusIcon, Icon } from "./icons";
-import { Segmented } from "./common";
+import { CountUp, Segmented } from "./common";
 import type { CheckItem } from "../core/checks";
 import type { Model } from "../core/model";
 import { PROCESSES } from "../mfg/profiles";
@@ -72,6 +72,13 @@ export function ChecksPanel() {
   const model = useDesign((s) => s.model);
   const [filter, setFilter] = useState<"all" | "issues">("all");
   const stale = reportRev < rev;
+  // results that are new to this panel cascade in, one after another (the ones it opened with are just there)
+  const seen = useRef<Set<string> | null>(null);
+  const order = new Map<string, number>();
+  if (seen.current) for (const i of report?.items ?? []) if (!seen.current.has(i.id)) order.set(i.id, order.size);
+  useEffect(() => {
+    seen.current = new Set((report?.items ?? []).map((i) => i.id));
+  }, [report]);
 
   const groups = useMemo(() => {
     const items = (report?.items ?? []).filter((i) => filter === "all" || i.status === "fail" || i.status === "warn" || i.status === "pending");
@@ -94,11 +101,17 @@ export function ChecksPanel() {
       <div className="checks-summary">
         {report ? (
           <>
-            <span className={`chip ${report.counts.fail ? "fail" : "pass"}`}>
-              {report.counts.fail ? `${report.counts.fail} failing` : "all hard checks pass"}
-            </span>
+            <motion.span key={report.counts.fail ? "fail" : "pass"} className={`chip ${report.counts.fail ? "fail" : "pass"}`} initial={{ scale: 0.85, opacity: 0 }} animate={{ scale: 1, opacity: 1 }} transition={{ type: "spring", stiffness: 520, damping: 26 }}>
+              {report.counts.fail ? (
+                <>
+                  <CountUp value={report.counts.fail} /> failing
+                </>
+              ) : (
+                "all hard checks pass"
+              )}
+            </motion.span>
             <span className="mono dim" style={{ fontSize: 11 }}>
-              {report.counts.pass} pass · {report.counts.warn} warn · {report.counts.info} notes
+              <CountUp value={report.counts.pass} /> pass · <CountUp value={report.counts.warn} /> warn · <CountUp value={report.counts.info} /> notes
             </span>
           </>
         ) : (
@@ -135,16 +148,26 @@ export function ChecksPanel() {
                 <motion.div
                   key={i.id}
                   layout="position"
-                  initial={{ opacity: 0, x: -6 }}
+                  initial={{ opacity: 0, x: -10 }}
                   animate={{ opacity: 1, x: 0 }}
                   exit={{ opacity: 0 }}
+                  transition={{ type: "spring", stiffness: 420, damping: 32, delay: Math.min(order.get(i.id) ?? 0, 16) * 0.035 }}
                   className={`check-item ${focusCheck === i.id ? "focused" : ""}`}
                   onClick={() => focus(i)}
                   role="button"
                   tabIndex={0}
                   onKeyDown={(e) => e.key === "Enter" && focus(i)}
                 >
-                  <StatusIcon status={i.status} />
+                  {/* a result lands: its mark pops in when it changes (a failure with a shake) */}
+                  <motion.span
+                    key={i.status}
+                    className="check-mark"
+                    initial={{ scale: 0.3, opacity: 0, rotate: i.status === "fail" ? -20 : 0 }}
+                    animate={{ scale: 1, opacity: 1, rotate: 0 }}
+                    transition={{ type: "spring", stiffness: 600, damping: i.status === "fail" ? 12 : 22, delay: Math.min(order.get(i.id) ?? 0, 16) * 0.035 + 0.05 }}
+                  >
+                    <StatusIcon status={i.status} />
+                  </motion.span>
                   <div style={{ minWidth: 0 }}>
                     <div className="title">
                       {i.title}

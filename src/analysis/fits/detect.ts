@@ -84,6 +84,19 @@ function intentOf(kind: FitKind, nominal: number, d: number): FitIntent {
   return "transition";
 }
 
+/**
+ * A round fit drawn with clearance, between a part the design says slides along the fit's own axis and one that does
+ * not slide with it (a piston in its cylinder, a rod through its gland, a plunger in a bush): a guide, meant to run
+ * free, however small the clearance is drawn. Drawn line to line or tighter, it stays a fit that holds.
+ */
+function slidesIn(hole: Cyl, shaft: Cyl): boolean {
+  const ma = hole.part.motion;
+  const mb = shaft.part.motion;
+  const along = (m: typeof ma) => !!m && m.kind === "slide" && !m.link && Math.abs(vdot(m.axis, hole.axis)) > 0.999;
+  if (along(ma) !== along(mb)) return true;
+  return along(ma) && ma !== mb && ma!.travel !== mb!.travel;
+}
+
 const what = (p: EvalPart) => (p.kind === "component" ? p.name : p.name);
 const fmt = (n: number) => String(Math.round(n * 100) / 100);
 
@@ -167,7 +180,8 @@ export function findFits(model: Model): FoundFits {
   for (const [key, g] of groups) {
     const first = g.list[0];
     const nominal = first.hole.d - first.shaft.d;
-    fits.push({ key, kind: g.kind, intent: intentOf(g.kind, nominal, first.hole.d), title: titleOf(g.kind, first.hole, first.shaft, g.list.length), nominal, instances: g.list });
+    const intent = g.kind === "pin" && nominal > 1e-6 && slidesIn(first.hole, first.shaft) ? "clearance" : intentOf(g.kind, nominal, first.hole.d);
+    fits.push({ key, kind: g.kind, intent, title: titleOf(g.kind, first.hole, first.shaft, g.list.length), nominal, instances: g.list });
   }
 
   // gear pairs (each once)

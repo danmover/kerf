@@ -111,9 +111,14 @@ export class ResultsOverlay implements SceneOverlay {
   readonly ghosts?: ReadonlyMap<string, number>;
   private parts: PartMesh[] = [];
   private material: THREE.MeshStandardMaterial;
+  /** the lowest and highest the result reaches (world z), for its sweep in */
+  private zSpan: [number, number] = [0, 1];
+  private sweep: { t0: number; dur: number } | null = null;
   private ghostMat: THREE.LineBasicMaterial;
   private uniforms = {
     uScale: { value: 0 },
+    /** a new result sweeping up over the model as it lands: the lowest height (world z), how far up it runs, how far the front has got (0 to 1), on */
+    uReveal: { value: new THREE.Vector4() },
     uMode: { value: 0 },
     uBands: { value: BANDS },
     // a section cut: the face it leaves is coloured by the field inside, read from a 3D texture of the result
@@ -165,14 +170,19 @@ export class ResultsOverlay implements SceneOverlay {
         .replace("#include <begin_vertex>", "#include <begin_vertex>\ntransformed += aDisp * uScale;\nvT = aT;")
         .replace("#include <project_vertex>", "#include <project_vertex>\nvWorldR = (modelMatrix * vec4(transformed, 1.0)).xyz;");
       shader.fragmentShader = shader.fragmentShader
-        .replace("#include <common>", "#include <common>\nuniform float uMode;\nuniform float uBands;\nvarying float vT;\n" + GLSL_COLORMAPS + GLSL_CAP)
-        .replace("vec4 diffuseColor = vec4( diffuse, opacity );", "vec4 diffuseColor = vec4( kerfResultColor(vT, uMode, uBands), opacity );\nfloat kerfCap = 0.0;\nif (!gl_FrontFacing) kerfCap = kerfCapColor(diffuseColor.rgb);")
+        .replace("#include <common>", "#include <common>\nuniform float uMode;\nuniform float uBands;\nuniform vec4 uReveal;\nvarying float vT;\n" + GLSL_COLORMAPS + GLSL_CAP)
+        .replace(
+          "vec4 diffuseColor = vec4( diffuse, opacity );",
+          // ahead of a new result's front the model is still plain grey; a bright line runs up where the colours arrive
+          "vec4 diffuseColor = vec4( kerfResultColor(vT, uMode, uBands), opacity );\nfloat kerfCap = 0.0;\nif (!gl_FrontFacing) kerfCap = kerfCapColor(diffuseColor.rgb);\nfloat kerfFront = 0.0;\nif (uReveal.w > 0.5) {\n  float kerfAhead = (vWorldR.z - uReveal.x) / max(uReveal.y, 1e-3) - uReveal.z;\n  diffuseColor.rgb = mix(diffuseColor.rgb, vec3(0.42), step(0.0, kerfAhead));\n  kerfFront = 1.0 - smoothstep(0.0, 0.05, abs(kerfAhead));\n}",
+        )
         .replace("#include <normal_fragment_begin>", "#include <normal_fragment_begin>\nif (kerfCap > 0.5) normal = normalize((viewMatrix * vec4(-uPlane.xyz, 0.0)).xyz);")
         // the cut face is drawn on the far wall behind it, so that wall's shadows would speckle it: it takes none
         .replace("#include <lights_fragment_begin>", THREE.ShaderChunk.lights_fragment_begin.replaceAll("&& receiveShadow )", "&& receiveShadow && kerfCap < 0.5 )"))
-        .replace("vec3 totalEmissiveRadiance = emissive;", "vec3 totalEmissiveRadiance = emissive + diffuseColor.rgb * 0.22;");
+        .replace("vec3 totalEmissiveRadiance = emissive;", "vec3 totalEmissiveRadiance = emissive + diffuseColor.rgb * 0.22 + (diffuseColor.rgb + 0.4) * kerfFront * 1.6;");
     };
-    this.material.customProgramCacheKey = () => "kerf-results-v2";
+    this.material.customProgramCacheKey = () => "kerf-results-v3";
+    this.zSpan = [lo.z, hi.z];
     this.buildVolume();
     this.disposables.push(this.material, this.ghostMat);
 
@@ -372,8 +382,23 @@ export class ResultsOverlay implements SceneOverlay {
     return f === "safety" ? 1 / Math.max(val, 1e-9) : val;
   }
 
+  /** Sweep the result's colours up over the model, as it lands (not with reduced motion). */
+  sweepIn(dur = 950) {
+    this.sweep = { t0: performance.now(), dur };
+    const pad = (this.zSpan[1] - this.zSpan[0]) * 0.04 + 0.5;
+    this.uniforms.uReveal.value.set(this.zSpan[0] - pad, this.zSpan[1] - this.zSpan[0] + 2 * pad, 0, 1);
+  }
+
   tick(now: number): boolean {
     let active = false;
+    if (this.sweep) {
+      const k = (now - this.sweep.t0) / this.sweep.dur;
+      if (k >= 1) {
+        this.sweep = null;
+        this.uniforms.uReveal.value.w = 0;
+      } else this.uniforms.uReveal.value.z = k <= 0 ? 0 : k < 0.5 ? 2 * k * k : 1 - Math.pow(-2 * k + 2, 2) / 2;
+      active = true;
+    }
     if (this.modeShown() !== null) {
       // a mode swings both ways about the rest shape
       const target = this.cfg.animate ? this.modeAmp * Math.sin(((now - this.t0) / 1400) * Math.PI * 2) : this.modeAmp;
@@ -398,6 +423,8 @@ export class ResultsOverlay implements SceneOverlay {
   }
 
   still() {
+    this.sweep = null;
+    this.uniforms.uReveal.value.w = 0;
     this.uniforms.uScale.value = this.modeShown() !== null ? this.modeAmp : this.cfg.scale;
     for (const s of this.spots) s.scale.setScalar(s.userData.base);
     this.moveCarried();

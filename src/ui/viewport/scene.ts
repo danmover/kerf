@@ -7,9 +7,12 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
-import { motionPose } from "../../core/kinematics";
+import { driveAngle, motionPose } from "../../core/kinematics";
 import { explodeOffsets, stepProgress, type ExplodePlan } from "../../core/explode";
 import { ChainLinks } from "./chainLinks";
+import { RopeLine } from "./ropeLine";
+import { ropeLineAt } from "../../machine/ropes";
+import type { RopeNode } from "../../machine/types";
 import type { MeshEntry } from "../../core/engine";
 import { closeEnough, pickMesh, threadPitch } from "./threadLod";
 import { prepareRay } from "./fastPick";
@@ -19,11 +22,15 @@ import { xformMatrix } from "../../kernel/recipe";
 import type { ViewPreset } from "../../app/view";
 import type { FilmLayout, FilmShot, FilmView } from "../../app/viewportApi";
 import { buildShare } from "../../film/timeline";
-import { appearanceFor, Detail, type Appearance } from "./render/appearance";
-import { applyAppearance, capMaterial, partUniforms, patchPartMaterial, plyLayout, type PartUniforms } from "./render/partShader";
+import { appearanceFor, Detail, makeFor, processFinish, type Appearance } from "./render/appearance";
+import { applyAppearance, applyMake, capMaterial, FILL_ENV, FILL_ON, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, setBevelPixel, type PartUniforms } from "./render/partShader";
+import { BevelBuilder, bevelGeometry, type BevelBands } from "./render/bevel";
+import { ARRIVE_MS, DROP_LAND, arrivalKind, dropHeight, fillAt, fillAxis, screwLeft, screwTravel, traceAt, traceOrder } from "./arrival";
+import { edgeSweep, editSweep, type Sweep } from "./editSweep";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { ChangeDepth } from "./render/changeDepth";
 import { ContactShadow } from "./render/contactShadow";
+import { FloorMirror, Ground, mirrorPlane, shadowCatcher } from "./render/ground";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
@@ -50,6 +57,17 @@ const FRAME_FAILS = 20;
 /** How long a rebuilt part's new surfaces glow, and how long its lost ones take to dissolve, ms */
 const CHANGE_MS = 1100;
 const CHANGE_FADE_MS = 620;
+/** A change that sweeps through its part: how long it shows, and how long its front takes to cross, ms */
+const SWEEP_MS = 1350;
+const SWEEP_FRONT_MS = 720;
+/** Most parts one edit works a sweep out for from their edges (the rest show their change without one) */
+const EDGE_SWEEPS_MAX = 4;
+/** How long a check's result pulses on its parts, ms */
+const PULSE_MS = 950;
+/** A change the camera goes to see: how long it takes to get there, stays, and comes back, ms */
+const VISIT_GO_MS = 650;
+const VISIT_STAY_MS = 1100;
+const VISIT_BACK_MS = 800;
 
 /** How far apart two meshes of one surface can lie, by the mesh's quality (src/kernel/build.ts meshes preview at 0.25 mm, the rest at 0.03). */
 const meshTolerance = (geoKey: string) => (geoKey.endsWith(":preview") ? 0.25 : 0.03);
@@ -59,7 +77,11 @@ const SWATCH_MATS_MAX = 96;
 interface GeoEntry {
   mesh: THREE.BufferGeometry;
   edges: THREE.BufferGeometry;
+  /** (first point, point count, edge id) per B-rep edge, for the order the outline draws in (see traceOrder) */
+  edgeGroups?: Int32Array;
   users: number;
+  /** its rounded-edge bands (render/bevel.ts), once found; null when it has none */
+  bevel?: THREE.BufferGeometry | null;
 }
 
 interface Spring {
@@ -87,12 +109,17 @@ interface PartObj {
   /** local-space centre, for the explode direction */
   center: THREE.Vector3;
   explode: Spring;
-  reveal: { t0: number; dur: number; zMin: number; zMax: number; plane: THREE.Plane } | null;
+  /** a new part made in place: its outline traces, then it fills along dir (world) from sMin to sMax */
+  reveal: { t0: number; dur: number; sMin: number; sMax: number; dir: THREE.Vector3; plane: THREE.Plane } | null;
+  /** a bought part dropping in, or a screw spinning down its thread (in assembly coordinates) */
+  arrive: { t0: number; dur: number; kind: "drop" | "screw"; travel: number; axis: THREE.Vector3; pivot: THREE.Vector3; turns: number; landed: boolean } | null;
   /** dissolve in after a rebuild, or out on removal */
   dissolve: { t0: number; dur: number; out: boolean } | null;
   flash: { t0: number; dur: number } | null;
-  /** rebuilt: its new surfaces glowing, told apart from the old ones by ChangeDepth */
-  change: { t0: number; dur: number } | null;
+  /** rebuilt: its new surfaces glowing, told apart from the old ones by ChangeDepth; swept through it when it has a sweep (part frame) */
+  change: { t0: number; dur: number; sweep: Sweep | null; ghost: Ghost } | null;
+  /** a check's result landing on it */
+  pulse: { t0: number; dur: number } | null;
   /** a ring of light running out from where it was clicked */
   ripple: { t0: number; dur: number; reach: number } | null;
   removing: boolean;
@@ -101,8 +128,22 @@ interface PartObj {
   /** last state that affects the rendered image (for resetting the accumulation) */
   sig: string;
   decor: Decor | null;
+  /** its rounded edges, drawn with its own material (a child of mesh, so it shows and hides with it) */
+  bevel: THREE.Mesh | null;
   /** a chain's links, drawn in place of its solid while the motion preview is turned */
   links?: ChainLinks | null;
+  /** a rope's line, drawn in place of its solid while what it runs on is away from where it is drawn */
+  line?: RopeLine | null;
+}
+
+/** A rope as the 3D view needs it to draw it moving: its nodes, and the part each is (or is tied to). */
+export interface RopeDraw {
+  nodes: RopeNode[];
+  /** the rope's diameter and its length from end to end, mm */
+  d: number;
+  length: number;
+  /** by node: the id of the drum or sheave, or of the part a tied end is on */
+  on: (string | undefined)[];
 }
 
 /** Detail drawn with a part in its own frame: a bought circuit board's components, copper and silkscreen. */
@@ -153,6 +194,8 @@ interface Ghost {
   fade: number;
   /** only the surfaces the new mesh doesn't cover dissolve (see startChange) */
   change: boolean;
+  /** they go as the change's front passes instead (see the part shader's uSweep) */
+  sweep: boolean;
 }
 
 /** What is under a point on screen: the part, and the spot on it in the part's own frame and in the assembly. */
@@ -223,6 +266,8 @@ export interface RenderSettings {
   photoreal: boolean;
   /** the app theme: a dark lighting set swaps to a pale backdrop in the light theme */
   theme?: "dark" | "light";
+  /** the floor mirrors the model as much as the set's floor would (on unless false) */
+  floorGloss?: boolean;
   /** once the view is still, the parts in front of and behind the selection soften a little (on unless false) */
   focusBlur?: boolean;
 }
@@ -273,7 +318,6 @@ export interface AppearanceOverride {
   color: string;
 }
 
-const ease = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : 1 - Math.pow(1 - k, 3));
 const easeInOut = (k: number) => (k <= 0 ? 0 : k >= 1 ? 1 : k < 0.5 ? 4 * k * k * k : 1 - Math.pow(-2 * k + 2, 3) / 2);
 
 export class SceneController {
@@ -320,10 +364,15 @@ export class SceneController {
   private changeDepth: ChangeDepth | null = null;
   /** where the camera is drawing back to, to keep a design's arriving parts in view (see growView) */
   private growTo: { pos: THREE.Vector3; target: THREE.Vector3; at: number } | null = null;
+  /** while Claude builds: the camera goes to see a change out of view and comes back (see visitChange) */
+  private followChanges = false;
+  private visit: { home: { pos: THREE.Vector3; target: THREE.Vector3 }; box: THREE.Box3; backAt: number; back: boolean } | null = null;
   /** depth of field on the selection (see focusLens), and the selection it was worked out for */
   private lens: { radius: number; focus: number } | null = null;
   private lensSel: ReadonlySet<string> | null = null;
   private geos = new Map<string, GeoEntry>();
+  /** finds each refined mesh's rounded edges off the main thread */
+  private bevels = new BevelBuilder((key, bands) => this.bevelReady(key, bands));
   private seenHashByPart = new Map<string, string>();
   /** the meshes the parts were last set from, for switching a part between its drawn and real threads */
   private lastMeshes: Map<string, MeshEntry> | null = null;
@@ -336,14 +385,24 @@ export class SceneController {
   private ground: THREE.Mesh;
   /** soft darkening of the floor under the model, drawn again only when the model changes */
   private contact: ContactShadow;
-  /** times the key light's shadow map was drawn, by any pass; the shadow map is reused while only the camera moves */
-  private shadowWrites = 0;
-  private shadowSeen = -1;
-  private shadowAt = new THREE.Vector3(NaN, NaN, NaN);
-  private shadowStale = true;
+  /**
+   * Bumped whenever anything but the camera changes: each shadow-casting light redraws its map when the model changed
+   * since it last drew it, or the light moved. While only the camera moves, the maps are reused.
+   */
+  private shadowStamp = 0;
   private groundMat: THREE.ShadowMaterial;
+  /** each light's share of the light, for the shadow catcher (key first, then the casters) */
+  private shadowWeights: { value: number[] };
   private key: THREE.DirectionalLight;
   private keyDir = new THREE.Vector3();
+  /** the set's other shadow-casting lights (big softboxes, a window), and where each points from */
+  private casters: THREE.DirectionalLight[] = [];
+  private casterDirs: THREE.Vector3[] = [];
+  /** a set's real ground (bench top, floor), and the model mirrored in a glossy floor */
+  private groundLit: Ground;
+  private mirror: FloorMirror;
+  private mirrorPlane: { mesh: THREE.Mesh; fade: { value: THREE.Vector4 } };
+  private floorZ = 0;
   private sectionFrame: THREE.LineLoop;
   private sectionFill: THREE.Mesh;
   private depthOnly = new THREE.MeshBasicMaterial({ colorWrite: false });
@@ -496,29 +555,24 @@ export class SceneController {
     container.addEventListener("wheel", (e) => this.glideWheel(e), { capture: true, passive: false });
     this.controls.addEventListener("start", () => this.takeCamera());
 
-    this.key = new THREE.DirectionalLight(0xffffff, 2);
-    this.key.castShadow = true;
-    this.key.shadow.mapSize.set(2048, 2048);
-    this.key.shadow.bias = -0.0002;
-    this.scene.add(this.key, this.key.target);
+    this.key = this.shadowLight(2048);
 
     this.gridMat = gridMaterial();
     this.grid = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.gridMat);
     this.grid.renderOrder = -1;
     this.scene.add(this.grid);
-    this.groundMat = new THREE.ShadowMaterial({ opacity: 0.5, transparent: true });
+    const catcher = shadowCatcher();
+    this.groundMat = catcher.mat;
+    this.shadowWeights = catcher.weights;
     this.ground = new THREE.Mesh(new THREE.PlaneGeometry(1, 1), this.groundMat);
     this.ground.receiveShadow = true;
     this.scene.add(this.ground);
+    this.mirror = new FloorMirror(this.renderer);
+    this.groundLit = new Ground(this.mirror);
+    this.mirrorPlane = mirrorPlane(this.mirror);
+    this.scene.add(this.groundLit.mesh, this.mirrorPlane.mesh);
     this.contact = new ContactShadow(this.renderer);
     this.scene.add(this.contact.mesh);
-    // count every drawing of the key light's shadow map, whoever draws it, so the live view knows when its own is still there
-    const shadow = this.key.shadow;
-    const updateMatrices = shadow.updateMatrices.bind(shadow);
-    shadow.updateMatrices = (light: THREE.Light) => {
-      this.shadowWrites++;
-      updateMatrices(light);
-    };
 
     this.scene.add(this.root);
     this.overlay.add(this.interGroup);
@@ -701,7 +755,13 @@ export class SceneController {
     for (const g of this.geos.values()) {
       g.mesh.dispose();
       g.edges.dispose();
+      g.bevel?.dispose();
     }
+    this.bevels.dispose();
+    this.groundLit.dispose();
+    this.mirror.dispose();
+    this.mirrorPlane.mesh.geometry.dispose();
+    (this.mirrorPlane.mesh.material as THREE.Material).dispose();
     this.pipe.dispose();
     this.contact.dispose();
     this.swatchPipe?.dispose();
@@ -727,7 +787,7 @@ export class SceneController {
   setRenderSettings(s: RenderSettings) {
     const prev = this.render$;
     this.render$ = { ...s };
-    if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle || prev.theme !== s.theme) this.applyLighting();
+    if (prev.lighting !== s.lighting || prev.lightAngle !== s.lightAngle || prev.theme !== s.theme || prev.floorGloss !== s.floorGloss) this.applyLighting();
     if (prev.photoreal !== s.photoreal) {
       if (!s.photoreal) {
         // the image buffers go now; the compiled shader and scene copy are freed a minute later,
@@ -767,9 +827,30 @@ export class SceneController {
     this.key.color.set(p.key.color);
     this.key.intensity = p.key.i;
     this.overlayKey.position.copy(this.keyDir);
+    // the set's other shadow-casting lights; the parts take their fill light from the set without those panels
+    const casters = p.casters ?? [];
+    while (this.casters.length > casters.length) {
+      const l = this.casters.pop()!;
+      this.scene.remove(l, l.target);
+      l.shadow.dispose();
+      l.dispose();
+    }
+    while (this.casters.length < casters.length) this.casters.push(this.shadowLight(1024));
+    this.casterDirs = casters.map((c) => dirFrom(c.az + this.render$.lightAngle, c.el));
+    casters.forEach((c, k) => {
+      this.casters[k].color.set(c.color);
+      this.casters[k].intensity = c.i;
+    });
+    const total = p.key.i + casters.reduce((a, c) => a + c.i, 0);
+    this.shadowWeights.value = [p.key.i, ...casters.map((c) => c.i), 0, 0, 0].slice(0, 4).map((i) => i / total);
+    FILL_ENV.value = this.envs.fill(p);
+    FILL_ON.value = p.panels.some((pn) => pn.cast) ? 1 : 0;
+    // a set with a real ground stands the model on it; the others catch its shadows over their backdrop
+    this.groundLit.set(p.ground ?? null);
+    this.ground.visible = !p.ground;
     this.groundMat.opacity = p.shadow;
-    this.contact.setStrength(p.contact?.near ?? 0.85, p.contact?.pool ?? 0.5, p.floorLight);
-    this.shadowStale = true;
+    this.contact.setStrength(p.contact?.near ?? 0.85, p.contact?.pool ?? 0.5, p.ground ? undefined : p.floorLight);
+    this.shadowStamp++;
     const look = this.pipe.look;
     look.exposure = p.exposure;
     look.bloom = p.bloom;
@@ -791,29 +872,97 @@ export class SceneController {
   }
 
   /** Before each accumulated sample: the key light where that sample has it, and the floor's contact shadow on the first sample when the model changed (or always, for a capture or film frame that posed the model its own way). */
-  private beforeSample(i: number, fresh = false) {
+  private beforeSample(i: number, fresh = false, cam: THREE.PerspectiveCamera = this.camera, heightPx = this.pipe.height) {
+    // a capture or film frame poses the model its own way: every shadow is drawn again for it
+    if (i === 0 && fresh) this.shadowStamp++;
+    if (i === 0) setBevelPixel(cam, heightPx);
     this.placeKey(i);
+    this.prepareShadows();
     if (i === 0 && (fresh || this.contact.dirty)) this.contact.render(this.scene, L_OPAQUE, this.sectionAnim.on ? [this.sectionPlane] : []);
+    if (i === 0) this.drawMirror(cam, heightPx);
   }
 
-  /** Position the key light for sample i: the centre for i = 0, then spread over the light's area. */
+  /** A light that casts shadows, its map `size` square, redrawn only when told (prepareShadows). */
+  private shadowLight(size: number): THREE.DirectionalLight {
+    const l = new THREE.DirectionalLight(0xffffff, 1);
+    l.castShadow = true;
+    l.shadow.mapSize.set(size, size);
+    l.shadow.bias = -0.0002;
+    l.shadow.autoUpdate = false;
+    l.userData.shadowAt = new THREE.Vector3(NaN, NaN, NaN);
+    l.userData.shadowStamp = -1;
+    // note where and for which model the map was last drawn, whoever drew it
+    const shadow = l.shadow;
+    const updateMatrices = shadow.updateMatrices.bind(shadow);
+    shadow.updateMatrices = (light: THREE.Light) => {
+      l.userData.shadowAt.copy(l.position);
+      l.userData.shadowStamp = this.shadowStamp;
+      updateMatrices(light);
+    };
+    this.scene.add(l, l.target);
+    return l;
+  }
+
+  /** Ask for each shadow map that is not of the model as it is now, from where its light now is. */
+  private prepareShadows() {
+    for (const l of [this.key, ...this.casters]) {
+      const fresh = !!l.shadow.map && l.userData.shadowStamp === this.shadowStamp && (l.userData.shadowAt as THREE.Vector3).equals(l.position);
+      l.shadow.needsUpdate = !fresh;
+    }
+  }
+
+  /** The model mirrored in a glossy floor, for this view (none when the floor is matte, glossy floors are off, or the camera is under the floor). */
+  private drawMirror(cam: THREE.PerspectiveCamera, heightPx: number) {
+    const p = this.preset;
+    const gloss = this.render$.floorGloss === false ? 0 : (p.gloss ?? 0);
+    const above = cam.position.z > this.floorZ;
+    this.groundLit.mesh.visible = !!p.ground && above;
+    this.mirrorPlane.mesh.visible = gloss > 0 && !p.ground && above;
+    const on = gloss > 0 && above && (!!p.ground || this.mirrorPlane.mesh.visible);
+    this.mirror.uniforms.uMirror.value.set(on ? gloss : 0, 0.004);
+    if (!on) {
+      if (this.mirror.ready) this.mirror.release();
+      return;
+    }
+    const aspect = cam.aspect || 1;
+    this.mirror.render(this.scene, cam, this.floorZ, L_OPAQUE, Math.round(heightPx * aspect), heightPx);
+  }
+
+  /**
+   * Position the shadow-casting lights for sample i: each at its centre for i = 0, then spread over its area. With
+   * casters, the key moves on even samples and the casters take turns on odd ones (the others stay put, their shadow
+   * maps still good), so each sample redraws one shadow map as before.
+   */
   private placeKey(i: number) {
+    const n = this.casters.length;
+    // each light walks its own disc samples 1, 2, 3...: well spread however many lights share the samples
+    this.placeLight(this.key, this.keyDir, this.preset.key.size, i === 0 ? 0 : n === 0 ? i : i % 2 === 0 ? i / 2 : -1);
+    const odd = i > 0 && i % 2 === 1;
+    const turn = odd ? ((i - 1) / 2) % n : -1;
+    const step = odd ? Math.floor((i - 1) / 2 / n) + 1 : 0;
+    const sizes = this.preset.casters ?? [];
+    this.casters.forEach((l, k) => this.placeLight(l, this.casterDirs[k], sizes[k]?.size ?? 10, i === 0 ? 0 : turn === k ? step : -1));
+  }
+
+  /** Put a light at sample `i` of its disc of angular radius `sizeDeg` (0: its centre; -1: leave it where it is). */
+  private placeLight(l: THREE.DirectionalLight, dir: THREE.Vector3 | undefined, sizeDeg: number, i: number) {
+    if (i < 0 || !dir) return;
     const size = Math.max(this.bounds.getSize(new THREE.Vector3()).length(), 20);
     const c = this.bounds.getCenter(new THREE.Vector3());
-    const d = this.keyDir.clone();
+    const d = dir.clone();
     if (i > 0) {
       const [x, y] = concentricDisc(halton(i, 5), halton(i, 7));
       const t1 = new THREE.Vector3().crossVectors(d, new THREE.Vector3(0, 0, 1));
       if (t1.lengthSq() < 1e-6) t1.set(1, 0, 0);
       t1.normalize();
       const t2 = new THREE.Vector3().crossVectors(d, t1).normalize();
-      const k = Math.tan(THREE.MathUtils.degToRad(this.preset.key.size));
+      const k = Math.tan(THREE.MathUtils.degToRad(sizeDeg));
       d.addScaledVector(t1, x * k).addScaledVector(t2, y * k).normalize();
     }
-    this.key.position.copy(c).addScaledVector(d, size * 2);
-    this.key.target.position.copy(c);
-    this.key.updateMatrixWorld();
-    this.key.target.updateMatrixWorld();
+    l.position.copy(c).addScaledVector(d, size * 2);
+    l.target.position.copy(c);
+    l.updateMatrixWorld();
+    l.target.updateMatrixWorld();
   }
 
   /** Accumulated samples so far and the target (for tests and diagnostics). */
@@ -950,10 +1099,11 @@ export class SceneController {
     this.changed = true;
   }
 
-  /** Swing the camera to a position and target (at once with reduced motion). */
-  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number) {
+  /** Swing the camera to a position and target (at once with reduced motion). Ends a visit to a change, unless it is one. */
+  private moveCamera(pos: THREE.Vector3, target: THREE.Vector3, dur: number, visiting = false) {
     this.zoomGlide = null;
     this.growTo = null;
+    if (!visiting) this.visit = null;
     if (this.display.reduceMotion) {
       this.camera.position.copy(pos);
       this.controls.target.copy(target);
@@ -981,7 +1131,10 @@ export class SceneController {
     // a part's real threads may have just arrived while the camera is close to it
     if (!this.lodDue) this.lodDue = now + 200;
     const motion = !this.display.reduceMotion;
-    let fresh = 0;
+    // new parts arrive in turn: the made ones first, then what is bought, then the screws that hold them
+    const fresh = { make: 0, drop: 0, screw: 0 };
+    let edgeSweeps = 0;
+    const seen = new THREE.Box3();
     for (const part of parts) {
       const pick = pickMesh(meshes.get(part.hash), this.realThreads(part.id));
       if (!pick) {
@@ -1004,14 +1157,30 @@ export class SceneController {
         obj.placement.fromArray(xformMatrix(part.xf));
         if (motion && isNewGeometry) {
           if (prevHash) this.startDissolveIn(obj, now);
-          else this.startReveal(obj, now + Math.min(fresh++ * 45, 900));
+          else {
+            const kind = arrivalKind(part);
+            const n = fresh[kind]++;
+            const delay = kind === "make" ? Math.min(n * 45, 900) : kind === "drop" ? 220 + Math.min(n * 40, 700) : 480 + Math.min(n * 35, 600);
+            this.startReveal(obj, now + delay);
+          }
+          if (this.followChanges) seen.union(this.worldBox(obj));
         }
       } else if (obj.geoKey !== geoKey) {
         const oldKey = obj.geoKey;
         const ghost = motion && isNewGeometry ? this.spawnGhost(obj, now) : null;
+        const oldEdges = ghost ? this.geos.get(oldKey)?.edges.getAttribute("position")?.array : undefined;
+        const was = obj.part;
         this.swapGeometry(obj, geoKey, data);
-        if (ghost) this.startChange(obj, ghost, oldKey, now);
-        else if (motion && isNewGeometry) this.startDissolveIn(obj, now);
+        if (ghost) {
+          // which way the change sweeps through it: from its recipe, else from where its edges moved
+          let sweep = editSweep(was.recipe, part.recipe, this.localBox(ghost.mesh.geometry), this.localBox(obj.mesh.geometry));
+          if (!sweep && oldEdges && edgeSweeps < EDGE_SWEEPS_MAX) {
+            edgeSweeps++;
+            sweep = edgeSweep(oldEdges, data.edges);
+          }
+          this.startChange(obj, ghost, oldKey, now, sweep);
+          if (this.followChanges) seen.union(this.worldBox(obj));
+        } else if (motion && isNewGeometry) this.startDissolveIn(obj, now);
       }
       obj.part = part;
       obj.hash = part.hash;
@@ -1026,7 +1195,8 @@ export class SceneController {
       if (!motion) this.disposePart(obj);
       else {
         obj.removing = true;
-        obj.reveal = null;
+        this.endReveal(obj);
+        obj.arrive = null;
         obj.change = null;
         obj.u.uChange.value.x = 0;
         obj.dissolve = { t0: now, dur: 420, out: true };
@@ -1040,8 +1210,73 @@ export class SceneController {
       this.fit("iso", false);
       this.onFirstFrame();
     } else if (this.autoFit && this.parts.size) this.growView();
+    else if (!seen.isEmpty()) this.visitChange(seen);
     this.changed = true;
   }
+
+  /** A part's mesh box in its own frame. */
+  private localBox(g: THREE.BufferGeometry): { min: [number, number, number]; max: [number, number, number] } {
+    g.boundingBox ?? g.computeBoundingBox();
+    const b = g.boundingBox!;
+    return { min: [b.min.x, b.min.y, b.min.z], max: [b.max.x, b.max.y, b.max.z] };
+  }
+
+  /** Where a part sits in the assembly, as a box. */
+  private worldBox(obj: PartObj): THREE.Box3 {
+    obj.mesh.geometry.boundingBox ?? obj.mesh.geometry.computeBoundingBox();
+    return obj.mesh.geometry.boundingBox!.clone().applyMatrix4(obj.placement);
+  }
+
+  /** Claude is building: changes out of view, or too small to see, are shown and the camera comes back. */
+  setFollowChanges(on: boolean) {
+    this.followChanges = on;
+  }
+
+  /**
+   * Go and see a change (a box in the assembly) when it is out of view or too small to see from here: the camera
+   * turns to it the way it already looks, stays a moment, and goes back (see animate). Moving the camera stops it
+   * (takeCamera).
+   */
+  private visitChange(box: THREE.Box3) {
+    if (this.display.reduceMotion || this.sketching || this.filming) return;
+    const now = performance.now();
+    if (this.visit) {
+      // more while it is there (or on its way back): frame it all, and stay a while longer
+      this.visit.box = this.visit.back ? box.clone() : this.visit.box.union(box);
+    } else {
+      if (this.camAnim || this.growTo || this.zoomGlide) return;
+      this.camera.updateMatrixWorld();
+      const frustum = new THREE.Frustum().setFromProjectionMatrix(new THREE.Matrix4().multiplyMatrices(this.camera.projectionMatrix, this.camera.matrixWorldInverse));
+      const sphere = box.getBoundingSphere(new THREE.Sphere());
+      const dist = Math.max(1e-6, sphere.center.distanceTo(this.camera.position));
+      const share = sphere.radius / (dist * Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2)));
+      // in view and big enough to make out: nothing to go and see
+      if (share > 0.05 && this.boxInView(box, frustum)) return;
+      this.visit = { home: { pos: this.camera.position.clone(), target: this.controls.target.clone() }, box: box.clone(), backAt: 0, back: false };
+    }
+    const v = this.visit;
+    v.back = false;
+    v.backAt = now + VISIT_GO_MS + VISIT_STAY_MS;
+    const sphere = v.box.getBoundingSphere(new THREE.Sphere());
+    const dir = this.camera.position.clone().sub(this.controls.target).normalize();
+    const fitDist = (sphere.radius * 1.4) / Math.tan(THREE.MathUtils.degToRad(this.camera.fov / 2));
+    // close enough to make it out, but never farther than the view was
+    const homeDist = v.home.pos.distanceTo(v.home.target);
+    const d = Math.min(homeDist, Math.max(fitDist, homeDist * 0.2, this.camera.near * 4));
+    this.moveCamera(sphere.center.clone().addScaledVector(dir, d), sphere.center.clone(), VISIT_GO_MS, true);
+  }
+
+  /** Whether every corner of a box is in view. */
+  private boxInView(box: THREE.Box3, frustum: THREE.Frustum): boolean {
+    const c = new THREE.Vector3();
+    for (let k = 0; k < 8; k++) {
+      c.set(k & 1 ? box.max.x : box.min.x, k & 2 ? box.max.y : box.min.y, k & 4 ? box.max.z : box.min.z);
+      if (!frustum.containsPoint(c)) return false;
+    }
+    return true;
+  }
+
+
 
   /**
    * While a design opens and the camera is still the app's: the first parts are framed as they come, and the camera
@@ -1077,11 +1312,43 @@ export class SceneController {
       mesh.computeBoundingSphere();
       const edges = new THREE.BufferGeometry();
       edges.setAttribute("position", new THREE.BufferAttribute(data.edges, 3));
-      g = { mesh, edges, users: 0 };
+      g = { mesh, edges, edgeGroups: data.edgeGroups, users: 0 };
       this.geos.set(key, g);
+      // the coarse first mesh is soon replaced: only the refined ones get rounded edges
+      if (!key.endsWith(":preview")) this.bevels.request(key, data);
     }
     g.users++;
     return g;
+  }
+
+  /** A mesh's rounded edges were found: every part showing it gets them. */
+  private bevelReady(key: string, bands: BevelBands | null) {
+    const g = this.geos.get(key);
+    if (!g || this.disposed) return;
+    g.bevel = bands ? bevelGeometry(bands) : null;
+    for (const obj of this.parts.values()) if (obj.geoKey === key) this.attachBevel(obj);
+    this.changed = true;
+  }
+
+  /** Give a part its mesh's rounded edges (hidden until they are found, and while the part is see-through). */
+  private attachBevel(obj: PartObj) {
+    const geo = this.geos.get(obj.geoKey)?.bevel;
+    if (!geo) {
+      if (obj.bevel) obj.bevel.visible = false;
+      return;
+    }
+    if (!obj.bevel) {
+      const m = new THREE.Mesh(geo, obj.mat);
+      m.castShadow = false;
+      m.receiveShadow = true;
+      m.userData.bevel = true;
+      // picking and every pass but the colour one see the part's own mesh
+      m.raycast = () => {};
+      m.layers.set(0);
+      obj.bevel = m;
+      obj.mesh.add(m);
+    } else obj.bevel.geometry = geo;
+    obj.bevel.visible = !obj.mat.transparent;
   }
 
   private release(key: string) {
@@ -1091,13 +1358,15 @@ export class SceneController {
     if (g.users <= 0) {
       g.mesh.dispose();
       g.edges.dispose();
+      g.bevel?.dispose();
+      this.bevels.drop(key);
       this.geos.delete(key);
     }
   }
 
   private lookFor(part: EvalPart): Appearance {
     const o = this.overrides.get(part.id);
-    return o ? appearanceFor(o.material, o.finish, o.color) : appearanceFor(part.material, part.finish, part.color);
+    return o ? appearanceFor(o.material, o.finish, o.color) : appearanceFor(part.material, part.finish ?? processFinish(part.material, part.process?.id), part.color);
   }
 
   private newPartMaterial(look: Appearance) {
@@ -1114,6 +1383,7 @@ export class SceneController {
     const { mat, u } = this.newPartMaterial(look);
     const cap$ = capMaterial();
     const edgeMat = new THREE.LineBasicMaterial({ color: this.preset.edge.color, transparent: true, opacity: this.preset.edge.alpha, depthWrite: false });
+    patchEdgeMaterial(edgeMat, u);
     const mesh = new THREE.Mesh(g.mesh, mat);
     mesh.castShadow = true;
     mesh.receiveShadow = true;
@@ -1148,15 +1418,18 @@ export class SceneController {
       center,
       explode: { pos: new THREE.Vector3(), vel: new THREE.Vector3(), hold: 0 },
       reveal: null,
+      arrive: null,
       dissolve: null,
       flash: null,
       change: null,
+      pulse: null,
       ripple: null,
       removing: false,
       opacity: 1,
       opacityTarget: 1,
       sig: "",
       decor: null,
+      bevel: null,
     };
   }
 
@@ -1170,6 +1443,11 @@ export class SceneController {
     g.mesh.boundingBox!.getCenter(obj.center);
     obj.u.uNoiseScale.value = 7 / Math.max(g.mesh.boundingSphere!.radius * 2, 1);
     obj.u.uThreads.value = g.mesh.getAttribute("aThread") ? 1 : 0;
+    // refined while it is still drawing itself in
+    if (obj.u.uTrace.value.y > 0) this.traceOrderFor(geoKey);
+    obj.u.uKBox0.value.copy(g.mesh.boundingBox!.min);
+    obj.u.uKBox1.value.copy(g.mesh.boundingBox!.max);
+    this.attachBevel(obj);
   }
 
   /** Real threads for photoreal (the path tracer draws geometry, not the shader's threads), films and close-ups. */
@@ -1232,6 +1510,12 @@ export class SceneController {
    * A chain shows its solid at the start of the motion and its moving links
    * once the drive turns. True when what is drawn changed.
    */
+  /** Degrees the design's drive runs before it turns back, when a part's travel ends (every motion carries the same figure). */
+  private driveRange(): number | undefined {
+    for (const o of this.parts.values()) if (o.part.motion?.range) return o.part.motion.range;
+    return undefined;
+  }
+
   private chainLinks(obj: PartObj): boolean {
     const info = obj.part.chain!;
     let changed = false;
@@ -1253,15 +1537,82 @@ export class SceneController {
       changed = true;
     }
     for (const m of obj.links.meshes) m.layers.mask = obj.mesh.layers.mask;
-    if (on && obj.links.update(this.angle)) changed = true;
+    // a design whose travel ends runs its drive out and back: the chain follows its sprockets
+    if (on && obj.links.update(driveAngle(this.angle, this.driveRange()))) changed = true;
     return changed;
   }
+
+  /**
+   * A rope shows its solid while everything it runs on is where it is drawn, and a line laid from where they are
+   * once any of them has moved (the motion preview, a drag, "let go"). True when what is drawn changed.
+   */
+  private ropeLines(): boolean {
+    let changed = false;
+    const d = this.display;
+    for (const obj of this.parts.values()) {
+      const info = this.ropes?.get(obj.part.id);
+      if (!info && !obj.line) continue;
+      let line: [number, number, number][] | null = null;
+      if (info) {
+        // where each thing it runs on has gone from where it is drawn, the exploded view's spread left out
+        let moved = false;
+        const poses = info.on.map((id) => {
+          const o = id ? this.parts.get(id) : undefined;
+          if (!o) return null;
+          const m = this.ropeM.makeTranslation(-o.explode.pos.x, -o.explode.pos.y, -o.explode.pos.z).multiply(o.group.matrix).multiply(this.ropeI.copy(o.placement).invert());
+          const e = m.elements;
+          let off = 0;
+          for (let k = 0; k < 16; k++) off = Math.max(off, Math.abs(e[k] - (k % 5 === 0 ? 1 : 0)) * (k >= 12 ? 1 : 100));
+          if (off < 1e-3) return null;
+          moved = true;
+          return [...e];
+        });
+        if (moved) line = ropeLineAt(info.nodes, info.d, info.length, poses);
+      }
+      const on = !!line;
+      if (on && !obj.line) {
+        obj.line = new RopeLine(info!.d, obj.mat);
+        obj.group.add(obj.line.mesh);
+      }
+      if (!obj.line) continue;
+      if (obj.line.mesh.visible !== on) {
+        obj.line.mesh.visible = on;
+        obj.mesh.visible = !on;
+        obj.edges.visible = !on && ((d.edges && !this.photoLookOn) || d.selected.has(obj.id) || d.hovered === obj.id);
+        changed = true;
+      }
+      if (on) {
+        obj.line.mesh.layers.mask = obj.mesh.layers.mask;
+        // the line is laid in the design's own frame: the rope's group carries it out with the exploded view only
+        const m = this.ropeM.copy(obj.group.matrix).invert().multiply(this.ropeI.makeTranslation(obj.explode.pos.x, obj.explode.pos.y, obj.explode.pos.z));
+        if (!m.equals(obj.line.mesh.matrix)) {
+          obj.line.mesh.matrix.copy(m);
+          obj.line.mesh.matrixWorldNeedsUpdate = true;
+          changed = true;
+        }
+        if (obj.line.update(line!)) changed = true;
+      }
+      if (!info) {
+        obj.group.remove(obj.line.mesh);
+        obj.line.dispose();
+        obj.line = null;
+      }
+    }
+    return changed;
+  }
+  private readonly ropeM = new THREE.Matrix4();
+  private readonly ropeI = new THREE.Matrix4();
 
   private disposePart(obj: PartObj) {
     if (obj.links) {
       obj.group.remove(obj.links.object);
       obj.links.dispose();
       obj.links = null;
+    }
+    if (obj.line) {
+      obj.group.remove(obj.line.mesh);
+      obj.line.dispose();
+      obj.line = null;
     }
     this.undecorate(obj);
     this.root.remove(obj.group);
@@ -1282,6 +1633,10 @@ export class SceneController {
     u.uDetail.value.copy(obj.u.uDetail.value);
     u.uPly.value.copy(obj.u.uPly.value);
     u.uThreads.value = obj.u.uThreads.value;
+    u.uMake.value.copy(obj.u.uMake.value);
+    u.uKBox0.value.copy(obj.u.uKBox0.value);
+    u.uKBox1.value.copy(obj.u.uKBox1.value);
+    mat.anisotropy = obj.mat.anisotropy;
     mat.clippingPlanes = obj.mat.clippingPlanes;
     const mesh = new THREE.Mesh(g.mesh, mat);
     mesh.castShadow = true;
@@ -1293,7 +1648,7 @@ export class SceneController {
     group.matrix.copy(obj.group.matrix);
     group.add(mesh, edges);
     this.root.add(group);
-    const ghost: Ghost = { group, mesh, mat, u, edgeMat, edgeAlpha: edgeMat.opacity, geoKey: obj.geoKey, t0: now, dur: 520, fade: 520, change: false };
+    const ghost: Ghost = { group, mesh, mat, u, edgeMat, edgeAlpha: edgeMat.opacity, geoKey: obj.geoKey, t0: now, dur: 520, fade: 520, change: false, sweep: false };
     this.ghosts.push(ghost);
     return ghost;
   }
@@ -1302,20 +1657,40 @@ export class SceneController {
    * A rebuilt part shows what changed: its new surfaces light up, the surfaces it lost dissolve away, and what stayed
    * where it was stays still. Which is which is told per pixel, from the two meshes' depth (drawChangeDepth).
    */
-  private startChange(obj: PartObj, ghost: Ghost, oldKey: string, now: number) {
+  private startChange(obj: PartObj, ghost: Ghost, oldKey: string, now: number, sweep: Sweep | null = null) {
     const tol = (meshTolerance(oldKey) + meshTolerance(obj.geoKey)) * 1.3 + 0.02;
-    obj.reveal = null;
-    obj.u.uScan.value.x = 0;
+    this.endReveal(obj);
+    this.endArrival(obj);
     obj.dissolve = null;
     obj.u.uDissolve.value = 0;
     obj.flash = null;
-    obj.change = { t0: now, dur: CHANGE_MS };
+    obj.change = { t0: now, dur: sweep ? SWEEP_MS : CHANGE_MS, sweep, ghost };
     obj.u.uChange.value.set(1, tol, 0, 0);
     obj.u.uFlash.value = 0;
     ghost.change = true;
-    ghost.dur = CHANGE_MS;
+    ghost.sweep = !!sweep;
+    ghost.dur = obj.change.dur;
     ghost.fade = CHANGE_FADE_MS;
     ghost.u.uChange.value.set(2, tol, 0, 0);
+    for (const u of [obj.u, ghost.u]) {
+      u.uSweep.value.w = 0;
+      u.uSweepFront.value.set(0, 0.12);
+    }
+    if (sweep) this.placeSweep(obj);
+  }
+
+  /** The change's sweep where the part is now (world), for its shader and its old shape's. */
+  private placeSweep(obj: PartObj) {
+    const sw = obj.change?.sweep;
+    if (!sw) return;
+    const m = obj.group.matrix;
+    const o = new THREE.Vector3(...sw.origin).applyMatrix4(m);
+    const d = new THREE.Vector3(...sw.dir).transformDirection(m);
+    const mode = sw.mode === "out" ? 2 : 1;
+    for (const u of [obj.u, obj.change!.ghost.u]) {
+      u.uSweep.value.set(o.x, o.y, o.z, mode);
+      u.uSweepDir.value.set(d.x, d.y, d.z, sw.range);
+    }
   }
 
   /** Before a sample, while parts show what changed: the depth their shaders test against. */
@@ -1341,20 +1716,77 @@ export class SceneController {
     for (const g of olds) view(g.u, depth.new);
   }
 
-  /** End the change glows and ripples now (captures and films draw with buffers of their own). */
+  /**
+   * End every effect now: parts arriving, changes sweeping, ripples and pulses (captures and films draw with buffers
+   * of their own, and Esc skips them). A part fading out on its way out stays on its way.
+   */
   private finishEffects() {
     for (const o of this.parts.values()) {
       if (o.change) {
         o.change = null;
         o.u.uChange.value.x = 0;
         o.u.uFlash.value = 0;
+        o.u.uSweep.value.w = 0;
       }
       if (o.ripple) {
         o.ripple = null;
         o.u.uRippleAmt.value.x = 0;
       }
+      this.endReveal(o);
+      this.endArrival(o);
+      if (o.pulse) {
+        o.pulse = null;
+        o.u.uPulse.value.w = 0;
+      }
+      if (o.dissolve && !o.removing) {
+        o.dissolve = null;
+        o.u.uDissolve.value = 0;
+      }
+      if (o.flash) {
+        o.flash = null;
+        o.u.uFlash.value = 0;
+      }
     }
     for (const g of [...this.ghosts]) this.disposeGhost(g);
+  }
+
+  /** Whether any part is still arriving, changing, rippling or pulsing. */
+  effectsRunning(): boolean {
+    if (this.ghosts.length) return true;
+    for (const o of this.parts.values()) if (o.reveal || o.arrive || o.change || o.ripple || o.pulse || o.flash || (o.dissolve && !o.removing)) return true;
+    return false;
+  }
+
+  /** Skip what is playing (Esc): every effect jumps to its end, and a camera gone to see a change comes back at once. */
+  skipEffects(): boolean {
+    const any = this.effectsRunning() || !!this.visit;
+    if (!any) return false;
+    this.finishEffects();
+    if (this.visit) {
+      const v = this.visit;
+      this.visit = null;
+      this.camAnim = null;
+      this.camera.position.copy(v.home.pos);
+      this.controls.target.copy(v.home.target);
+      this.controls.update();
+    }
+    this.changed = true;
+    return true;
+  }
+
+  /** A check's result lands on these parts: one pulse, red for a new failure, green for one put right. */
+  pulseParts(ids: Iterable<string>, kind: "fail" | "fixed") {
+    if (this.display.reduceMotion) return;
+    const c = kind === "fail" ? new THREE.Color(0xff4d5e).multiplyScalar(1.8) : new THREE.Color(0x3ddc97).multiplyScalar(1.4);
+    const now = performance.now();
+    let i = 0;
+    for (const id of ids) {
+      const o = this.parts.get(id);
+      if (!o || o.removing) continue;
+      o.pulse = { t0: now + Math.min(i++ * 30, 300), dur: PULSE_MS };
+      o.u.uPulse.value.set(c.r, c.g, c.b, 0);
+    }
+    this.changed = true;
   }
 
   /** A ring of light runs out over the part from the spot clicked. */
@@ -1384,16 +1816,85 @@ export class SceneController {
     this.ghosts = this.ghosts.filter((x) => x !== g);
   }
 
+  /** A new part arrives: made in place (its outline traces, then it fills the way it is made), dropped in, or screwed in. */
   private startReveal(obj: PartObj, t0: number) {
-    const box = new THREE.Box3().setFromBufferAttribute(obj.mesh.geometry.getAttribute("position") as THREE.BufferAttribute).applyMatrix4(obj.placement);
-    const pad = Math.max(0.5, (box.max.z - box.min.z) * 0.02);
-    obj.reveal = { t0, dur: 760, zMin: box.min.z - pad, zMax: box.max.z + pad, plane: new THREE.Plane(new THREE.Vector3(0, 0, -1), box.min.z - pad) };
-    obj.u.uScan.value.set(1, box.min.z - pad, Math.max(0.6, (box.max.z - box.min.z) * 0.06));
-    this.updateClipping(obj);
+    const kind = arrivalKind(obj.part);
+    if (kind !== "make") return this.startArrival(obj, t0, kind);
+    const geo = obj.mesh.geometry;
+    const pos = geo.getAttribute("position") as THREE.BufferAttribute;
+    geo.boundingBox ?? geo.computeBoundingBox();
+    const bb = geo.boundingBox!;
+    const fill = fillAxis(obj.part, geo.index ? { positions: pos.array, indices: geo.index.array } : null, { min: bb.min.toArray(), max: bb.max.toArray() });
+    const dir = new THREE.Vector3(...fill.axis);
+    if (fill.frame === "part") dir.transformDirection(obj.placement);
+    // how far the part reaches along that way: D·(M p) = (Mᵀ D)·p + D·t
+    const e = obj.placement.elements;
+    const ax = dir.x * e[0] + dir.y * e[1] + dir.z * e[2];
+    const ay = dir.x * e[4] + dir.y * e[5] + dir.z * e[6];
+    const az = dir.x * e[8] + dir.y * e[9] + dir.z * e[10];
+    const a0 = dir.x * e[12] + dir.y * e[13] + dir.z * e[14];
+    const P = pos.array;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i + 2 < P.length; i += 3) {
+      const v = ax * P[i] + ay * P[i + 1] + az * P[i + 2];
+      if (v < lo) lo = v;
+      if (v > hi) hi = v;
+    }
+    if (!Number.isFinite(lo)) return;
+    lo += a0;
+    hi += a0;
+    const pad = Math.max(0.5, (hi - lo) * 0.02);
+    obj.reveal = { t0, dur: ARRIVE_MS.make, sMin: lo - pad, sMax: hi + pad, dir, plane: new THREE.Plane(dir.clone().negate(), lo - pad) };
+    obj.u.uScan.value.set(1, lo - pad, Math.max(0.6, (hi - lo) * 0.06));
+    // a printed part's band shows its layers, coarser than they are when they would be too fine to make out
+    obj.u.uScanDir.value.set(dir.x, dir.y, dir.z, fill.layer > 0 ? Math.max(fill.layer, (hi - lo) / 36) : 0);
+    // the outline draws itself in first
+    this.traceOrderFor(obj.geoKey);
+    obj.u.uTrace.value.set(-0.01, 1, lo - pad, hi - lo + 2 * pad);
+    this.applyMaterial(obj);
+  }
+
+  /** A bought part drops into place; a screw spins down its thread. Both fade in as they come. */
+  private startArrival(obj: PartObj, t0: number, kind: "drop" | "screw") {
+    const box = this.worldBox(obj);
+    const f = obj.part.fastener;
+    if (kind === "screw" && f) {
+      const { travel, turns } = screwTravel(f.length, f.headD);
+      obj.arrive = { t0, dur: ARRIVE_MS.screw, kind, travel, axis: new THREE.Vector3(...f.outward).normalize(), pivot: new THREE.Vector3(...f.headTop), turns, landed: false };
+    } else {
+      const size = box.getSize(new THREE.Vector3()).length();
+      obj.arrive = { t0, dur: ARRIVE_MS.drop, kind: "drop", travel: Math.min(120, Math.max(10, size * 0.9)), axis: new THREE.Vector3(0, 0, 1), pivot: new THREE.Vector3(), turns: 0, landed: false };
+    }
+    obj.dissolve = { t0, dur: kind === "screw" ? 220 : 280, out: false };
+    obj.u.uDissolve.value = 1;
+    obj.edgeMat.opacity = 0;
+  }
+
+  /** The order a mesh's outline draws in, worked out the first time one of its parts arrives. */
+  private traceOrderFor(key: string) {
+    const g = this.geos.get(key);
+    if (!g || g.edges.getAttribute("aOrder")) return;
+    const E = g.edges.getAttribute("position") as THREE.BufferAttribute | undefined;
+    if (E) g.edges.setAttribute("aOrder", new THREE.BufferAttribute(traceOrder(E.array, g.edgeGroups), 1));
+  }
+
+  private endReveal(obj: PartObj) {
+    if (!obj.reveal && obj.u.uTrace.value.y === 0) return;
+    obj.reveal = null;
+    obj.u.uScan.value.x = 0;
+    obj.u.uTrace.value.y = 0;
+    this.applyMaterial(obj);
+  }
+
+  private endArrival(obj: PartObj) {
+    if (!obj.arrive) return;
+    obj.arrive = null;
+    this.applyMaterial(obj);
   }
 
   private startDissolveIn(obj: PartObj, now: number) {
-    obj.reveal = null;
+    this.endReveal(obj);
     obj.dissolve = { t0: now + 90, dur: 620, out: false };
     obj.u.uDissolve.value = 1;
     obj.flash = { t0: now + 300, dur: 1100 };
@@ -1431,6 +1932,9 @@ export class SceneController {
     // plywood's plies run through the sheet's thickness, which its box tells
     const bb = look.detail === Detail.Plywood ? obj.mesh.geometry.boundingBox : null;
     if (bb) obj.u.uPly.value.fromArray(plyLayout(bb.min.toArray(), bb.max.toArray()));
+    // the marks of how it was made: a print's seam, a mill's arcs, a lathe's rings, a moulding's parting line
+    const [make, makeValue] = makeFor(p.process);
+    applyMake(obj.mat, obj.u, look, make, makeValue, obj.mesh.geometry.boundingBox);
     const selected = d.selected.has(obj.id);
     const hovered = d.hovered === obj.id;
     const focusSet = d.focus.size ? d.focus : d.isolate && d.selected.size ? d.selected : null;
@@ -1439,10 +1943,12 @@ export class SceneController {
     if (d.reduceMotion) obj.opacity = obj.opacityTarget;
     const visible = !d.hidden.has(obj.id) && !p.hidden && !this.replaced.has(obj.id);
     obj.group.visible = visible;
-    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered) && !obj.links?.object.visible;
+    // the outline of a part being made shows whatever the edges setting is: it draws the part in
+    obj.edges.visible = ((d.edges && !this.photoLookOn) || selected || hovered || obj.u.uTrace.value.y > 0) && !obj.links?.object.visible && !obj.line?.mesh.visible;
     obj.mesh.layers.set(0);
     if (visible && obj.opacityTarget >= 1 && !obj.removing) {
-      obj.mesh.layers.enable(L_OPAQUE);
+      // a part still arriving leaves no contact shadow where it hasn't got to yet
+      if (!obj.reveal && !obj.arrive) obj.mesh.layers.enable(L_OPAQUE);
       if (selected) obj.mesh.layers.enable(L_SEL);
       if (hovered && !selected) obj.mesh.layers.enable(L_HOVER);
     }
@@ -1465,7 +1971,9 @@ export class SceneController {
     }
     obj.mat.opacity = o;
     obj.mat.depthWrite = !transparent;
-    obj.mesh.castShadow = !transparent && !obj.removing;
+    obj.mesh.castShadow = !transparent && !obj.removing && !obj.arrive;
+    // a see-through part's bands would show as lines over its faces
+    if (obj.bevel) obj.bevel.visible = !transparent && !!this.geos.get(obj.geoKey)?.bevel;
     if (obj.decor) {
       for (const mat of obj.decor.mats) {
         const t = transparent || !!mat.userData.decal;
@@ -1485,9 +1993,15 @@ export class SceneController {
     const planes: THREE.Plane[] = [];
     if (this.sectionAnim.on) planes.push(this.sectionPlane);
     if (obj.reveal) planes.push(obj.reveal.plane);
-    const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length;
+    // the shadow of a part filling in fills in with it
+    const clipShadows = !!obj.reveal;
+    const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length || obj.mat.clipShadows !== clipShadows;
     obj.mat.clippingPlanes = planes.length ? planes : null;
-    obj.edgeMat.clippingPlanes = planes.length ? planes : null;
+    obj.mat.clipShadows = clipShadows;
+    // the outline shows above the fill: only the section cuts it
+    const edgePlanes = this.sectionAnim.on ? [this.sectionPlane] : null;
+    const edgesChanged = (obj.edgeMat.clippingPlanes?.length ?? 0) !== (edgePlanes?.length ?? 0);
+    obj.edgeMat.clippingPlanes = edgePlanes;
     if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = planes.length ? planes : null;
     obj.cap$.mat.clippingPlanes = planes.length ? planes : null;
     obj.cap.visible = (this.sectionAnim.on || !!obj.reveal) && obj.opacity >= 0.999;
@@ -1495,9 +2009,9 @@ export class SceneController {
     obj.cap$.mat.color.set(obj.look.color).multiplyScalar(0.85);
     if (changed) {
       obj.mat.needsUpdate = true;
-      obj.edgeMat.needsUpdate = true;
       obj.cap$.mat.needsUpdate = true;
     }
+    if (changed || edgesChanged) obj.edgeMat.needsUpdate = true;
   }
 
   setDisplay(d: DisplayState) {
@@ -1573,6 +2087,18 @@ export class SceneController {
     this.changed = true;
   }
 
+  private fallen: Map<string, THREE.Matrix4> | null = null;
+
+  /**
+   * Where "let go" has taken parts from where they are drawn (a motion in world space, by part id; null: as
+   * designed). Kept apart from setPose, so a drag or an overlay that poses the machine does not put them back.
+   */
+  setLetGo(poses: Map<string, THREE.Matrix4> | null) {
+    if (!poses && !this.fallen) return;
+    this.fallen = poses;
+    this.changed = true;
+  }
+
   // ---------- fastenings ----------
 
   private carried: Map<string, { motion: Motion }> | null = null;
@@ -1583,6 +2109,17 @@ export class SceneController {
     if (!h && !this.carried && !this.loose) return;
     this.carried = h?.carried ?? null;
     this.loose = h?.loose?.size ? h.loose : null;
+    this.changed = true;
+  }
+
+  private ropes: Map<string, RopeDraw> | null = null;
+  /** ropes were drawn as lines last frame: one more pass puts their solids back when the ropes go */
+  private hasRopeLines = false;
+
+  /** The design's ropes, by the id of the part each is drawn as, so they can be drawn moving with what they run on; null for none. */
+  setRopes(r: Map<string, RopeDraw> | null) {
+    if (!r?.size && !this.ropes) return;
+    this.ropes = r?.size ? r : null;
     this.changed = true;
   }
 
@@ -1918,6 +2455,11 @@ export class SceneController {
     this.grid.position.set(center.x, center.y, zFloor);
     this.ground.scale.set(r * 8, r * 8, 1);
     this.ground.position.set(center.x, center.y, zFloor + 0.01);
+    this.floorZ = zFloor;
+    this.groundLit.layout(center, zFloor - Math.max(0.01, r * 0.0002), r * 1.6, r * 5);
+    this.mirrorPlane.mesh.scale.set(r * 8, r * 8, 1);
+    this.mirrorPlane.mesh.position.set(center.x, center.y, zFloor + 0.005);
+    this.mirrorPlane.fade.value.set(center.x, center.y, r * 0.4, r * 2.2);
     const cell = Math.pow(10, Math.floor(Math.log10(r / 4)));
     this.gridMat.uniforms.uCell.value = Math.max(cell, 1);
     this.gridMat.uniforms.uFade.value = r * 3.5;
@@ -1933,12 +2475,23 @@ export class SceneController {
     sc.far = Math.max(diag, 20) * 4;
     sc.updateProjectionMatrix();
     this.key.shadow.normalBias = Math.max(0.02, r * 0.0025);
+    for (const l of this.casters) {
+      const cc = l.shadow.camera as THREE.OrthographicCamera;
+      cc.left = sc.left;
+      cc.right = sc.right;
+      cc.top = sc.top;
+      cc.bottom = sc.bottom;
+      cc.near = sc.near;
+      cc.far = sc.far;
+      cc.updateProjectionMatrix();
+      l.shadow.normalBias = this.key.shadow.normalBias;
+    }
     this.placeKey(0);
     this.pipe.look.aoRadius = THREE.MathUtils.clamp(r * 0.06, 0.8, 60);
     // contact shadow: surfaces up to a third of the model's size above the floor darken it, the closest the most
     const reach = r * 0.3;
     this.contact.layout(center, zFloor, Math.max(size.x, size.y) * 0.5 + reach * 1.2, reach, new THREE.Vector2(size.x * 0.5, size.y * 0.5));
-    this.shadowStale = true;
+    this.shadowStamp++;
     this.camera.near = Math.max(0.1, r / 400);
     this.camera.far = r * 60;
     this.camera.updateProjectionMatrix();
@@ -2063,6 +2616,7 @@ export class SceneController {
   takeCamera() {
     this.camAnim = null;
     this.growTo = null;
+    this.visit = null;
     this.autoFit = false;
     if (this.turntable) {
       this.turntable = false;
@@ -2224,6 +2778,17 @@ export class SceneController {
       moving = true;
     }
 
+    // a visit to a change: back where the camera was once it has stayed a moment
+    if (this.visit && !this.camAnim) {
+      const v = this.visit;
+      if (v.back) this.visit = null;
+      else if (now >= v.backAt) {
+        v.back = true;
+        this.moveCamera(v.home.pos, v.home.target, VISIT_BACK_MS, true);
+        moving = true;
+      }
+    }
+
     if (this.playing) {
       this.angle += dt * 90 * this.speed;
       moving = true;
@@ -2271,18 +2836,16 @@ export class SceneController {
     const homeAt = (id: string) => asm!.t0 + Math.max(0, asm!.at.get(id) ?? 0) * asmStep;
     const planned = plan ? (asm ? explodeOffsets(plan, shown, (m) => (now < homeAt(m.id) ? 1 : stepProgress(m.stage, plan.stages, shown))) : explodeOffsets(plan, shown)) : null;
     for (const obj of [...this.parts.values()]) {
-      // reveal sweep
+      // a part made in place: its outline traces, then it fills the way it is made
       if (obj.reveal) {
-        const k = (now - obj.reveal.t0) / obj.reveal.dur;
-        if (k >= 1) {
-          obj.reveal = null;
-          obj.u.uScan.value.x = 0;
-          this.updateClipping(obj);
-        } else {
-          const e = ease(Math.max(0, k));
-          const z = obj.reveal.zMin + (obj.reveal.zMax - obj.reveal.zMin) * e;
-          obj.reveal.plane.constant = z;
-          obj.u.uScan.value.y = z;
+        const r = obj.reveal;
+        const k = (now - r.t0) / r.dur;
+        if (k >= 1) this.endReveal(obj);
+        else {
+          obj.u.uTrace.value.x = k <= 0 ? -0.01 : traceAt(k) * 1.02;
+          const at = r.sMin + (r.sMax - r.sMin) * fillAt(k);
+          r.plane.constant = at;
+          obj.u.uScan.value.y = at;
         }
         moving = true;
       }
@@ -2300,7 +2863,10 @@ export class SceneController {
         } else {
           const e = easeInOut(Math.max(0, k));
           obj.u.uDissolve.value = obj.dissolve.out ? e : 1 - e;
+          // its outline comes and goes with it
+          obj.edgeMat.opacity = this.preset.edge.alpha * (1 - obj.u.uDissolve.value);
         }
+        if (!obj.dissolve) this.applyOpacity(obj);
         moving = true;
       }
       if (obj.flash) {
@@ -2309,14 +2875,32 @@ export class SceneController {
         if (k >= 1) obj.flash = null;
         moving = true;
       }
-      // new surfaces glow at once and cool off
+      // new surfaces glow at once and cool off; a sweeping change brings them in behind its front
       if (obj.change) {
-        const k = (now - obj.change.t0) / obj.change.dur;
+        const c = obj.change;
+        const k = (now - c.t0) / c.dur;
         if (k >= 1) {
           obj.change = null;
           obj.u.uChange.value.x = 0;
           obj.u.uFlash.value = 0;
+          obj.u.uSweep.value.w = 0;
+        } else if (c.sweep) {
+          const f = easeInOut(Math.min(1, (now - c.t0) / SWEEP_FRONT_MS));
+          const front = f * (1 + obj.u.uSweepFront.value.y);
+          obj.u.uSweepFront.value.x = front;
+          c.ghost.u.uSweepFront.value.x = front;
+          obj.u.uFlash.value = Math.min(1, k * 6) * Math.pow(1 - k, 1.4) * 0.85;
+          this.placeSweep(obj);
         } else obj.u.uFlash.value = Math.min(1, k * 8) * (1 - k) * (1 - k);
+        moving = true;
+      }
+      // a check's result lands: one pulse, quick up and slow down
+      if (obj.pulse) {
+        const k = (now - obj.pulse.t0) / obj.pulse.dur;
+        if (k >= 1) {
+          obj.pulse = null;
+          obj.u.uPulse.value.w = 0;
+        } else obj.u.uPulse.value.w = k < 0 ? 0 : k < 0.16 ? Math.sin((Math.PI / 2) * (k / 0.16)) : Math.pow((1 - k) / 0.84, 2.2);
         moving = true;
       }
       if (obj.ripple) {
@@ -2382,12 +2966,42 @@ export class SceneController {
       const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(sp.pos.x, sp.pos.y, sp.pos.z).multiply(po) : new THREE.Matrix4().makeTranslation(sp.pos.x + (po?.[0] ?? 0), sp.pos.y + (po?.[1] ?? 0), sp.pos.z + (po?.[2] ?? 0));
       // its own motion or the one it is fastened to (a screw turns with the part it holds), riding on its carrier
       const mo = turns(obj.part.motion) ? obj.part.motion : this.carried?.get(obj.part.id)?.motion;
-      if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
+      // let go, gravity has it: where the run put it, not where the drive would
+      const fell = this.fallen?.get(obj.part.id);
+      if (fell) m.multiply(fell);
+      else if (mo && Math.abs(this.angle) > 1e-9 && turns(mo)) m.multiply(new THREE.Matrix4().fromArray(motionPose(mo, this.angle)));
       // a loose screw, nut or washer rattles along its axis as the parts move
       const lo = this.loose?.get(obj.part.id);
       if (lo && Math.abs(this.angle) > 1e-9) {
         const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(this.angle * 8));
         m.multiply(new THREE.Matrix4().makeTranslation(lo.axis[0] * k, lo.axis[1] * k, lo.axis[2] * k));
+      }
+      // dropping in, or spinning down its thread
+      if (obj.arrive) {
+        const a = obj.arrive;
+        const k = (now - a.t0) / a.dur;
+        if (k >= 1) {
+          obj.arrive = null;
+          this.applyMaterial(obj);
+        } else if (a.kind === "drop") {
+          m.multiply(new THREE.Matrix4().makeTranslation(0, 0, a.travel * dropHeight(k)));
+          // it lands with a little light
+          if (!a.landed && k >= DROP_LAND) {
+            a.landed = true;
+            obj.flash = { t0: now, dur: 520 };
+          }
+        } else {
+          const left = screwLeft(k);
+          const d = a.axis.clone().multiplyScalar(a.travel * left);
+          m.multiply(new THREE.Matrix4().makeTranslation(d.x + a.pivot.x, d.y + a.pivot.y, d.z + a.pivot.z));
+          m.multiply(new THREE.Matrix4().makeRotationAxis(a.axis, a.turns * Math.PI * 2 * left));
+          m.multiply(new THREE.Matrix4().makeTranslation(-a.pivot.x, -a.pivot.y, -a.pivot.z));
+          if (!a.landed && k >= 0.86) {
+            a.landed = true;
+            obj.flash = { t0: now, dur: 420 };
+          }
+        }
+        moving = true;
       }
       m.multiply(obj.placement);
       if (obj.part.chain && this.chainLinks(obj)) moving = true;
@@ -2398,13 +3012,16 @@ export class SceneController {
       }
     }
     if (asm && assemblyDone) this.assembly = null;
+    if ((this.ropes || this.hasRopeLines) && this.ropeLines()) moving = true;
+    this.hasRopeLines = !!this.ropes;
 
     for (const g of [...this.ghosts]) {
       const age = now - g.t0;
       if (age >= g.dur) this.disposeGhost(g);
       else {
         const f = Math.min(1, age / g.fade);
-        g.u.uDissolve.value = easeInOut(f);
+        // a swept change takes the old shape away with its front, not by dissolving
+        g.u.uDissolve.value = g.sweep ? 0 : easeInOut(f);
         g.edgeMat.opacity = g.edgeAlpha * (1 - f);
         // gone, but still drawn into the depth the new mesh tests against
         if (f >= 1) g.mesh.castShadow = false;
@@ -2427,7 +3044,7 @@ export class SceneController {
     // anything but the camera changed the scene: the contact shadow and the key light's shadow map are drawn again
     if (this.changed || animating) {
       this.contact.dirty = true;
-      this.shadowStale = true;
+      this.shadowStamp++;
     }
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
@@ -2498,20 +3115,12 @@ export class SceneController {
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
     let rastered = false;
     if (this.pipe.samples < rasterMax) {
-      const r = this.renderer;
       this.pipe.lens = this.lens;
       this.pipe.renderSample(this.scene, this.camera, (i) => {
         this.beforeSample(i);
         this.drawChangeDepth();
-        // while only the camera moves, every frame is sample 0 with the key light in the same place: its shadow map is still good
-        const k = this.key;
-        r.shadowMap.autoUpdate = this.shadowStale || this.shadowSeen !== this.shadowWrites || !k.shadow.map || !k.position.equals(this.shadowAt);
       });
       this.pipe.lens = null;
-      r.shadowMap.autoUpdate = true;
-      this.shadowAt.copy(this.key.position);
-      this.shadowSeen = this.shadowWrites;
-      this.shadowStale = false;
       this.needComposite = true;
       rastered = true;
     }
@@ -2817,6 +3426,8 @@ export class SceneController {
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
   async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean; explode?: number; only?: string[] }): Promise<string> {
+    // parts still arriving or showing a change get a moment to finish, so the capture doesn't cut them short
+    for (let t = 0; t < 1200 && this.effectsRunning() && !this.disposed; t += 50) await new Promise((r) => setTimeout(r, 50));
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim }, replaced: this.replaced };
     // overlays (analysis results) are drawn unless the caller asks for the plain model
     const showOverlays = opts.overlays !== false && this.overlays.size > 0;
@@ -2839,15 +3450,8 @@ export class SceneController {
     // lit overlays need depth to hide behind the parts in front of them
     const out = new THREE.WebGLRenderTarget(opts.width, opts.height, { type: THREE.UnsignedByteType, depthBuffer: showOverlays });
     out.texture.colorSpace = THREE.SRGBColorSpace;
-    // let pending reveal animations finish first
+    // what is still arriving or changing ends first
     this.finishEffects();
-    for (const o of this.parts.values()) {
-      if (o.reveal) {
-        o.reveal = null;
-        o.u.uScan.value.x = 0;
-        this.updateClipping(o);
-      }
-    }
     // an exploded capture: every part where the plan puts it at that amount, framed to fit
     const unexploded = opts.explode !== undefined ? this.poseExploded(opts.explode) : null;
     try {
@@ -2905,7 +3509,7 @@ export class SceneController {
       }
       this.frameMatricesOnly();
       const n = opts.samples ?? Math.max(16, Math.min(96, this.pipe.maxSamples));
-      for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.beforeSample(k, true));
+      for (let i = 0; i < n; i++) pipe.renderSample(this.scene, this.camera, (k) => this.beforeSample(k, true, this.camera, pipe.height));
       pipe.composite(out, { time: 0 });
       this.renderer.setRenderTarget(out);
       if (showOverlays) this.overlayDepth();
@@ -3030,20 +3634,8 @@ export class SceneController {
       frameOpacity: (this.sectionFrame.material as THREE.LineBasicMaterial).opacity,
       fillOpacity: (this.sectionFill.material as THREE.MeshBasicMaterial).opacity,
     };
-    // finish what was animating: a part still sweeping in, or fading
+    // finish what was animating: a part still arriving, or fading
     this.finishEffects();
-    for (const o of this.parts.values()) {
-      if (o.reveal) {
-        o.reveal = null;
-        o.u.uScan.value.x = 0;
-      }
-      if (o.dissolve && !o.removing) {
-        o.dissolve = null;
-        o.u.uDissolve.value = 0;
-      }
-      o.flash = null;
-      o.u.uFlash.value = 0;
-    }
     this.interGroup.visible = false;
     this.measure.group.visible = false;
     // a film's look is the lighting set as it is, whatever the app's theme
@@ -3161,7 +3753,9 @@ export class SceneController {
         const po = this.pose?.get(o.part.id);
         const m = po instanceof THREE.Matrix4 ? new THREE.Matrix4().makeTranslation(p.x, p.y, p.z).multiply(po) : new THREE.Matrix4().makeTranslation(p.x + (po?.[0] ?? 0), p.y + (po?.[1] ?? 0), p.z + (po?.[2] ?? 0));
         const mo = turns(o.part.motion) ? o.part.motion : this.carried?.get(o.part.id)?.motion;
-        if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
+        const fell = this.fallen?.get(o.part.id);
+        if (fell) m.multiply(fell);
+        else if (mo && Math.abs(s.angle) > 1e-9 && turns(mo)) m.multiply(T.fromArray(motionPose(mo, s.angle)));
         const lo = this.loose?.get(o.part.id);
         if (lo && Math.abs(s.angle) > 1e-9) {
           const k = (lo.play / 2) * Math.sin(THREE.MathUtils.degToRad(s.angle * 8));
@@ -3172,6 +3766,7 @@ export class SceneController {
         o.group.matrix.copy(m);
         o.group.matrixWorldNeedsUpdate = true;
       }
+      if (this.ropes) this.ropeLines();
       // the section plane
       if (s.section) {
         const was = this.sectionAnim.on;
@@ -3269,7 +3864,7 @@ export class SceneController {
         for (let i = 0; i < n; i++) {
           // with a shutter, each sample is a moment a little later: what moves smears
           pose(to ? mix(shot, to, n > 1 ? i / (n - 1) : 0) : shot);
-          pipe.renderSample(this.scene, cam, (k) => this.beforeSample(k, i === 0));
+          pipe.renderSample(this.scene, cam, (k) => this.beforeSample(k, i === 0, cam, pipe.height));
         }
         if (to) pose(shot);
         pipe.composite(out, { time: shot.clock });

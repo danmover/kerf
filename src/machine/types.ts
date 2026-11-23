@@ -161,6 +161,8 @@ export type CatalogKind =
   | "lead_screw"
   | "pulley"
   | "belt"
+  /** wire rope and fibre rope, bought by the metre (lib.rope lays it from a drum over sheaves to where it is tied) */
+  | "rope"
   | "coupler"
   | "seal"
   | "led"
@@ -216,6 +218,7 @@ export type GeomClass =
   | "lead_screw"
   | "pulley"
   | "belt"
+  | "rope"
   | "coupler"
   | "linear_bearing"
   | "hotend"
@@ -646,6 +649,139 @@ export interface BeltDef {
   span: Span;
 }
 
+/** A drum, a sheave or a tied end on a rope's path, as drawn. */
+export interface RopeNode {
+  /** the part or component (drums and sheaves), or "start" / "end" for the rope's tied ends */
+  name: string;
+  /** a wheel at an end of the path is a drum with turns of rope on it; wheels between are sheaves */
+  kind: "drum" | "sheave" | "tie";
+  /** where the rope's turn round it is centred on its axis, or the tie point (world) */
+  c: [number, number, number];
+  axis?: [number, number, number];
+  /** radius of the rope's centre line round it (0 at a tie) */
+  r: number;
+  /** diameter the rope sits on */
+  rootD?: number;
+  /** the way the rope goes round its axis, from the path's start to its end: 1 counter-clockwise seen against the axis */
+  dir: 1 | -1;
+  /** contact angle, degrees (sheaves) */
+  wrap: number;
+  /** width of the seat the rope sits in, and how far its flanges stand above it, mm, when the part shows them */
+  width?: number;
+  flange?: number;
+  /** drums: the middle of the barrel, the turns of rope on it as drawn, and the way along the axis they lie from where the rope leaves */
+  mid?: [number, number, number];
+  wraps?: number;
+  stack?: 1 | -1;
+  /** what it is, for messages: "drum", "40 mm sheave", "608 bearing", "first tie" */
+  label: string;
+}
+
+/** A pulley on a round belt's path. */
+export interface RoundBeltNode {
+  name: string;
+  label: string;
+  /** the middle of where the cord sits, on the axis (world) */
+  c: [number, number, number];
+  axis: [number, number, number];
+  /** radius of the cord's centre line round it, and the diameter the cord sits on */
+  r: number;
+  rootD: number;
+  /** the way the belt goes round its axis along the path: 1 counter-clockwise seen against the axis */
+  dir: 1 | -1;
+  /** contact angle, and how far off square the belt meets it, degrees */
+  wrap: number;
+  fleet: number;
+  /** width of the groove the cord sits in, and how far its sides stand above the cord's seat, mm, when the part shows them */
+  width?: number;
+  flange?: number;
+}
+
+/** A round belt or an O-ring used as one (lib.round_belt): driven by friction in grooved pulleys. */
+export interface RoundBeltDef {
+  name: string;
+  label: string;
+  role?: string;
+  cord: {
+    kind: "pu" | "rubber";
+    label: string;
+    material: string;
+    color: string;
+    /** cord diameter unstretched, mm, and Shore A hardness */
+    d: number;
+    shore: number;
+    /** polyurethane: N/mm² at 5 % and 10 % stretch; rubber: Gent's limit and the pull it loses per tenfold of time */
+    at5?: number;
+    at10?: number;
+    Jm?: number;
+    relax?: number;
+    /** the stretch it is meant to work at, as fractions, and whose figures they are */
+    stretchMin: number;
+    stretchMax: number;
+    stretchBasis: string;
+    /** smallest pulley, at the bottom of the groove, mm */
+    minPulley: number;
+    pulleyBasis: string;
+    muAluminium: number;
+    muSteel: number;
+    muBasis: string;
+    maxTemp: number;
+  };
+  nodes: RoundBeltNode[];
+  spans: RopeSpan[];
+  /** round the path along the cord's centre line, and the belt's own centre-line length unstretched, mm */
+  length: number;
+  made: number;
+  /** an O-ring's inside diameter, when it is one */
+  ringId?: number;
+  /** stretch as fitted (0.06 = 6 %), and where it comes from */
+  stretch: number;
+  stretchFrom: "stretch" | "length" | "id" | "default";
+  /** pull in each strand as fitted, N */
+  tension: number;
+  /** the pulley that drives it (drive:) and the torque it must pass there, N·mm (torque:) */
+  drive?: string;
+  torque?: number;
+  span: Span;
+}
+
+/** A straight run of rope between two nodes, as drawn. */
+export interface RopeSpan {
+  from: string;
+  to: string;
+  a3: [number, number, number];
+  b3: [number, number, number];
+  length: number;
+}
+
+/** A rope (lib.rope): what it is made of and the path it takes. core/ropeChecks.ts follows it through the motion. */
+export interface RopeDef {
+  name: string;
+  catalogId: string;
+  label: string;
+  role?: string;
+  rope: { d: number; kind: "wire" | "fibre"; construction: string; mbl: number; mass: number; ea: number; bend: number; bendMin: number; factor: number };
+  nodes: RopeNode[];
+  spans: RopeSpan[];
+  /** from end to end as drawn, with the turns on its drums, and the length to buy, mm */
+  length: number;
+  cutLength: number;
+  /** the parts the design says it lifts (lifts:) */
+  lifts: string[];
+  /** which side of an end drum the rope leaves by */
+  wind: "over" | "under";
+  /**
+   * Lifts its drum winds: mm the lift moves along `axis` (the way it travels) for each radian the drum turns
+   * about its own axis (the mechanism solver ties the two with this).
+   */
+  drives: { lift: string; drum: string; perRad: number; axis: [number, number, number] }[];
+  /** the turns on its drums were given (wraps:), not worked out */
+  wrapsGiven: boolean;
+  /** a pull given outright, N (pull:), for a rope whose load Kerf cannot work out from weights */
+  pull?: number;
+  span: Span;
+}
+
 export interface BeltFigures {
   /** stretch over the whole belt at the installed tension, mm */
   stretch: number;
@@ -689,8 +825,11 @@ export interface MachineData {
   boards: BoardDef[];
   /** timing belts round pulleys */
   belts: BeltDef[];
+  /** ropes from drums over sheaves to where they are tied */
+  ropes: RopeDef[];
+  roundBelts: RoundBeltDef[];
 }
 
 export function emptyMachine(): MachineData {
-  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [], belts: [] };
+  return { components: [], wires: [], nets: [], calcs: [], firmware: [], tests: [], items: [], boards: [], belts: [], ropes: [], roundBelts: [] };
 }

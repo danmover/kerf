@@ -117,6 +117,8 @@ export interface ViewportApi {
   sectionThrough(point: Vec3, normal: Vec3): { axis: "x" | "y" | "z"; t: number; flip: boolean };
   /** hand the view to the film maker, drawing at this size in this lighting (a LIGHTING id) */
   film(opts: { width: number; height: number; look?: string; fine?: boolean }): FilmView;
+  /** jump every 3D effect still playing (parts arriving, changes, pulses) to its end; true when one was */
+  skipEffects(): boolean;
 }
 
 let api: ViewportApi | null = null;
