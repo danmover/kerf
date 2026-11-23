@@ -1,0 +1,334 @@
+/* The sign-in window, in Kerf's dark look (src/styles/app.css). */
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-weight: 400;
+  src: url("fonts/ibm-plex-sans-latin-400-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-weight: 500;
+  src: url("fonts/ibm-plex-sans-latin-500-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Sans";
+  font-weight: 600;
+  src: url("fonts/ibm-plex-sans-latin-600-normal.woff2") format("woff2");
+}
+@font-face {
+  font-family: "IBM Plex Mono";
+  font-weight: 500;
+  src: url("fonts/ibm-plex-mono-latin-500-normal.woff2") format("woff2");
+}
+
+:root {
+  --bg-0: #07090d;
+  --bg-1: #0b0e14;
+  --bg-2: #10141c;
+  --bg-3: #151a24;
+  --line: #1f2533;
+  --line-2: #2a3245;
+  --line-3: #39445c;
+  --text: #dfe5f2;
+  --text-2: #a3adc2;
+  --text-3: #6c7791;
+  --accent: #6d8bff;
+  --accent-hi: #7b97ff;
+  --accent-lo: #5a76f0;
+  --accent-glow: rgba(109, 139, 255, 0.45);
+  --fail: #ff5d6c;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  color-scheme: dark;
+}
+
+* {
+  box-sizing: border-box;
+}
+html,
+body {
+  margin: 0;
+  height: 100%;
+}
+body {
+  background: radial-gradient(120% 70% at 50% -10%, rgba(109, 139, 255, 0.16), transparent 60%), radial-gradient(60% 40% at 80% 110%, rgba(255, 138, 76, 0.07), transparent 70%), var(--bg-1);
+  color: var(--text);
+  font: 14px/1.5 "IBM Plex Sans", system-ui, -apple-system, "Segoe UI", sans-serif;
+  -webkit-font-smoothing: antialiased;
+  user-select: none;
+  overflow: hidden;
+}
+
+.gate {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 34px 28px 18px;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 22px;
+}
+.brand .word {
+  font-size: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+.mark .half {
+  transition: transform 0.6s var(--ease);
+}
+.mark .a {
+  transform: translate(-0.95px, 0.55px);
+}
+.mark .b {
+  transform: translate(0.95px, -0.55px);
+}
+.mark .glow {
+  opacity: 0.7;
+}
+.brand:hover .mark .a {
+  transform: translate(-1.6px, 0.9px);
+}
+.brand:hover .mark .b {
+  transform: translate(1.6px, -0.9px);
+}
+
+.card {
+  width: 100%;
+  background: linear-gradient(180deg, rgba(21, 26, 36, 0.92), rgba(16, 20, 28, 0.92));
+  border: 1px solid var(--line-2);
+  border-radius: 14px;
+  padding: 22px 22px 18px;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.35);
+  animation: rise 0.35s var(--ease) both;
+}
+.card.center {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding: 40px 22px;
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+
+h1 {
+  margin: 0 0 6px;
+  font-size: 18px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+.lede {
+  margin: 0 0 16px;
+  color: var(--text-2);
+  font-size: 13px;
+}
+.small {
+  margin: 14px 0 0;
+  color: var(--text-3);
+  font-size: 12px;
+}
+.muted {
+  color: var(--text-3);
+}
+
+.field {
+  display: block;
+  margin-bottom: 12px;
+}
+.field > span:first-child {
+  display: block;
+  margin-bottom: 5px;
+  color: var(--text-2);
+  font-size: 12.5px;
+  font-weight: 500;
+}
+.field small {
+  display: block;
+  margin-top: 4px;
+  color: var(--text-3);
+  font-size: 11.5px;
+}
+input:not([type="checkbox"]) {
+  width: 100%;
+  height: 38px;
+  padding: 0 11px;
+  border: 1px solid var(--line-2);
+  border-radius: 8px;
+  background: var(--bg-0);
+  color: var(--text);
+  font: inherit;
+  outline: none;
+  user-select: text;
+  transition: border-color 0.15s, box-shadow 0.15s;
+}
+input:not([type="checkbox"]):focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(109, 139, 255, 0.18);
+}
+input.bad {
+  border-color: var(--fail);
+}
+.pw {
+  position: relative;
+  display: block;
+}
+.pw input {
+  padding-right: 58px;
+}
+.peek {
+  position: absolute;
+  right: 5px;
+  top: 5px;
+  height: 28px;
+  padding: 0 9px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--text-3);
+  font: inherit;
+  font-size: 12px;
+  cursor: pointer;
+}
+.peek:hover {
+  color: var(--text);
+  background: var(--bg-3);
+}
+
+.check {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 4px 0 14px;
+  color: var(--text-2);
+  font-size: 13px;
+  cursor: pointer;
+}
+.check input {
+  width: 15px;
+  height: 15px;
+  margin: 0;
+  accent-color: var(--accent);
+}
+
+.error {
+  margin: -2px 0 12px;
+  padding: 8px 10px;
+  border: 1px solid rgba(255, 93, 108, 0.4);
+  border-radius: 8px;
+  background: rgba(255, 93, 108, 0.1);
+  color: #ffb3ba;
+  font-size: 12.5px;
+  user-select: text;
+}
+
+button {
+  font: inherit;
+}
+.primary,
+.ghost {
+  width: 100%;
+  height: 40px;
+  border-radius: 9px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: box-shadow 0.15s, filter 0.15s;
+}
+.primary {
+  border: 1px solid var(--accent-hi);
+  background: linear-gradient(180deg, var(--accent-hi), var(--accent-lo));
+  color: #fff;
+  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.25), 0 6px 22px -6px var(--accent-glow);
+}
+.primary:hover {
+  filter: brightness(1.08);
+  box-shadow: 0 0 0 1px rgba(109, 139, 255, 0.4), 0 8px 28px -6px var(--accent-glow);
+}
+.primary:disabled {
+  filter: saturate(0.6) brightness(0.85);
+  cursor: default;
+}
+.primary.busy .label::before {
+  content: "";
+  display: inline-block;
+  width: 12px;
+  height: 12px;
+  margin-right: 8px;
+  vertical-align: -1px;
+  border: 2px solid rgba(255, 255, 255, 0.35);
+  border-top-color: #fff;
+  border-radius: 50%;
+  animation: spin 0.7s linear infinite;
+}
+.ghost {
+  border: 1px solid var(--line-2);
+  background: var(--bg-3);
+  color: var(--text);
+}
+.link {
+  display: block;
+  margin: 10px auto 0;
+  border: 0;
+  background: none;
+  color: var(--accent);
+  font-size: 12.5px;
+  cursor: pointer;
+}
+.link:hover {
+  text-decoration: underline;
+}
+
+.spinner {
+  width: 22px;
+  height: 22px;
+  border: 2px solid var(--line-3);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.8s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+.foot {
+  margin-top: auto;
+  padding-top: 16px;
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 11.5px;
+}
+.foot code {
+  font: 500 11.5px "IBM Plex Mono", ui-monospace, monospace;
+  color: var(--text-2);
+  user-select: text;
+}
+.tiny {
+  height: 22px;
+  padding: 0 8px;
+  border: 1px solid var(--line-2);
+  border-radius: 6px;
+  background: var(--bg-2);
+  color: var(--text-2);
+  font-size: 11px;
+  cursor: pointer;
+}
+.tiny:hover {
+  color: var(--text);
+  border-color: var(--line-3);
+}
+.dot {
+  color: var(--text-3);
+}
+
+[hidden] {
+  display: none !important;
+}

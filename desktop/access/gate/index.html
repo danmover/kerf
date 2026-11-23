@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'self'; style-src 'self'; font-src 'self'; img-src 'self' data:" />
+    <title>Kerf</title>
+    <link rel="stylesheet" href="gate.css" />
+  </head>
+  <body>
+    <main class="gate">
+      <div class="brand">
+        <svg class="mark" width="44" height="44" viewBox="0 0 40 40" aria-hidden="true"><defs><linearGradient id="gm-top" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#dfe6ff"/><stop offset="1" stop-color="#9db0ff"/></linearGradient><linearGradient id="gm-left" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#7d92ff"/><stop offset="1" stop-color="#4a5bd6"/></linearGradient><linearGradient id="gm-front" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#4b3fb4"/><stop offset="1" stop-color="#2a2470"/></linearGradient><linearGradient id="gm-hot" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#ffe08a"/><stop offset="0.5" stop-color="#ff8a4c"/><stop offset="1" stop-color="#ff3d7f"/></linearGradient><filter id="gm-glow" x="-50%" y="-50%" width="200%" height="200%"><feGaussianBlur stdDeviation="1.6"/></filter></defs><g class="half b"><polygon class="glow" points="25,33.11 28.51,15.49 15.01,7.69 11.5,25.31" fill="url(#gm-hot)" filter="url(#gm-glow)"/><polygon points="25,33.11 28.51,15.49 15.01,7.69 11.5,25.31" fill="url(#gm-hot)"/><polygon points="28.51,15.49 33.5,12.6 20,4.8 15.01,7.69" fill="url(#gm-top)"/><polygon points="25,33.11 33.5,28.2 33.5,12.6 28.51,15.49" fill="url(#gm-front)"/></g><g class="half a"><polygon points="20,36 20,20.4 6.5,12.6 6.5,28.2" fill="url(#gm-left)"/><polygon points="20,20.4 28.51,15.49 15.01,7.69 6.5,12.6" fill="url(#gm-top)"/><polygon points="20,36 25,33.11 28.51,15.49 20,20.4" fill="url(#gm-front)"/></g></svg>
+        <span class="word">Kerf</span>
+      </div>
+
+      <section id="loading" class="card center">
+        <span class="spinner" aria-hidden="true"></span>
+        <p class="muted">Starting…</p>
+      </section>
+
+      <form id="signin" class="card" hidden novalidate>
+        <h1>Sign in</h1>
+        <p class="lede">Kerf is invite-only for now. Sign in with the username and password you were given.</p>
+        <label class="field">
+          <span>Username</span>
+          <input id="si-user" name="username" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required />
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <span class="pw">
+            <input id="si-password" name="password" type="password" autocomplete="current-password" maxlength="200" required />
+            <button type="button" class="peek" data-for="si-password" aria-label="Show password">Show</button>
+          </span>
+        </label>
+        <label class="check"><input id="si-stay" type="checkbox" /> <span>Stay signed in on this computer</span></label>
+        <p class="error" id="si-error" role="alert" hidden></p>
+        <button class="primary" type="submit" id="si-go"><span class="label">Sign in</span></button>
+        <p class="small">Each account works on one computer: the first one it signs in on. Ask the person who invited you if you need an account, a new password, or to move yours to another computer.</p>
+        <button type="button" class="link" id="to-owner" hidden>Set up the owner account instead</button>
+      </form>
+
+      <form id="owner" class="card" hidden novalidate>
+        <h1>Set up your owner account</h1>
+        <p class="lede">This PC holds Kerf's owner key and the sign-in server has no owner yet. Choose the username and password you'll sign in with here. Afterwards you add people in Settings → Account.</p>
+        <label class="field">
+          <span>Username</span>
+          <input id="ow-user" autocomplete="username" autocapitalize="none" spellcheck="false" maxlength="32" required />
+          <small>Lowercase letters, digits, dots, dashes or underscores.</small>
+        </label>
+        <label class="field">
+          <span>Password</span>
+          <span class="pw">
+            <input id="ow-password" type="password" autocomplete="new-password" maxlength="200" required />
+            <button type="button" class="peek" data-for="ow-password" aria-label="Show password">Show</button>
+          </span>
+          <small>At least 8 characters.</small>
+        </label>
+        <label class="field">
+          <span>Password again</span>
+          <input id="ow-again" type="password" autocomplete="new-password" maxlength="200" required />
+        </label>
+        <label class="check"><input id="ow-stay" type="checkbox" checked /> <span>Stay signed in on this computer</span></label>
+        <p class="error" id="ow-error" role="alert" hidden></p>
+        <button class="primary" type="submit" id="ow-go"><span class="label">Create owner account</span></button>
+        <button type="button" class="link" id="to-signin">I already have an account</button>
+      </form>
+
+      <section id="noserver" class="card" hidden>
+        <h1>Sign-in isn't set up</h1>
+        <p class="lede">This copy of Kerf was built without its sign-in server, so nobody can sign in yet. Ask the person who gave you Kerf for a newer installer.</p>
+        <button type="button" class="ghost" id="quit">Quit</button>
+      </section>
+
+      <footer class="foot">
+        <span class="muted">This computer</span>
+        <code id="code">····-····-····-····</code>
+        <button type="button" class="tiny" id="copy" title="Copy this computer's code">Copy</button>
+        <span class="dot">·</span>
+        <span class="muted" id="version"></span>
+      </footer>
+    </main>
+    <script src="gate.js"></script>
+  </body>
+</html>
