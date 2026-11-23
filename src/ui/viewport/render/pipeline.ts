@@ -52,8 +52,10 @@ uniform float uRadius;
 uniform float uSeed;
 varying vec2 vUv;
 
+// depth reads take level 0 (the depth has no mipmaps): an implicit-level read inside the sample loop below, which can
+// skip samples, has no defined derivative, and Direct3D's compiler warns and works harder over it
 vec3 viewPos(vec2 uv) {
-  float d = texture2D(tDepth, uv).x;
+  float d = textureLod(tDepth, uv, 0.0).x;
   vec4 v = uProjInv * vec4(uv * 2.0 - 1.0, d * 2.0 - 1.0, 1.0);
   return v.xyz / v.w;
 }
@@ -85,7 +87,7 @@ void main() {
     float a = ang + float(i) * 2.39996323;
     vec2 suv = vUv + vec2(cos(a), sin(a)) * (rPx * t * t + 1.0) * px;
     if (suv.x <= 0.0 || suv.y <= 0.0 || suv.x >= 1.0 || suv.y >= 1.0) continue;
-    if (texture2D(tDepth, suv).x >= 0.999999) continue;
+    if (textureLod(tDepth, suv, 0.0).x >= 0.999999) continue;
     vec3 v = viewPos(suv) - P;
     float l2 = dot(v, v);
     float l = sqrt(l2) + 1e-5;

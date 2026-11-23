@@ -40,6 +40,10 @@ import { SketchLayer } from "./sketch/SketchPanels";
 import { enterSketch, exitSketch, startPicking, useSketch } from "./sketch/session";
 import { T } from "./sketch/glyphs";
 import { ResultsLayer } from "./ResultsLayer";
+import { afterReset } from "./viewport/resetGuard";
+import { showResults, useAnalysis } from "../analysis/runtime";
+import { showAirflow, useAirflow } from "../analysis/aeroRuntime";
+import { showFlow, useFlow } from "../analysis/flowRuntime";
 import { AirflowLayer } from "./AirflowLayer";
 import { FlowLayer } from "./FlowLayer";
 import { MeasureButton, MeasureTool, measuring } from "./viewport/MeasureTool";
@@ -73,8 +77,10 @@ const GL_RETRIES = [400, 1200, 3000];
  * resets a card that stalls, and Chromium restarts its GPU process) before Kerf starts a new view in its place.
  */
 const RESTORE_WAIT_MS = 5000;
-/** a 3D view started again this many times within a minute is not getting better: say so instead */
-const RESTARTS_PER_MINUTE = 3;
+/** a 3D view started again this many times within RESTART_WINDOW_MS is not getting better: say so instead */
+const RESTARTS_ALLOWED = 3;
+/** long enough that a view which takes a while to break each time (a slow shader compile) still counts as a loop */
+const RESTART_WINDOW_MS = 10 * 60_000;
 
 export function Viewport() {
   const mount = useRef<HTMLDivElement>(null);
@@ -106,6 +112,11 @@ export function Viewport() {
   // a new 3D view in place of one that broke: its drawing context didn't come back, or its frames kept failing
   const [glGen, setGlGen] = useState(0);
   const restarts = useRef<number[]>([]);
+  // when the graphics card reset (each time the view lost its drawing context), and what Kerf took away because of it
+  const losses = useRef<number[]>([]);
+  const [glNote, setGlNote] = useState("");
+  // the view stopped itself: the card kept resetting while it drew (the error card says so)
+  const [glStopped, setGlStopped] = useState(false);
   // the camera of the view being replaced, so the new one looks from the same place
   const lastCamera = useRef<{ pos: [number, number, number]; target: [number, number, number] } | null>(null);
   // the graphics card reset and the view is waiting for its drawing context
@@ -126,7 +137,7 @@ export function Viewport() {
   const hasWires = !!model?.machine && model.machine.wires.length + model.machine.nets.length > 0;
 
   useEffect(() => {
-    if (!mount.current) return;
+    if (!mount.current || glStopped) return;
     let c: SceneController;
     const host = mount.current;
     const had = new Set(Array.from(host.children));
@@ -154,8 +165,8 @@ export function Viewport() {
     // Start a new view in place of this one, unless it keeps breaking
     const replace = (why: string) => {
       const now = Date.now();
-      restarts.current = restarts.current.filter((t) => now - t < 60_000);
-      if (restarts.current.length >= RESTARTS_PER_MINUTE) {
+      restarts.current = restarts.current.filter((t) => now - t < RESTART_WINDOW_MS);
+      if (restarts.current.length >= RESTARTS_ALLOWED) {
         console.error(`The 3D view keeps failing (${why}); not starting it again`);
         setWebglError(`The 3D view kept failing: ${why}`);
         return;
@@ -169,7 +180,21 @@ export function Viewport() {
     c.onContextChange = (lost) => {
       window.clearTimeout(lostTimer);
       setGlLost(lost);
-      if (lost) lostTimer = window.setTimeout(() => replace("the graphics card reset and the view did not get its drawing context back"), RESTORE_WAIT_MS);
+      if (!lost) return;
+      // the card resetting again and again over the same picture: take the results off, then stop (see resetGuard)
+      const next = afterReset(losses.current, Date.now(), resultsShown() !== "");
+      losses.current = next.times;
+      if (next.step === "hide-results") {
+        const hidden = hideResults();
+        console.warn(`The graphics card reset again while the ${hidden} were on screen; hiding them`);
+        setGlNote(`The graphics card reset while drawing the ${hidden}, so Kerf hid them. Your design is fine.`);
+      } else if (next.step === "stop") {
+        console.error(`The graphics card reset ${next.times.length} times in a few minutes while drawing the 3D view; stopping it`);
+        setWebglError("The graphics card kept resetting while drawing the 3D view");
+        setGlStopped(true);
+        return;
+      }
+      lostTimer = window.setTimeout(() => replace("the graphics card reset and the view did not get its drawing context back"), RESTORE_WAIT_MS);
     };
     c.onBroken = (e) => replace(e.message || "its frames kept failing to draw");
     // circuit boards drawn in full: mask, copper, silkscreen and the parts on them
@@ -254,7 +279,14 @@ export function Viewport() {
       decor.current = null;
       ctl.current = null;
     };
-  }, [glTry, glGen]);
+  }, [glTry, glGen, glStopped]);
+
+  // a note on what the view took away after a graphics card reset fades after a while
+  useEffect(() => {
+    if (!glNote) return;
+    const t = window.setTimeout(() => setGlNote(""), 12_000);
+    return () => window.clearTimeout(t);
+  }, [glNote]);
 
   useEffect(() => {
     ctl.current?.setRenderSettings({ lighting: settings.lighting, lightAngle: settings.lightAngle, quality: settings.quality, photoreal: settings.photoreal, theme, focusBlur: settings.focusBlur, floorGloss: settings.floorGloss });
@@ -560,7 +592,7 @@ export function Viewport() {
         {scene && !inSketch && <DragLayer host={pickHost} scene={scene} />}
       </LayerBoundary>
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
-      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} />
+      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} note={glNote} />
 
       <LayerBoundary label="Analysis results" retry={model}>
         {scene && !inSketch && <ResultsLayer scene={scene} />}
@@ -675,6 +707,8 @@ export function Viewport() {
                   style={{ marginTop: 10 }}
                   onClick={() => {
                     restarts.current = [];
+                    losses.current = [];
+                    setGlStopped(false);
                     setWebglError("");
                     setGlTry(0);
                     setGlGen((g) => g + 1);
@@ -720,18 +754,33 @@ function Range({ value, onChange, label }: { value: number; onChange: (v: number
  * What the 3D view is waiting on, while the model stays on screen: the graphics card reset and the view is getting
  * its drawing context back, or the geometry kernel is restarting and building the parts again.
  */
-function ViewNotice({ glLost, kernelRestarting }: { glLost: boolean; kernelRestarting: boolean }) {
-  const text = glLost ? "The graphics card reset. Bringing the 3D view back…" : kernelRestarting ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…" : "";
+function ViewNotice({ glLost, kernelRestarting, note }: { glLost: boolean; kernelRestarting: boolean; note: string }) {
+  const text = glLost ? "The graphics card reset. Bringing the 3D view back…" : kernelRestarting ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…" : note;
   return (
     <AnimatePresence>
       {text && (
         <motion.div key={text} className="vp-notice" role="status" style={{ x: "-50%" }} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
-          <span className="spinner sm" />
+          {text === note ? <Icon.Alert size={13} /> : <span className="spinner sm" />}
           {text}
         </motion.div>
       )}
     </AnimatePresence>
   );
+}
+
+/** The analysis results drawn over the model (with shaders and textures of their own), in words, or "" when none are. */
+function resultsShown(): string {
+  const on = [useAnalysis.getState().shown && "strength results", useAirflow.getState().shown && "airflow results", useFlow.getState().shown && "flow results"];
+  return on.filter(Boolean).join(" and ");
+}
+
+/** Take the analysis results off the model; what went, in words. */
+function hideResults(): string {
+  const words = resultsShown();
+  if (useAnalysis.getState().shown) showResults(null);
+  if (useAirflow.getState().shown) showAirflow(null);
+  if (useFlow.getState().shown) showFlow(null);
+  return words;
 }
 
 function KernelBoot() {
