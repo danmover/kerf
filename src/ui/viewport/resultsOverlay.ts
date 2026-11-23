@@ -391,7 +391,8 @@ export class ResultsOverlay implements SceneOverlay {
   }
 
   tick(now: number): boolean {
-    let active = false;
+    // the section plane moves as it slides in: marks on the side it cuts away go with it
+    let active = this.cut ? this.hideCutMarks() : false;
     if (this.sweep) {
       const k = (now - this.sweep.t0) / this.sweep.dur;
       if (k >= 1) {
@@ -403,7 +404,7 @@ export class ResultsOverlay implements SceneOverlay {
     if (this.modeShown() !== null) {
       // a mode swings both ways about the rest shape
       const target = this.cfg.animate ? this.modeAmp * Math.sin(((now - this.t0) / 1400) * Math.PI * 2) : this.modeAmp;
-      active = this.cfg.animate || this.uniforms.uScale.value !== target;
+      active = active || this.cfg.animate || this.uniforms.uScale.value !== target;
       this.uniforms.uScale.value = target;
     } else if (this.cfg.animate && this.cfg.scale > 0) {
       const k = 0.5 - 0.5 * Math.cos(((now - this.t0) / 2400) * Math.PI * 2);
@@ -439,6 +440,33 @@ export class ResultsOverlay implements SceneOverlay {
     this.cut = planes?.[0] ?? null;
     this.syncCap();
     this.syncCut();
+    this.clipMarks();
+  }
+
+  /** Load arrows and support markers are cut with the model; labels and hot spot rings on the side cut away go. */
+  private clipMarks() {
+    const planes = this.cut ? [this.cut] : null;
+    this.markers.traverse((o) => {
+      const m = (o as THREE.Mesh).material as THREE.Material | undefined;
+      if (!m || o instanceof THREE.Sprite || !!m.clippingPlanes?.length === !!planes) return;
+      m.clippingPlanes = planes;
+      m.needsUpdate = true;
+    });
+    this.hideCutMarks();
+  }
+
+  /** Labels and rings whose point the section cuts away are hidden (they are drawn over everything); true when any changed. */
+  private hideCutMarks(): boolean {
+    const c = this.cut;
+    let changed = false;
+    for (const g of [this.markers, this.labels])
+      for (const o of g.children) {
+        if (!(o instanceof THREE.Sprite)) continue;
+        const show = !c || c.distanceToPoint(o.position) >= -1e-3;
+        if (o.visible !== show) changed = true;
+        o.visible = show;
+      }
+    return changed;
   }
 
   /**
@@ -663,6 +691,7 @@ export class ResultsOverlay implements SceneOverlay {
     }
     else if (this.cfg.field === "disp") add(`${fmtNum(r.maxDisp.value, 3)} mm`, r.maxDisp.at);
     else add(`${fmtNum(r.maxStrain.value * 100, 3)} % strain`, r.maxStrain.at);
+    this.hideCutMarks();
   }
 
   private arrow(from: THREE.Vector3, dir: THREE.Vector3, len: number, color: number) {
@@ -830,15 +859,16 @@ vec3 kerfCapColor() {
 #endif
 `;
 
-// In main(): kerfCap is 1 on a back face seen through the cut (then coloured by the field inside), else 0. With no
-// cut, a back face (seen only where a mesh is open) is drawn dark.
+// In main(): kerfCap is 1 on a back face seen through the cut (then coloured by the field inside), else 0. Without the
+// cut's code (no section, or a result with no inside to show: beams, shells), a back face (the inside of a tube's wall
+// seen through a section) keeps the field's colour, darker.
 const GLSL_CAP_MAIN = /* glsl */ `
 float kerfCap = 0.0;
 #ifdef KERF_CAP
 kerfCap = gl_FrontFacing ? 0.0 : 1.0;
 diffuseColor.rgb = mix(diffuseColor.rgb, kerfCapColor(), kerfCap);
 #else
-diffuseColor.rgb = gl_FrontFacing ? diffuseColor.rgb : vec3(0.09, 0.1, 0.13);
+diffuseColor.rgb = gl_FrontFacing ? diffuseColor.rgb : diffuseColor.rgb * 0.45;
 #endif
 `;
 

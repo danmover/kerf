@@ -110,6 +110,27 @@ describe("the results shader", () => {
     o.dispose();
   });
 
+  it("cuts load arrows with the section and hides the labels and rings on the side it takes away", () => {
+    const r = result();
+    r.loads = [{ kind: "force", region: "top", at: [2, 0, 0], vector: [0, 0, -10], magnitude: 10, area: 1, nodes: 1 }] as StructuralResult["loads"];
+    r.hotSpots = [{ at: [2, 1, 0], stress: 3, safety: 3 }, { at: [8, 1, 0], stress: 2, safety: 4 }];
+    const o = new ResultsOverlay(r);
+    const groups = o.object.children.filter((c) => c instanceof THREE.Group);
+    const sprites = () => groups.flatMap((g) => g.children.filter((c): c is THREE.Sprite => c instanceof THREE.Sprite));
+    const arrowMats = () => groups.flatMap((g) => g.children.filter((c) => c instanceof THREE.Group)).flatMap((a) => a.children.map((m) => (m as THREE.Mesh).material as THREE.Material));
+    expect(sprites().every((sp) => sp.visible)).toBe(true);
+    // keeps x >= 5: the load at x = 2, its label, the peak label at the origin and the first ring go
+    o.setClipping([new THREE.Plane(new THREE.Vector3(1, 0, 0), -5)]);
+    expect(arrowMats().length).toBeGreaterThan(0);
+    expect(arrowMats().every((m) => m.clippingPlanes?.length === 1)).toBe(true);
+    const shown = sprites().filter((sp) => sp.visible).map((sp) => sp.position.x);
+    expect(shown).toEqual([8]);
+    o.setClipping(null);
+    expect(sprites().every((sp) => sp.visible)).toBe(true);
+    expect(arrowMats().every((m) => !m.clippingPlanes?.length)).toBe(true);
+    o.dispose();
+  });
+
   it("leaves the cut code out for a mode shape, which has no values inside", () => {
     const r = result();
     r.modal = { modes: [{ freq: 50, peak: { at: [0, 0, 0] } }] } as unknown as StructuralResult["modal"];
