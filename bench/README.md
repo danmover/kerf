@@ -41,4 +41,11 @@ The waits it writes down are those in the graphics calls known to wait (a shader
 With `GLALL=1` it times every graphics call there is, to find a wait in one that is not on that list; this costs
 a few milliseconds a frame, so frame times from such a run are not to be compared with the others.
 
+`CPUPROFILE="open,edit one part"` records a CPU profile of the page over those phases (the names in the output),
+saves each beside the results, and prints where the time went: over the whole phase, and in each of its longest
+stretches without a break. A stop inside a graphics call shows under that call's name. Make the build for such a
+run with `npx vite build --minify false`, so the functions keep their names; its times are a little slower than
+the shipped build's, so use it to find what a stop is, not how long it is. The engine's own account of a check
+run is in the timings as `checkSteps`: what its time went on, step by step.
+
 To compare two versions, build each in its own worktree on its own port and run them turn about.

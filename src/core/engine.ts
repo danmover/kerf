@@ -55,7 +55,13 @@ export interface DesignState {
   model: Model | null;
   stage: Stage;
   progress: { done: number; total: number };
-  timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number };
+  /**
+   * `checkSteps`: what the checks' time went on, each from the end of the one before, ms: the kernel's answer, the
+   * making checks still to come, the fit study, how the design holds together, and putting the report together.
+   * They wait one after another while the work behind them runs side by side, so a step that reads 0 was done by
+   * the time the one before it was.
+   */
+  timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number; checkSteps?: { kernel: number; process: number; fits: number; holds: number; report: number } };
   meshVersion: number;
   buildErrors: Map<string, string>;
   /** problems in the detailed (full-quality) build, by geometry hash */
@@ -639,6 +645,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     checksError = e instanceof Error ? e.message : String(e);
   }
   if (get().rev !== rev) return;
+  const tKernel = performance.now();
   lastKernel = result;
   if (probes.length) {
     if (missing().size) {
@@ -653,8 +660,11 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     probes.forEach((p, i) => (process[p.id] = processKept.get(keys[i]) ?? direct.get(keys[i]) ?? { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: "The part has not been built" }));
     if (get().rev !== rev) return;
   }
+  const tProcess = performance.now();
   await fitted;
+  const tFits = performance.now();
   await held;
+  const tHolds = performance.now();
   if (get().rev !== rev) return;
   // The report is put together in three steps (its core, the passes over it, showing it). On a large assembly each
   // takes a few tens of milliseconds, and in one go they were the stop felt when the checks came in: the page gets
@@ -677,7 +687,11 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     interferences: (result?.interferences ?? []).filter((i) => base.items.find((x) => x.id === `int:${i.a}|${i.b}`)?.status !== "pass"),
     process,
     stage: "refining",
-    timings: { ...get().timings, checksMs: performance.now() - tChecks },
+    timings: {
+      ...get().timings,
+      checksMs: performance.now() - tChecks,
+      checkSteps: { kernel: tKernel - tChecks, process: tProcess - tKernel, fits: tFits - tProcess, holds: tHolds - tFits, report: performance.now() - tHolds },
+    },
   });
 
   // refine: whatever the detail worker could not do (it is unavailable), here after the checks, then the detail

@@ -12,6 +12,43 @@ const fs = require('fs');
 const [url, file, outFile, label = ''] = process.argv.slice(2);
 const WIN = process.platform === 'win32';
 const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut box(44, 36, 5, at: (63, -66, -1), r: 6) as lighten_1'];
+/**
+ * A CPU profile as text: the time by function over all of it, and its longest stretches without a break, each with
+ * the functions it spent longest in (everything under them counted) and the ones the time was spent in themselves.
+ */
+function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) {
+  const nodes = new Map(p.nodes.map((n) => [n.id, n]));
+  const parent = new Map();
+  for (const n of p.nodes) for (const c of n.children || []) parent.set(c, n.id);
+  const name = (i) => { const c = nodes.get(i).callFrame; const u = c.url.split('/').pop().split('?')[0]; return (c.functionName || '(anon)') + (u ? ` ${u}:${c.lineNumber + 1}:${c.columnNumber + 1}` : ''); };
+  const stacks = new Map();
+  const stack = (i) => { let s = stacks.get(i); if (!s) { s = []; for (let j = i; j !== undefined; j = parent.get(j)) s.push(name(j)); stacks.set(i, s); } return s; };
+  let t = 0;
+  let cur = null;
+  const runs = [];
+  p.samples.forEach((s, k) => {
+    const d = p.timeDeltas[k];
+    t += d;
+    if (nodes.get(s).callFrame.functionName === '(idle)') { if (cur) runs.push(cur); cur = null; return; }
+    cur ??= { a: t - d, b: t, ss: [] };
+    cur.b = t;
+    cur.ss.push([s, d]);
+  });
+  if (cur) runs.push(cur);
+  const account = (ss, n) => {
+    const incl = new Map();
+    const self = new Map();
+    for (const [s, d] of ss) { const st = stack(s); self.set(st[0], (self.get(st[0]) || 0) + d); for (const f of new Set(st)) incl.set(f, (incl.get(f) || 0) + d); }
+    const ms = (us) => String(Math.round(us / 1000)).padStart(7);
+    const by = (m) => [...m].filter(([f]) => f !== '(root)').sort((x, y) => y[1] - x[1]);
+    return by(incl).slice(0, n).map(([f, us]) => `   ${ms(us)} ms  ${f}`).join('\n') + '\n   in itself: ' + by(self).slice(0, 8).map(([f, us]) => `${f.split(' ')[0]} ${Math.round(us / 1000)}`).join(', ');
+  };
+  const busy = runs.reduce((a, r) => a + r.b - r.a, 0);
+  const long = runs.filter((r) => r.b - r.a >= minMs * 1000).sort((x, y) => y.b - y.a - (x.b - x.a)).slice(0, keep).sort((x, y) => x.a - y.a);
+  return ` ${(t / 1e6).toFixed(1)} s, busy ${(busy / 1e6).toFixed(1)} s of it. All of it by function:\n${account(runs.flatMap((r) => r.ss), 40)}\n the ${long.length} longest stretches of ${minMs} ms or more:\n` +
+    long.map((r) => ` == at ${(r.a / 1e6).toFixed(2)} s, ${Math.round((r.b - r.a) / 1000)} ms\n${account(r.ss, top)}`).join('\n');
+}
+
 (async () => {
   const src = fs.readFileSync(file, 'utf8');
   const launch = WIN
@@ -58,7 +95,30 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   page.setDefaultTimeout(1_800_000);
   await page.goto(url);
   await page.waitForFunction(() => document.querySelector('#root')?.children.length > 0 && window.__kerfDbg, null, { timeout: 180000 });
-  const phase = (name) => page.evaluate((n) => { window.__m.phase = n; }, name);
+  // CPUPROFILE=<phase>[,<phase>...]: a CPU profile of the page over those phases, saved beside the results, and for
+  // the longest stretches the page was busy without a break, where the time went (graphics calls show by name).
+  const toProfile = new Set((process.env.CPUPROFILE || '').split(',').map((s) => s.trim()).filter(Boolean));
+  let cdp = null;
+  let profiling = null;
+  const profiled = [];
+  const stopProfile = async () => {
+    const { profile } = await cdp.send('Profiler.stop');
+    const to = outFile.replace(/\.json$/, '') + '.' + profiling.replace(/\W+/g, '-') + '.cpuprofile';
+    fs.writeFileSync(to, JSON.stringify(profile));
+    profiled.push(`CPU profile of "${profiling}" (${to}):\n` + busiest(profile));
+    profiling = null;
+  };
+  const phase = async (name) => {
+    if (profiling && profiling !== name) await stopProfile();
+    await page.evaluate((n) => { window.__m.phase = n; }, name);
+    if (toProfile.has(name) && !profiling) {
+      cdp ??= await ctx.newCDPSession(page);
+      await cdp.send('Profiler.enable');
+      await cdp.send('Profiler.setSamplingInterval', { interval: 500 });
+      await cdp.send('Profiler.start');
+      profiling = name;
+    }
+  };
   const out = { label, url, design: require('path').basename(file), when: new Date().toISOString(), cores: require('os').cpus().length, cpu: require('os').cpus()[0].model, phases: {} };
   out.gpu = await page.evaluate(() => { const gl = document.createElement('canvas').getContext('webgl2'); const ext = gl && gl.getExtension('WEBGL_debug_renderer_info'); return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'no webgl2'; });
   out.browser = (browser ?? ctx.browser())?.version() || (await page.evaluate(() => (/Edg\/[\d.]+|Chrome\/[\d.]+/.exec(navigator.userAgent) ?? [''])[0]));
@@ -186,7 +246,7 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   fs.writeFileSync(outFile, JSON.stringify(out, null, 1));
   // a short account to read
   const p = out.phases;
-  const line = (k) => p[k] && p[k].timings ? `${k}: checks ${Math.round(p[k].timings.checksMs)} ms, build ${Math.round(p[k].timings.buildMs)} ms, read ${Math.round(p[k].timings.evalMs)} ms; checked ${p[k].checkedAfterMs} ms after, all settled ${p[k].refinedAfterMs} ms after; counts ${JSON.stringify(p[k].counts)}` : `${k}: ${JSON.stringify(p[k])}`;
+  const line = (k) => p[k] && p[k].timings ? `${k}: checks ${Math.round(p[k].timings.checksMs)} ms, build ${Math.round(p[k].timings.buildMs)} ms, read ${Math.round(p[k].timings.evalMs)} ms; checked ${p[k].checkedAfterMs} ms after, all settled ${p[k].refinedAfterMs} ms after; counts ${JSON.stringify(p[k].counts)}${p[k].timings.checkSteps ? `; the checks' time by step (kernel, making checks, fits, holds, report): ${['kernel', 'process', 'fits', 'holds', 'report'].map((x) => Math.round(p[k].timings.checkSteps[x])).join(', ')} ms` : ''}` : `${k}: ${JSON.stringify(p[k])}`;
   console.log(`== ${label} ${out.design} on ${out.gpu} (${out.cores} threads, ${out.cpu}), ${out.browser}${kept ? ', kept profile' : ', fresh profile'}`);
   for (const k of ['open', 'edit one part', 'edit it back', 'edit 14 parts']) if (p[k]) console.log(line(k));
   for (const k of ['orbit', 'section orbit', 'orbit during checks']) if (p[k]) console.log(`${k}: ${JSON.stringify(p[k])}`);
@@ -199,6 +259,7 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   // the longest frames, with what ran in each
   const longest = m.m.frames.slice().sort((a, b) => b[1] - a[1]).slice(0, 30).sort((a, b) => a[0] - b[0]);
   if (longest.length) console.log('the 30 longest frames (s, ms, phase: what ran):\n' + longest.map(([at, ms, ph, scripts]) => `  ${(at / 1000).toFixed(1)} s  ${ms} ms  ${ph}: ${scripts.join('; ') || 'no script'}`).join('\n'));
+  for (const text of profiled) console.log(text);
   // leave nothing behind in a kept profile
   await page.evaluate(async () => { const { P } = window.__kerfDbg; try { await P.closeProject(); await P.deleteProject(window.__project); } catch {} }).catch(() => {});
   await ctx.close();
