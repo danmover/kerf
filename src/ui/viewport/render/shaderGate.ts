@@ -39,6 +39,7 @@
 // tests/shaderGate.test.ts holds a stand-in renderer that behaves this way.
 
 import * as THREE from "three";
+import { holdingBuilds, shaderQueue, type ShaderQueue } from "./shaderQueue";
 
 type Drawn = THREE.Object3D & { material?: THREE.Material | THREE.Material[]; isMesh?: boolean; isLine?: boolean; isPoints?: boolean; isSprite?: boolean };
 
@@ -74,9 +75,11 @@ const GIVE_UP_ON_ONE_MS = 300_000;
  * what the newest of those were for (when, the material's name or its kind when it has none, and the draw that met
  * it), and every wait for a build of a few milliseconds or more with how long it was. `leftOut`: the draws a frame
  * of the live view went without while the card built for them, by when (seconds since the page opened), what they
- * are drawn into and with what. `gaveUp`: builds the card said nothing about for too long.
+ * are drawn into and with what. `gaveUp`: builds the card said nothing about for too long. `atOnce`: how many builds
+ * the card is given at a time (shaderQueue.ts), `heldBack` how many had to wait their turn, `mostHeld` the most that
+ * waited at one time.
  */
-export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0 };
+export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0, atOnce: 0, heldBack: 0, mostHeld: 0 };
 
 /** the draw being made, for telling what a build met at a draw was for */
 const drawing = { on: false, material: null as THREE.Material | null, object: null as THREE.Object3D | null, frame: false, canvas: false, planes: 0, shadow: false };
@@ -139,11 +142,14 @@ function watchBuilds(gl: WebGLRenderingContext | WebGL2RenderingContext) {
   gl.getProgramParameter = timed(gl.getProgramParameter as (this: unknown, program: WebGLProgram, what: number) => unknown) as typeof gl.getProgramParameter;
 }
 
-/** Shader builds started inside `work` count as handed to the card ahead of the draw. */
-export function handing<T>(work: () => T): T {
+/**
+ * Shader builds started inside `work` count as handed to the card ahead of the draw, and reach it a few at a time
+ * (shaderQueue.ts). `urgent`: a picture waits for them (false: they go after those, one at a time).
+ */
+export function handing<T>(work: () => T, urgent?: boolean): T {
   ahead++;
   try {
-    return work();
+    return holdingBuilds(work, urgent);
   } finally {
     ahead--;
   }
@@ -260,6 +266,8 @@ export class ShaderGate {
   /** builds not done that a draw gone through without drawing would have drawn with */
   private dryBuilding: Program[] = [];
   private readonly parallel: boolean;
+  /** the builds on their way to the card, a few at a time */
+  private queue: ShaderQueue | null = null;
   /** drawn, off the picture, to tell the renderer how many planes the next builds are cut by */
   private probe: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
   private probeCam = new THREE.Camera();
@@ -304,6 +312,9 @@ export class ShaderGate {
     this.probe = new THREE.Mesh(g, new THREE.ShaderMaterial({ name: "kerf-gate-probe", vertexShader: "void main() { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); }", fragmentShader: "void main() { gl_FragColor = vec4(0.0); }" }));
     this.probe.frustumCulled = false;
     if (!this.parallel) return;
+    // (the queue first: the counting and timing below go round its calls)
+    this.queue = shaderQueue(r.getContext());
+    shaderBuilds.atOnce = this.queue.limit;
     watchBuilds(r.getContext());
     // every draw the renderer makes goes through here, a shadow's and a pass's among them
     const draw = r.renderBufferDirect;
@@ -371,6 +382,7 @@ export class ShaderGate {
     this.dryBuilding = [];
     this.progressAt = 0;
     this.unmet = false;
+    this.queue?.reset();
   }
 
   /**
@@ -417,8 +429,15 @@ export class ShaderGate {
     if (!this.pending.size) return;
     // a card that never says a build is done: what needs it is drawn, and waits for it there as before
     const stuck = now - this.progressAt > GIVE_UP_MS;
+    const q = this.queue;
+    if (q) {
+      shaderBuilds.heldBack = q.heldBack;
+      shaderBuilds.mostHeld = q.most;
+    }
     for (const [p, at] of this.pending) {
-      if (!stuck && now - at <= GIVE_UP_ON_ONE_MS) continue;
+      // (one still waiting its turn has not begun, and one with the card is timed from when it went to it)
+      const since = q?.waiting(p.program) ? now : (q?.sentAt(p.program) ?? at);
+      if (!stuck && now - since <= GIVE_UP_ON_ONE_MS) continue;
       gaveUp.add(p);
       shaderBuilds.gaveUp++;
       this.pending.delete(p);
@@ -628,6 +647,7 @@ export class ShaderGate {
             continue;
           }
           this.waiting.add(p);
+          this.queue?.urge(p.program);
           return (this.spoiled = true), false;
         }
       return !this.dry;
@@ -735,7 +755,7 @@ export class ShaderGate {
     // the builds each material has already: one that is new after this is this kind of draw's
     const had = new Map<THREE.Material, Set<Program>>();
     for (const o of objects) for (const mat of materialsOf(o)) if (!had.has(mat)) had.set(mat, new Set((r.properties.get(mat) as Programs).programs?.values()));
-    r.compile(list, camera, stage as THREE.Scene);
+    holdingBuilds(() => r.compile(list, camera, stage as THREE.Scene), wait);
     // (that gathered the lights of what it was told they are drawn in)
     this.gatheredFor(stage, 0, camera.layers.mask);
     // These kinds of draw are with the card now, each with the builds it is drawn with: the one the renderer
@@ -763,7 +783,11 @@ export class ShaderGate {
     for (const p of building) {
       if (!this.pending.size) this.progressAt = now;
       if (!this.pending.has(p)) this.pending.set(p, now);
-      if (wait) this.waiting.add(p);
+      if (wait) {
+        this.waiting.add(p);
+        // (handed over earlier with nothing waiting for it, it may be far down the queue)
+        this.queue?.urge(p.program);
+      }
     }
     return building;
   }

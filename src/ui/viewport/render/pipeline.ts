@@ -739,7 +739,8 @@ export class RenderPipeline {
     // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
     r.setRenderTarget(this.sampleRT);
     try {
-      return handing(() => r.compileAsync(scene, camera)).then(() => undefined);
+      // (nothing in the view waits for these: they go to the card after what it does wait for)
+      return handing(() => r.compileAsync(scene, camera), false).then(() => undefined);
     } finally {
       r.setRenderTarget(prev);
     }
