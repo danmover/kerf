@@ -16,11 +16,27 @@
 //   This covers what looking a scene over cannot see: the shaders shadows are drawn with, and materials a pass puts
 //   in place of the scene's own.
 //
+// A frame never draws with a shader the card is known to be building, also not one it was handed with nothing
+// waiting for it (a part's shader for when a section cuts it, built while the part is whole): the draw that comes
+// to need it before it is done is left out like any other, and from then on it is waited for. Only a build the card
+// has said nothing about for a long time is given up on (`GIVE_UP_MS`), and drawn with as it used to be.
+//
 // Nothing here changes what a whole frame looks like. Outside `begin` to `end` (a picture for a file, a film) every
 // draw goes through as it always did, waited for at the draw; `late` counts shader builds met that way, and `waits`
 // what they cost. Two things keep those few: what a picture for a file draws that the live view does not is handed
 // over along with the view's own (`too`), and work that can be put off (baking a light set into its maps) is gone
 // through once without drawing, for the card to build what it will draw with (`rehearse`).
+//
+// What this rests on in the renderer (three.js r169), to look at again when it is upgraded:
+// - every draw goes through `renderBufferDirect`, a shadow's and a full-screen pass's among them, and that, `render`
+//   and `clear` are properties of the renderer itself, so they can be stood in for;
+// - `compile` builds a material's shader for as many clipping planes as the last thing drawn had, and for the lights
+//   of the scene it is told the material is in;
+// - which shader a material gets depends on the lights it is drawn under even when it is not lit, on what it is
+//   drawn into (the screen or a buffer), on its side, and on the shape of the object (instanced, coloured, ...);
+// - a shadow is drawn before its draw's lights are gathered, so its shader is the one for the lights of the draw
+//   before.
+// tests/shaderGate.test.ts holds a stand-in renderer that behaves this way.
 
 import * as THREE from "three";
 
@@ -32,25 +48,45 @@ interface Program {
   program?: unknown;
 }
 
-/** A build is over when the card says so, and also when its program was let go meanwhile (the part it was for went). */
+/** builds given up on: the card said nothing about them for too long */
+const gaveUp = new WeakSet<object>();
+
+/** A build is over when the card says so, when its program was let go meanwhile (the part it was for went), and when it was given up on. */
 function over(p: Program): boolean {
   try {
-    return p.program === undefined || p.isReady();
+    return p.program === undefined || gaveUp.has(p) || p.isReady();
   } catch {
     return true;
   }
 }
 
-/** How long a build is waited for before the scene is drawn anyway (and the page waits, as it used to). */
-const GIVE_UP_MS = 30_000;
+/**
+ * With no build at all finished for this long, the card is taken not to say when one is: the builds it has are given
+ * up on, and what needs them is drawn anyway (the page waits at the draw, as it used to). Long, because a card
+ * handed everything a large design is drawn with for the first time takes many seconds over each.
+ */
+const GIVE_UP_MS = 60_000;
+/** and one build is given up on after this long whatever else the card finished meanwhile */
+const GIVE_UP_ON_ONE_MS = 300_000;
 
 /**
  * Shader builds since the page opened: handed to the card ahead of the draw, or met at a draw and waited for, with
- * what the newest of those were for (the material's name, or its kind when it has none), and every wait for a build
- * of a few milliseconds or more with how long it was. `leftOut`: the draws a frame of the live view went without
- * while the card built for them, by when (seconds since the page opened), what they are drawn into and with what.
+ * what the newest of those were for (when, the material's name or its kind when it has none, and the draw that met
+ * it), and every wait for a build of a few milliseconds or more with how long it was. `leftOut`: the draws a frame
+ * of the live view went without while the card built for them, by when (seconds since the page opened), what they
+ * are drawn into and with what. `gaveUp`: builds the card said nothing about for too long.
  */
-export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[] };
+export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0 };
+
+/** the draw being made, for telling what a build met at a draw was for */
+const drawing = { on: false, material: null as THREE.Material | null, object: null as THREE.Object3D | null, frame: false, canvas: false, planes: 0, shadow: false };
+
+function drawnNow(): string {
+  if (!drawing.on) return "not at a draw";
+  const o = drawing.object;
+  const of = o?.name || o?.parent?.name || o?.parent?.parent?.name || o?.type || "";
+  return `${drawing.frame ? "in a frame" : "outside a frame"}, ${drawing.shadow ? "a shadow" : drawing.canvas ? "the screen" : "a buffer"}${drawing.planes ? `, cut by ${drawing.planes}` : ""}${drawing.material?.transparent ? ", see-through" : ""}${of ? `, of ${of}` : ""}`;
+}
 
 const watched = new WeakSet<object>();
 let ahead = 0;
@@ -80,7 +116,7 @@ function watchBuilds(gl: WebGLRenderingContext | WebGL2RenderingContext) {
     if (ahead) shaderBuilds.ahead++;
     else {
       shaderBuilds.late++;
-      keep(shaderBuilds.lateFor, name || "unnamed");
+      keep(shaderBuilds.lateFor, `${(performance.now() / 1000).toFixed(1)} s ${name || "unnamed"} (${drawnNow()})`);
     }
     return link.call(this, program);
   } as typeof gl.linkProgram;
@@ -118,10 +154,7 @@ export function handing<T>(work: () => T): T {
  * time it is marked changed, and how many planes cut it.
  */
 function variant(m: THREE.Material): number {
-  // a see-through two-sided material is marked changed by the renderer itself at every draw (it draws the back,
-  // then the front): its marks say nothing
-  const flips = m.transparent && m.side === THREE.DoubleSide && !m.forceSinglePass;
-  return ((m.id * 1009 + (flips ? 0 : m.version)) * 16 + Math.min(m.clippingPlanes?.length ?? 0, 7) * 2 + (m.clipIntersection ? 1 : 0)) % 9007199254740881;
+  return ((m.id * 1009 + (flips(m) ? 0 : m.version)) * 16 + Math.min(m.clippingPlanes?.length ?? 0, 7) * 2 + (m.clipIntersection ? 1 : 0)) % 9007199254740881;
 }
 
 function variantOf(o: Drawn): number {
@@ -175,11 +208,38 @@ interface Met {
   kind: number;
 }
 
-/** met in this frame and not handed to the card yet; handed */
-const MET = 0;
-const HANDED = 1;
-
 type Programs = { currentProgram?: Program; programs?: Map<string, Program> };
+
+/**
+ * A material's kinds of draw, as it was last made (a material made anew may get other shaders for all of them): for
+ * each the builds it is drawn with, as far as known, once the card has been handed it; null for one met in this
+ * frame and not handed yet.
+ */
+type Kinds = Map<number, Program[] | null> & { made: number };
+
+/** see-through two-sided materials seen so far */
+const flipping = new WeakSet<THREE.Material>();
+
+/**
+ * A see-through two-sided material: the renderer draws its back, then its front, and marks it changed itself for
+ * each, so its marks say nothing. While it is being drawn its side says back or front, not both: one seen two-sided
+ * before is still taken for two-sided then.
+ */
+function flips(m: THREE.Material): boolean {
+  if (!m.transparent || m.forceSinglePass) {
+    flipping.delete(m);
+    return false;
+  }
+  if (m.side === THREE.DoubleSide) {
+    flipping.add(m);
+    return true;
+  }
+  return flipping.has(m);
+}
+
+function materialsOf(o: Drawn): THREE.Material[] {
+  return Array.isArray(o.material) ? o.material : o.material ? [o.material] : [];
+}
 
 export class ShaderGate {
   /** what each object's shaders were last built for */
@@ -190,9 +250,15 @@ export class ShaderGate {
   private builtToo = new WeakMap<THREE.Object3D, number>();
   private litToo = new WeakMap<THREE.Object3D, number>();
   /** each material's kinds of draw the card has been handed (or, for this frame, been met and not handed yet) */
-  private kinds = new WeakMap<THREE.Material, Map<number, number>>();
+  private kinds = new WeakMap<THREE.Material, Kinds>();
+  /** every build the card was handed and has not said is done, with when it was handed */
+  private pending = new Map<Program, number>();
+  /** those of them that a picture waits for */
   private waiting = new Set<Program>();
-  private since = 0;
+  /** when the card last finished a build, or was handed one with none in hand */
+  private progressAt = 0;
+  /** builds not done that a draw gone through without drawing would have drawn with */
+  private dryBuilding: Program[] = [];
   private readonly parallel: boolean;
   /** drawn, off the picture, to tell the renderer how many planes the next builds are cut by */
   private probe: THREE.Mesh<THREE.BufferGeometry, THREE.ShaderMaterial>;
@@ -220,10 +286,6 @@ export class ShaderGate {
   private watching = false;
   private spoiled = false;
   private met: Met[] = [];
-  /** frames in a row that left a draw out when the card had nothing to build for it */
-  private forNothing = 0;
-  /** this frame draws everything, built or not */
-  private lenient = false;
   /** nothing is drawn or cleared at all: draws are only looked at for what the card has yet to build */
   private dry = false;
   /** something new was handed over that no frame has been drawn against yet */
@@ -249,7 +311,20 @@ export class ShaderGate {
     const clear = r.clear;
     r.renderBufferDirect = (camera, scene, geometry, material, object, group) => {
       if (this.watching && !this.admit(camera, scene, geometry, material, object)) return;
-      draw.call(r, camera, scene, geometry, material, object, group);
+      const d = drawing;
+      d.on = true;
+      d.material = material;
+      d.object = object;
+      d.frame = this.watching;
+      d.canvas = r.getRenderTarget() === null;
+      d.shadow = scene === null;
+      d.planes = cutBy(material, r, d.shadow);
+      try {
+        draw.call(r, camera, scene, geometry, material, object, group);
+      } finally {
+        d.on = false;
+        d.material = d.object = null;
+      }
     };
     r.render = (scene, camera) => {
       this.roots.push(scene);
@@ -290,10 +365,11 @@ export class ShaderGate {
     this.litToo = new WeakMap();
     this.kinds = new WeakMap();
     this.gathered = new WeakMap();
+    this.pending.clear();
     this.waiting.clear();
     this.met = [];
-    this.since = 0;
-    this.forNothing = 0;
+    this.dryBuilding = [];
+    this.progressAt = 0;
     this.unmet = false;
   }
 
@@ -329,19 +405,39 @@ export class ShaderGate {
 
   /** Whether the card has finished everything handed to it that is waited for. */
   private settled(): boolean {
-    for (const p of this.waiting) if (over(p)) this.waiting.delete(p);
-    if (!this.waiting.size) {
-      this.since = 0;
-      return true;
+    this.prune();
+    return !this.waiting.size;
+  }
+
+  /** Takes the builds the card has finished off the lists, and gives up on those it has said nothing about for too long. */
+  private prune() {
+    if (!this.pending.size) return;
+    const now = performance.now();
+    for (const p of this.pending.keys()) if (over(p)) this.done(p, now);
+    if (!this.pending.size) return;
+    // a card that never says a build is done: what needs it is drawn, and waits for it there as before
+    const stuck = now - this.progressAt > GIVE_UP_MS;
+    for (const [p, at] of this.pending) {
+      if (!stuck && now - at <= GIVE_UP_ON_ONE_MS) continue;
+      gaveUp.add(p);
+      shaderBuilds.gaveUp++;
+      this.pending.delete(p);
+      this.waiting.delete(p);
     }
-    this.since ||= performance.now();
-    if (performance.now() - this.since > GIVE_UP_MS) {
-      // a card that never says a build is done: draw, and wait for it there as before
-      this.waiting.clear();
-      this.since = 0;
-      return true;
-    }
-    return false;
+  }
+
+  private done(p: Program, now: number) {
+    this.pending.delete(p);
+    this.waiting.delete(p);
+    this.progressAt = now;
+  }
+
+  /** A material's kinds of draw, forgotten when it was made anew since they were noted. */
+  private kindsOf(m: THREE.Material): Kinds {
+    const made = flips(m) ? 0 : m.version;
+    let kinds = this.kinds.get(m);
+    if (!kinds || kinds.made !== made) this.kinds.set(m, (kinds = Object.assign(new Map<number, Program[] | null>(), { made })));
+    return kinds;
   }
 
   /**
@@ -376,6 +472,7 @@ export class ShaderGate {
     if (!this.parallel || this.watching) return null;
     this.turnNo++;
     this.watching = this.dry = true;
+    this.dryBuilding = [];
     let building: Program[] = [];
     try {
       work();
@@ -383,11 +480,14 @@ export class ShaderGate {
       this.watching = this.dry = false;
       this.spoiled = false;
       // (also when the work failed part of the way: what it met is with the card, or it would never be)
-      building = this.handMet(false);
+      building = [...this.handMet(false), ...this.dryBuilding];
+      this.dryBuilding = [];
     }
     if (!building.length) return null;
-    const since = performance.now();
-    return () => building.every(over) || performance.now() - since > GIVE_UP_MS;
+    return () => {
+      this.prune();
+      return building.every(over);
+    };
   }
 
   /**
@@ -407,10 +507,10 @@ export class ShaderGate {
   begin() {
     if (!this.parallel) return;
     this.turnNo++;
-    for (const p of this.waiting) if (over(p)) this.waiting.delete(p);
+    this.prune();
     this.watching = true;
     this.spoiled = false;
-    this.lenient = this.forNothing >= 2;
+    this.dryBuilding = [];
   }
 
   /**
@@ -442,13 +542,11 @@ export class ShaderGate {
     this.watching = false;
     this.unmet = false;
     this.handMet(true);
+    this.dryBuilding = [];
     const spoiled = this.spoiled;
     this.spoiled = false;
-    // A frame that left something out and gave the card nothing to build (it had the shader already) costs that
-    // frame only. Were every frame to bring a material never seen before, none would ever be whole: after two such
-    // in a row the next is drawn whatever it meets.
-    this.forNothing = spoiled && !this.lenient && !this.settled() ? 0 : spoiled && !this.lenient ? this.forNothing + 1 : 0;
-    this.lenient = false;
+    // (a frame that left something out when the card had its shader already costs that frame only: `ready` is true
+    // straight after, and the caller draws it again)
     return spoiled;
   }
 
@@ -480,7 +578,18 @@ export class ShaderGate {
           const as = g.map((x) => Object.create(x.object, { material: { value: x.material } }) as Drawn);
           this.lightCam.layers.mask = m.layers;
           keep(shaderBuilds.leftOut, `${(performance.now() / 1000).toFixed(1)} s ${m.shadow ? "a shadow" : m.canvas ? "the screen" : "a buffer"}${m.planes ? `, cut by ${m.planes}` : ""}: ${[...new Set(g.map((x) => x.material.name || x.material.type))].join(", ")}`);
-          building.push(...this.hand(as, m.planes, m.cross, m.shadow ? this.shade(m.root) : m.root, m.root, this.lightCam, m.canvas ? null : this.scratch, wait, m.shadow));
+          try {
+            building.push(...this.hand(as, m.planes, m.cross, m.shadow ? this.shade(m.root) : m.root, m.root, this.lightCam, m.canvas ? null : this.scratch, wait, m.shadow));
+          } catch {
+            // the renderer could not build these ahead: they are built at their draws
+          } finally {
+            // Every draw met is with the card from here on, also one the renderer makes a kind of that is not the
+            // kind it was met as: it waits for all its material's builds, and would otherwise be left out for good.
+            for (const x of g) {
+              const kinds = this.kindsOf(x.material);
+              if (!kinds.get(x.kind)) kinds.set(x.kind, [...((r.properties.get(x.material) as Programs).programs?.values() ?? [])]);
+            }
+          }
         }
       });
     } finally {
@@ -503,23 +612,28 @@ export class ShaderGate {
     const planes = cutBy(material, r, shadow);
     const cross = !!material.clipIntersection && planes > 0;
     const k = kind(this.stamp(root, layers), shadow, canvas, planes, cross, material.side, shape(object, geometry));
-    let kinds = this.kinds.get(material);
-    const state = kinds?.get(k);
-    if (state === HANDED) {
-      if (this.dry) return false;
-      if (!this.waiting.size || this.lenient) return true;
-      const ps = (r.properties.get(material) as Programs).programs;
-      if (ps) for (const p of ps.values()) if (this.waiting.has(p)) return (this.spoiled = true), false;
-      return true;
-    }
-    if (!kinds) this.kinds.set(material, (kinds = new Map()));
-    if (this.lenient && !this.dry) {
-      // drawn whatever the card has: built here if it must be, as it always was
-      kinds.set(k, HANDED);
-      return true;
+    const kinds = this.kindsOf(material);
+    const state = kinds.get(k);
+    if (state) {
+      // with the card: drawn once every build it is drawn with is done, whether or not anything waited for it so far
+      if (this.pending.size)
+        for (const p of state) {
+          if (!this.pending.has(p)) continue;
+          if (over(p)) {
+            this.done(p, performance.now());
+            continue;
+          }
+          if (this.dry) {
+            this.dryBuilding.push(p);
+            continue;
+          }
+          this.waiting.add(p);
+          return (this.spoiled = true), false;
+        }
+      return !this.dry;
     }
     if (state === undefined) {
-      kinds.set(k, MET);
+      kinds.set(k, null);
       this.met.push({ material, object, root, layers, shadow, canvas, planes, cross, kind: k });
     }
     this.spoiled = true;
@@ -618,27 +732,39 @@ export class ShaderGate {
       traverse: (visit: (o: THREE.Object3D) => void) => objects.forEach(visit),
       traverseVisible: (visit: (o: THREE.Object3D) => void) => objects.forEach(visit),
     } as unknown as THREE.Object3D;
-    const materials = r.compile(list, camera, stage as THREE.Scene);
+    // the builds each material has already: one that is new after this is this kind of draw's
+    const had = new Map<THREE.Material, Set<Program>>();
+    for (const o of objects) for (const mat of materialsOf(o)) if (!had.has(mat)) had.set(mat, new Set((r.properties.get(mat) as Programs).programs?.values()));
+    r.compile(list, camera, stage as THREE.Scene);
     // (that gathered the lights of what it was told they are drawn in)
     this.gatheredFor(stage, 0, camera.layers.mask);
-    // these kinds of draw are with the card now
+    // These kinds of draw are with the card now, each with the builds it is drawn with: the one the renderer
+    // settled on for the material, and any made just now. (A see-through two-sided material is drawn back first,
+    // then front, each with a shader of its own, and which is which is not told: both kinds wait for all it has.)
     const lit = this.stamp(root, camera.layers.mask);
+    const mine = new Map<THREE.Material, Program[]>();
+    for (const [mat, before] of had) {
+      const props = r.properties.get(mat) as Programs;
+      const all = [...(props.programs?.values() ?? [])];
+      const own = flips(mat) ? all : all.filter((p) => !before.has(p));
+      if (props.currentProgram && !own.includes(props.currentProgram)) own.push(props.currentProgram);
+      mine.set(mat, own);
+    }
     for (const o of objects) {
       const shaped = shape(o, (o as THREE.Mesh).geometry);
-      for (const mat of Array.isArray(o.material) ? o.material : [o.material!]) {
-        let kinds = this.kinds.get(mat);
-        if (!kinds) this.kinds.set(mat, (kinds = new Map()));
-        // a see-through two-sided material is drawn back first, then front, each with a shader of its own
-        const sides = mat.transparent && mat.side === THREE.DoubleSide && !mat.forceSinglePass ? [THREE.BackSide, THREE.FrontSide] : [mat.side];
-        for (const side of sides) kinds.set(kind(lit, shadow, target === null, planes, cross && planes > 0, side, shaped), HANDED);
+      for (const mat of materialsOf(o)) {
+        const kinds = this.kindsOf(mat);
+        const sides = flips(mat) ? [THREE.BackSide, THREE.FrontSide] : [mat.side];
+        for (const side of sides) kinds.set(kind(lit, shadow, target === null, planes, cross && planes > 0, side, shaped), mine.get(mat)!);
       }
     }
-    const building: Program[] = [];
-    for (const mat of materials) {
-      const props = r.properties.get(mat) as Programs;
-      for (const p of props.programs?.values() ?? (props.currentProgram ? [props.currentProgram] : [])) if (!over(p)) building.push(p);
+    const building = [...new Set([...mine.values()].flat())].filter((p) => !over(p));
+    const now = performance.now();
+    for (const p of building) {
+      if (!this.pending.size) this.progressAt = now;
+      if (!this.pending.has(p)) this.pending.set(p, now);
+      if (wait) this.waiting.add(p);
     }
-    if (wait) for (const p of building) this.waiting.add(p);
     return building;
   }
 
@@ -646,6 +772,7 @@ export class ShaderGate {
     this.undo?.();
     this.probe.geometry.dispose();
     this.probe.material.dispose();
+    this.pending.clear();
     this.waiting.clear();
     this.met = [];
   }

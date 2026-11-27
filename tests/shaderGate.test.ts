@@ -2,7 +2,7 @@
 // here is a stand-in that says what it was asked to build and is told when each build is done.
 
 import * as THREE from "three";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { ShaderGate } from "../src/ui/viewport/render/shaderGate";
 
 interface Asked {
@@ -67,7 +67,18 @@ function card(parallel = true) {
         target = into;
       }
       const over = (root as THREE.Scene).overrideMaterial;
-      for (const o of things) for (const m of [over ?? o.material].flat()) r.renderBufferDirect(camera, root, o.geometry, m, o);
+      for (const o of things)
+        for (const m of [over ?? o.material].flat()) {
+          if (m.transparent && m.side === THREE.DoubleSide && !m.forceSinglePass) {
+            // a see-through two-sided material: its back, then its front, marked changed for each
+            for (const side of [THREE.BackSide, THREE.FrontSide] as const) {
+              m.side = side;
+              m.needsUpdate = true;
+              r.renderBufferDirect(camera, root, o.geometry, m, o);
+            }
+            m.side = THREE.DoubleSide;
+          } else r.renderBufferDirect(camera, root, o.geometry, m, o);
+        }
     },
     compile: (list: THREE.Object3D, _camera: THREE.Camera, stage: THREE.Object3D) => {
       const names: string[] = [];
@@ -432,21 +443,138 @@ describe("a frame drawn while the card may still be building", () => {
     expect(gate.scout()).toBe(false);
   });
 
-  it("draws whatever it meets after two frames in a row that left something out for nothing", () => {
-    const { gate, r, scene, drawn, programs } = builtScene();
+  it("leaves out a material never seen before at every frame, however many in a row: each frame drawn again is whole", () => {
+    const { gate, r, scene, drawn, waited, programs } = builtScene();
     // a material never seen before at every frame, each with a shader the card has already
     const another = () => {
       const m = new THREE.MeshBasicMaterial({ name: "new" });
       programs.set(m, { done: true, program: {}, isReady: () => true });
       scene.overrideMaterial = m;
     };
-    another();
+    for (let i = 0; i < 4; i++) {
+      another();
+      expect(frame(gate, r, scene)).toBe(true);
+      // the card had its shader: there is nothing to wait for, and the frame drawn again is whole
+      expect(gate.ready(scene, cam, null)).toBe(true);
+      expect(frame(gate, r, scene)).toBe(false);
+    }
+    expect(drawn).toEqual(Array(4).fill("a as new into canvas"));
+    expect(waited).toEqual([]);
+  });
+
+  it("leaves out a draw with a shader that was handed over with nothing waiting for it and is not built yet, and waits for it from then on", () => {
+    const c = card();
+    const gate = new ShaderGate(c.r, rt("scratch"));
+    const scene = new THREE.Scene().add(part("a"));
+    const into = rt("picture");
+    // handed over for a picture: nothing waits
+    gate.too(scene, cam, into);
+    expect(gate.busy).toBe(false);
+    // a frame comes to draw it there before the card is done
+    const draw = () => {
+      gate.begin();
+      c.r.setRenderTarget(into);
+      c.r.render(scene, cam);
+      c.r.setRenderTarget(null);
+      return gate.end();
+    };
+    expect(draw()).toBe(true);
+    expect(c.drawn).toEqual([]);
+    expect(c.waited).toEqual([]);
+    expect(gate.busy).toBe(true);
+    c.finish();
+    expect(draw()).toBe(false);
+    expect(c.drawn).toEqual(["a into picture"]);
+    expect(c.waited).toEqual([]);
+  });
+
+  it("takes a material made anew for one the card may have nothing built for, in every kind of draw", () => {
+    const { gate, r, scene, a, drawn, waited, asked, programs, finish } = builtScene();
+    const into = rt("mirror");
+    const mirror = () => {
+      gate.begin();
+      r.setRenderTarget(into);
+      r.render(scene, cam);
+      r.setRenderTarget(null);
+      return gate.end();
+    };
+    // a second way the part is drawn, which looking the scene over does not see: met in a frame, and built
+    expect(mirror()).toBe(true);
+    finish();
+    expect(mirror()).toBe(false);
+    drawn.length = asked.length = 0;
+    // the material is made anew (see-through now, say): its shader for that way is another, which the card has not built
+    const m = a.material as THREE.Material;
+    m.needsUpdate = true;
+    programs.get(m)!.done = false;
+    expect(mirror()).toBe(true);
+    expect(drawn).toEqual([]);
+    expect(waited).toEqual([]);
+    expect(asked.map((x) => x.objects)).toEqual([["a"]]);
+    finish();
+    expect(mirror()).toBe(false);
+    expect(drawn).toEqual(["a into mirror"]);
+    expect(waited).toEqual([]);
+  });
+
+  it("gives up on builds only when the card has finished none for a long time, and then draws with them as it used to", () => {
+    let t = 1000;
+    const now = vi.spyOn(performance, "now").mockImplementation(() => t);
+    try {
+      const c = card();
+      const gate = new ShaderGate(c.r, rt("scratch"));
+      const a = part("a");
+      const scene = new THREE.Scene().add(a, part("b"));
+      expect(gate.ready(scene, cam, null)).toBe(false);
+      // a long wait is not given up on while the card finishes something now and then
+      t += 50_000;
+      c.programs.get(a.material as THREE.Material)!.done = true;
+      expect(gate.ready(scene, cam, null)).toBe(false);
+      t += 50_000;
+      expect(gate.ready(scene, cam, null)).toBe(false);
+      // nothing at all for more than a minute
+      t += 20_000;
+      expect(gate.ready(scene, cam, null)).toBe(true);
+      expect(frame(gate, c.r, scene)).toBe(false);
+      expect(c.drawn).toEqual(["a into canvas", "b into canvas"]);
+      expect(c.waited).toEqual(["b"]);
+    } finally {
+      now.mockRestore();
+    }
+  });
+
+  it("draws a thing the renderer could not build ahead at its draw, as it used to, and not never", () => {
+    const { gate, r, scene, drawn, waited } = builtScene();
+    scene.overrideMaterial = new THREE.MeshBasicMaterial({ name: "outline" });
+    const compile = r.compile;
+    r.compile = () => {
+      throw new Error("no shader");
+    };
     expect(frame(gate, r, scene)).toBe(true);
-    another();
-    expect(frame(gate, r, scene)).toBe(true);
-    another();
+    r.compile = compile;
     expect(frame(gate, r, scene)).toBe(false);
-    expect(drawn).toEqual(["a as new into canvas"]);
+    expect(drawn).toEqual(["a as outline into canvas"]);
+    expect(waited).toEqual(["a"]);
+  });
+
+  it("draws a see-through two-sided thing, back then front, in whole frames once the card has built for it", () => {
+    const c = card();
+    const gate = new ShaderGate(c.r, rt("scratch"));
+    const scene = new THREE.Scene().add(part("glass", new THREE.MeshBasicMaterial({ transparent: true, side: THREE.DoubleSide })));
+    gate.ready(scene, cam, null);
+    c.finish();
+    expect(gate.ready(scene, cam, null)).toBe(true);
+    for (let i = 0; i < 3; i++) expect(frame(gate, c.r, scene)).toBe(false);
+    expect(c.drawn).toEqual(Array(6).fill("glass into canvas"));
+    expect(c.waited).toEqual([]);
+    // and one first met inside a frame, put in place of a part's own: whole from the frame after
+    const { gate: g2, r, scene: s2, drawn, waited, finish } = builtScene();
+    s2.overrideMaterial = new THREE.MeshBasicMaterial({ name: "ghost", transparent: true, side: THREE.DoubleSide });
+    expect(frame(g2, r, s2)).toBe(true);
+    finish();
+    for (let i = 0; i < 3; i++) expect(frame(g2, r, s2)).toBe(false);
+    expect(drawn).toEqual(Array(6).fill("a as ghost into canvas"));
+    expect(waited).toEqual([]);
   });
 
   it("lets every draw through outside a frame, waited for as it always was", () => {
@@ -503,6 +631,20 @@ describe("a frame drawn while the card may still be building", () => {
     // and the same work again has nothing left to build: it is done there and then
     expect(gate.rehearse(bake)).toBe(null);
     expect(asked).toHaveLength(1);
+  });
+
+  it("has work rehearsed again wait for a build of its own that was handed over the first time and is not done", () => {
+    const { gate, r, asked, finish } = builtScene();
+    const set = new THREE.Scene().add(part("sky"));
+    const bake = () => r.render(set, cam);
+    expect(gate.rehearse(bake)!()).toBe(false);
+    // again before the card is done: nothing more is handed over, and it is still not time for the work
+    const built = gate.rehearse(bake)!;
+    expect(asked).toHaveLength(1);
+    expect(built()).toBe(false);
+    finish();
+    expect(built()).toBe(true);
+    expect(gate.rehearse(bake)).toBe(null);
   });
 
   it("hands over what a rehearsal met even when the work failed part of the way", () => {

@@ -405,6 +405,9 @@ export function shiftLens(camera: THREE.PerspectiveCamera, ox: number, oy: numbe
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 }
 
+/** a scene with nothing in it (see RenderPipeline.compile) */
+const NOTHING = new THREE.Scene();
+
 export class RenderPipeline {
   /** device pixels */
   width = 1;
@@ -722,10 +725,17 @@ export class RenderPipeline {
   compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     const r = this.r;
     const prev = r.getRenderTarget();
-    // The renderer takes how many clipping planes a shader is built for from whatever it drew last: a pass of our
-    // own, which has none, goes first, or a section in the view would have the card build a shader nothing uses.
-    this.copyMat.uniforms.tSrc.value = this.black;
-    this.pass(this.copyMat, this.scratch());
+    // The renderer takes how many clipping planes a shader is built for from whatever it drew last, or a section in
+    // the view would have the card build a shader nothing uses. Drawing nothing at all sets that to none, where
+    // parts are cut by planes of their own (as here); a pass of our own does otherwise, which waits for its shader
+    // the first time.
+    if (r.localClippingEnabled) {
+      r.setRenderTarget(this.scratch());
+      r.render(NOTHING, camera);
+    } else {
+      this.copyMat.uniforms.tSrc.value = this.black;
+      this.pass(this.copyMat, this.scratch());
+    }
     // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
     r.setRenderTarget(this.sampleRT);
     try {
