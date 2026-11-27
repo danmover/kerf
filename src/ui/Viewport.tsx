@@ -16,6 +16,7 @@ import { useReduceMotion } from "../app/motion";
 import { useChat } from "../ai/chat";
 import { useTheme } from "../app/theme";
 import { lightingPreset } from "./viewport/render/studio";
+import { buildsYieldTo } from "./viewport/render/shaderQueue";
 import { registerViewport } from "../app/viewportApi";
 import { openFind } from "../app/ui";
 import { Icon } from "./icons";
@@ -70,6 +71,13 @@ import { kernel } from "../kernel/client";
 import { during } from "../app/stalls";
 import { ViewCube } from "./viewport/ViewCube";
 import { openViewportMenu } from "./viewport/contextMenus";
+
+// While the kernel is starting, or the design is being built or checked, the graphics card is given fewer shader
+// builds at once: with more, its builds take the processor from that work (see shaderQueue.ts).
+buildsYieldTo(() => {
+  const { stage, kernelStatus } = useDesign.getState();
+  return kernelStatus === "loading" || (stage !== "idle" && stage !== "done");
+});
 
 /** Waits (ms) before each retry of a 3D view that failed to start. */
 const GL_RETRIES = [400, 1200, 3000];

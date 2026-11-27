@@ -49,9 +49,14 @@ the shipped build's, so use it to find what a stop is, not how long it is. The e
 run is in the timings as `checkSteps`: what its time went on, step by step.
 
 The view hands the graphics card a few shader builds at a time (`src/ui/viewport/render/shaderQueue.ts`), so the
-card's driver does not take every processor thread while a design opens. `ATONCE=<n>` tries another number, and
+card's driver does not take every processor thread while a design opens: fewer while the design is being built or
+checked, more once it is. `ATONCE=<n>` tries another number for both, `ATONCE=<n>,<m>` one for each, and
 `ATONCE=all` hands over everything at once, as before there was a queue. `ONLY=open` stops after the open: first
-opens with an empty profile take minutes each, and are what this is compared on.
+opens with an empty profile take minutes each, and are what this is compared on. Every build the card finished is
+in the results (`shaderBuilds.built`: what it was of, when it went to the card, how long it took), and the account
+adds them up by kind of shader. With one or two at once a build's time is close to what it costs the processor;
+side by side they slow each other. Each "waiting for the graphics card" notice is listed with when it went up, so
+the end of the first is when the first whole picture was shown.
 
 The code editor is hidden unless its tab is open, and does nothing while it is. `CODE=1` opens the tab before the
 edits, to time them with the design's text on show.

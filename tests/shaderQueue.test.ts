@@ -1,8 +1,8 @@
 // Shader builds reach the graphics card a few at a time. The card here is a stand-in that writes down every call it
 // gets, and a build is done when the test says.
 
-import { describe, expect, it } from "vitest";
-import { ShaderQueue, buildsAtOnce, holdingBuilds } from "../src/ui/viewport/render/shaderQueue";
+import { afterEach, describe, expect, it } from "vitest";
+import { ShaderQueue, buildsAtOnce, buildsAtOnceIdle, buildsYieldTo, holdingBuilds } from "../src/ui/viewport/render/shaderQueue";
 
 const COMPLETION_STATUS_KHR = 0x91b1;
 const LINK_STATUS = 0x8b82;
@@ -103,6 +103,8 @@ function card(limit: number) {
 }
 
 describe("the queue of shader builds", () => {
+  afterEach(() => buildsYieldTo(() => true));
+
   it("gives the card a quarter as many builds at once as the PC has threads, and at least one", () => {
     expect(buildsAtOnce(8)).toBe(2);
     expect(buildsAtOnce(16)).toBe(4);
@@ -267,6 +269,95 @@ describe("the queue of shader builds", () => {
     holdingBuilds(() => ["a", "b", "c"].map(c.make));
     expect(c.linked()).toEqual(["a", "b", "c"]);
     expect(c.calls.slice(0, 5)).toEqual(["compile a.v", "attach a.v to a", "compile a.f", "attach a.f to a", "link a"]);
+  });
+
+  it("gives the card half as many builds at once as the PC has threads once nothing else wants the processor", () => {
+    expect(buildsAtOnceIdle(8)).toBe(4);
+    expect(buildsAtOnceIdle(16)).toBe(6);
+    expect(buildsAtOnceIdle(4)).toBe(2);
+    expect(buildsAtOnceIdle(2)).toBe(1);
+    expect(buildsAtOnceIdle(64)).toBe(6);
+    expect(buildsAtOnceIdle(0)).toBe(2);
+  });
+
+  it("gives the card more at once while the design is not being worked on, and fewer again when it is", () => {
+    const c = card(2);
+    c.q.idleLimit = 4;
+    let working = true;
+    buildsYieldTo(() => working);
+    const p = holdingBuilds(() => ["a", "b", "c", "d", "e", "f", "g"].map(c.make));
+    expect(c.linked()).toEqual(["a", "b"]);
+    // the design is built and checked: the card gets two more, with no build of its own finished
+    working = false;
+    c.pass(100);
+    expect(c.linked()).toEqual(["a", "b", "c", "d"]);
+    p[0].done = true;
+    c.pass(100);
+    expect(c.linked()).toEqual(["a", "b", "c", "d", "e"]);
+    // an edit: what the card has it keeps, and it gets no more until fewer than two are with it
+    working = true;
+    p[1].done = p[2].done = true;
+    c.pass(100);
+    expect(c.linked()).toEqual(["a", "b", "c", "d", "e"]);
+    p[3].done = true;
+    c.pass(100);
+    expect(c.linked()).toEqual(["a", "b", "c", "d", "e", "f"]);
+  });
+
+  it("builds what nothing waits for two at a time then, not one", () => {
+    const c = card(2);
+    c.q.idleLimit = 4;
+    buildsYieldTo(() => false);
+    const spare = holdingBuilds(() => ["s1", "s2", "s3"].map(c.make), false);
+    expect(c.linked()).toEqual(["s1", "s2"]);
+    // and still after everything a picture waits for
+    const urgent = holdingBuilds(() => ["u1", "u2", "u3"].map(c.make), true);
+    expect(c.linked()).toEqual(["s1", "s2", "u1", "u2"]);
+    spare[0].done = true;
+    c.pass(100);
+    expect(c.linked()).toEqual(["s1", "s2", "u1", "u2", "u3"]);
+    urgent[0].done = urgent[1].done = urgent[2].done = true;
+    c.pass(100);
+    expect(c.linked()).toEqual(["s1", "s2", "u1", "u2", "u3", "s3"]);
+  });
+
+  it("keeps to the one number where no other was set for a PC with nothing else on", () => {
+    const c = card(2);
+    buildsYieldTo(() => false);
+    holdingBuilds(() => ["a", "b", "c"].map(c.make));
+    c.pass(100);
+    expect(c.linked()).toEqual(["a", "b"]);
+  });
+
+  it("tells of every build the card finishes: when it went to the card, how long it took, whether a picture waited", () => {
+    const c = card(1);
+    const built: [string, number, number, boolean][] = [];
+    c.q.onBuilt = (p, at, ms, urgent) => built.push([(p as unknown as P).name, at, ms, urgent]);
+    c.pass(10);
+    const [a] = holdingBuilds(() => [c.make("a")], true);
+    const [b] = holdingBuilds(() => [c.make("b")], false);
+    c.pass(500);
+    a.done = true;
+    c.pass(100);
+    // (it is seen done at the next look, which is at most 48 ms later)
+    expect(built.length).toBe(1);
+    expect(built[0][0]).toBe("a");
+    expect(built[0][1]).toBe(10);
+    expect(built[0][2]).toBeGreaterThanOrEqual(500);
+    expect(built[0][2]).toBeLessThan(550);
+    expect(built[0][3]).toBe(true);
+    c.pass(300);
+    b.done = true;
+    // the renderer asks, and hears it is done
+    expect(c.gl.getProgramParameter(b, COMPLETION_STATUS_KHR)).toBe(true);
+    expect(built.length).toBe(2);
+    expect(built[1][0]).toBe("b");
+    expect(built[1][3]).toBe(false);
+    // one built at a draw is told of too
+    const d = c.make("d");
+    d.done = true;
+    expect(c.gl.getProgramParameter(d, COMPLETION_STATUS_KHR)).toBe(true);
+    expect(built.map((x) => x[0])).toEqual(["a", "b", "d"]);
   });
 
   it("forgets everything when the card was reset", () => {

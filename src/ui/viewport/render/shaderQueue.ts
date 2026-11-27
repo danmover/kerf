@@ -6,7 +6,8 @@
 // page's. Measured on an 8-thread PC with a Radeon card (Direct3D): for 15 s it had 5.7 of the 8 threads' time, the
 // page's own thread got 2 s of work done in those 15 s and stood still for 8 s in the middle of a frame, and the
 // workers building the design's parts took three times as long. So a build is held back here until fewer than a few
-// are with the card, those a picture waits for first.
+// are with the card, those a picture waits for first: a quarter of the processor threads' worth while the design is
+// being built or checked, and half of them once nothing else on the PC wants the processor (`buildsYieldTo`).
 //
 // It is done under the renderer, at the calls it makes to WebGL. The renderer has its program objects as always, and
 // one whose build is held back says "not done" like any other the card is still at work on. A held build that is
@@ -50,25 +51,48 @@ export function holdingBuilds<T>(work: () => T, urgent = urgentNow): T {
   }
 }
 
-/** How many builds the card is given at once on this PC: a quarter of its processor threads, so the page and the workers building parts keep theirs. */
-export function buildsAtOnce(threads = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 0): number {
-  // (set kerf.debug.shadersAtOnce to a number, or to "all", to try another)
+/** what `kerf.debug.shadersAtOnce` says, if anything: a number, "all", or two of them ("2,4": while the design is worked on, and with nothing else on) */
+function setByHand(): [number, number] | null {
   try {
     const set = typeof localStorage !== "undefined" ? localStorage.getItem("kerf.debug.shadersAtOnce") : null;
-    if (set === "all") return Infinity;
-    if (set && Number(set) >= 1) return Math.floor(Number(set));
+    if (!set) return null;
+    const of = (t: string | undefined) => (t === "all" ? Infinity : Number(t) >= 1 ? Math.floor(Number(t)) : 0);
+    const [a, b] = set.split(",").map((t) => t.trim());
+    const busy = of(a);
+    if (!busy) return null;
+    return [busy, Math.max(busy, of(b))];
   } catch {
-    /* storage blocked */
+    return null; // storage blocked
   }
-  return Math.max(1, Math.min(6, Math.floor((threads || 4) / 4)));
+}
+
+/** How many builds the card is given at once on this PC while the design is being built or checked: a quarter of its processor threads, so the page and the workers building parts keep theirs. */
+export function buildsAtOnce(threads = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 0): number {
+  return setByHand()?.[0] ?? Math.max(1, Math.min(6, Math.floor((threads || 4) / 4)));
+}
+
+/** And with nothing else on: half its threads, which leaves the page's own thread and the browser's theirs. Never fewer than `buildsAtOnce`. */
+export function buildsAtOnceIdle(threads = typeof navigator !== "undefined" ? navigator.hardwareConcurrency : 0): number {
+  return setByHand()?.[1] ?? Math.max(buildsAtOnce(threads), Math.min(6, Math.floor((threads || 4) / 2)));
+}
+
+/** whether something else on the PC wants the processor now: until the app says, always */
+let busyElsewhere: () => boolean = () => true;
+
+/** Tells the queues how to find out whether the design is being built or checked now: while it is, the card gets fewer builds at once. */
+export function buildsYieldTo(busy: () => boolean) {
+  busyElsewhere = busy;
 }
 
 const queues = new WeakMap<object, ShaderQueue>();
 
 /** The queue of a WebGL context, put in place the first time it is asked for. */
-export function shaderQueue(gl: GL, limit = buildsAtOnce()): ShaderQueue {
+export function shaderQueue(gl: GL, limit = buildsAtOnce(), idle = buildsAtOnceIdle()): ShaderQueue {
   let q = queues.get(gl);
-  if (!q) queues.set(gl, (q = new ShaderQueue(gl, limit)));
+  if (!q) {
+    queues.set(gl, (q = new ShaderQueue(gl, limit)));
+    q.idleLimit = Math.max(limit, idle);
+  }
   return q;
 }
 
@@ -87,10 +111,14 @@ export class ShaderQueue {
   /** builds that had to wait their turn, and the most that waited at one time */
   heldBack = 0;
   most = 0;
+  /** how many builds the card has at once while nothing else wants the processor (see `buildsYieldTo`): `limit` unless set higher */
+  idleLimit = 0;
+  /** told of every build the card has finished: when it went to the card, how long until it was seen done, and whether a picture waited for it */
+  onBuilt: ((program: WebGLProgram, sentAt: number, ms: number, urgent: boolean) => void) | null = null;
 
   constructor(
     gl: GL,
-    /** how many builds the card has at once */
+    /** how many builds the card has at once while the design is being built or checked */
     readonly limit: number,
     private now: () => number = () => performance.now(),
     private later: (work: () => void, ms: number) => ReturnType<typeof setTimeout> = (work, ms) => setTimeout(work, ms),
@@ -127,10 +155,11 @@ export class ShaderQueue {
           this.look();
           return;
         }
-        // met at a draw: built now, and waited for there
+        // met at a draw (or nothing is ever held back): built now
         for (const s of h.shaders) this.compile(s);
         real(p);
         for (const s of h.drop) this.real.drop(s);
+        this.flying.set(p, { at: this.now(), urgent: true });
       };
     });
     wrap("deleteShader", (real) => {
@@ -162,7 +191,7 @@ export class ShaderQueue {
           return false;
         }
         const done = real(p, pname);
-        if (done && this.flying.delete(p)) this.pump();
+        if (done && this.landed(p)) this.pump();
         return done;
       };
     });
@@ -238,6 +267,20 @@ export class ShaderQueue {
     if (this.uncompiled.delete(s)) this.real.compile(s);
   }
 
+  /** The card has finished this build. False when it was not known to be with the card. */
+  private landed(p: WebGLProgram): boolean {
+    const f = this.flying.get(p);
+    if (!f) return false;
+    this.flying.delete(p);
+    this.onBuilt?.(p, f.at, this.now() - f.at, f.urgent);
+    return true;
+  }
+
+  /** How many builds the card may have now. */
+  private atOnce(): number {
+    return this.idleLimit > this.limit && !busyElsewhere() ? this.idleLimit : this.limit;
+  }
+
   /** The build goes to the card: its shaders compiled, the program linked, as the renderer asked, only later. */
   private send(p: WebGLProgram, h: Held) {
     this.held.delete(p);
@@ -253,23 +296,27 @@ export class ShaderQueue {
     if (h) this.send(p, h);
   }
 
-  /** Whether the card can be given another build now. One nothing waits for goes alone, and after all that are waited for. */
+  /**
+   * Whether the card can be given another build now. One nothing waits for goes after all that are waited for, and
+   * alone, or a few together once nothing else wants the processor.
+   */
   private room(urgent: boolean): boolean {
     const now = this.now();
     let busy = 0;
     let spare = 0;
     for (const [p, f] of this.flying) {
       if (this.real.param(p, COMPLETION_STATUS_KHR)) {
-        this.flying.delete(p);
+        this.landed(p);
         continue;
       }
       if (now - f.at > SILENT_MS) continue;
       busy++;
       if (!f.urgent) spare++;
     }
-    if (busy >= this.limit) return false;
+    const most = this.atOnce();
+    if (busy >= most) return false;
     if (urgent) return true;
-    if (spare) return false;
+    if (spare >= (most > this.limit ? Math.max(1, Math.floor(most / 2)) : 1)) return false;
     for (const h of this.held.values()) if (h.urgent) return false;
     return true;
   }

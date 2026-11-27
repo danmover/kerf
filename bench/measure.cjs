@@ -77,9 +77,10 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
     } catch {}
     document.addEventListener('webglcontextlost', () => M.lost++, true);
     // when the view said it was waiting for the graphics card to build shaders, and for how long
+    // (each as the phase it ended in, how long it was up, and when it went up, ms since the page opened)
     M.notice = [];
-    let up = 0;
-    setInterval(() => { const on = !!document.body && !!document.querySelector('[data-shaders-building]'); if (on && !up) up = performance.now(); if (!on && up) { M.notice.push([M.phase, Math.round(performance.now() - up)]); up = 0; } }, 100);
+    M.noticeUp = 0;
+    setInterval(() => { const on = !!document.body && !!document.querySelector('[data-shaders-building]'); if (on && !M.noticeUp) M.noticeUp = performance.now(); if (!on && M.noticeUp) { M.notice.push([M.phase, Math.round(performance.now() - M.noticeUp), Math.round(M.noticeUp)]); M.noticeUp = 0; } }, 100);
     if (typeof WebGL2RenderingContext === 'undefined') return;
     const P = WebGL2RenderingContext.prototype;
     const wrap = (name, note) => { const f = P[name]; P[name] = function (...a) { const t = performance.now(); try { return f.apply(this, a); } finally { note(performance.now() - t, a); } }; };
@@ -247,7 +248,12 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   }
 
   await phase('end');
-  const m = await page.evaluate(() => ({ m: window.__m, builds: window.__kerfDbg.Gate ? window.__kerfDbg.Gate.shaderBuilds : null, record: window.__kerfDbg.St && window.__kerfDbg.St.stallReport ? window.__kerfDbg.St.stallReport([]) : null }));
+  const m = await page.evaluate(() => {
+    const M = window.__m;
+    // a notice still up now is written down as far as it got
+    if (M.noticeUp) M.notice.push(['still up at the end', Math.round(performance.now() - M.noticeUp), Math.round(M.noticeUp)]);
+    return { m: M, now: performance.now(), builds: window.__kerfDbg.Gate ? window.__kerfDbg.Gate.shaderBuilds : null, record: window.__kerfDbg.St && window.__kerfDbg.St.stallReport ? window.__kerfDbg.St.stallReport([]) : null };
+  });
   // the page's stops, per phase: long tasks of 100 ms or more (a long frame and the task inside it count once)
   const stops = {};
   const tasks = m.m.longs.filter((l) => l[0] === 't' && l[2] >= 100);
@@ -257,6 +263,7 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   Object.assign(out, { stops, graphicsCardWaits: waits, notice: m.m.notice.length ? m.m.notice : undefined, shaderBuilds: m.builds, shaderLinks: m.m.links, contextLost: m.m.lost, errors: errs.slice(0, 20), freezeRecord: m.record, longFrames: m.m.frames, longs: m.m.longs });
   fs.writeFileSync(outFile, JSON.stringify(out, null, 1));
   // a short account to read
+  const atOnce = (n) => (Number.isFinite(n) ? n : 'all');
   const p = out.phases;
   const line = (k) => p[k] && p[k].timings ? `${k}: checks ${Math.round(p[k].timings.checksMs)} ms, build ${Math.round(p[k].timings.buildMs)} ms, read ${Math.round(p[k].timings.evalMs)} ms; checked ${p[k].checkedAfterMs} ms after, all settled ${p[k].refinedAfterMs} ms after; counts ${JSON.stringify(p[k].counts)}${p[k].timings.checkSteps ? `; the checks' time by step (kernel, of it the kernel's own work, making checks, fits, holds, report): ${['kernel', 'kernelOwn', 'process', 'fits', 'holds', 'report'].map((x) => Math.round(p[k].timings.checkSteps[x] ?? 0)).join(', ')} ms` : ''}` : `${k}: ${JSON.stringify(p[k])}`;
   console.log(`== ${label} ${out.design} on ${out.gpu} (${out.cores} threads, ${out.cpu}), ${out.browser}${kept ? ', kept profile' : ', fresh profile'}`);
@@ -264,9 +271,21 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   for (const k of ['orbit', 'section orbit', 'orbit during checks']) if (p[k]) console.log(`${k}: ${JSON.stringify(p[k])}`);
   console.log('stops of 100 ms or more, by phase: ' + JSON.stringify(stops));
   console.log('graphics card waits of 8 ms or more, by phase: ' + JSON.stringify(waits));
-  console.log(`shader links ${out.shaderLinks}${m.builds ? ` (${m.builds.ahead} handed to the card ahead, ${m.builds.late} met at a draw: ${JSON.stringify(m.builds.lateFor)}${m.builds.atOnce ? `; ${Number.isFinite(m.builds.atOnce) ? m.builds.atOnce : 'all'} at once, ${m.builds.heldBack} held back for their turn, ${m.builds.mostHeld} at most at one time` : ''})` : ''}, context lost ${out.contextLost}, errors ${JSON.stringify(out.errors)}`);
+  console.log(`shader links ${out.shaderLinks}${m.builds ? ` (${m.builds.ahead} handed to the card ahead, ${m.builds.late} met at a draw: ${JSON.stringify(m.builds.lateFor)}${m.builds.atOnce ? `; ${atOnce(m.builds.atOnce)} at once${m.builds.atOnceIdle && m.builds.atOnceIdle !== m.builds.atOnce ? ` (${atOnce(m.builds.atOnceIdle)} with the design built and checked)` : ''}, ${m.builds.heldBack} held back for their turn, ${m.builds.mostHeld} at most at one time` : ''})` : ''}, context lost ${out.contextLost}, errors ${JSON.stringify(out.errors)}`);
   if (m.builds && m.builds.waits) console.log(`waits for a shader build at a draw: ${Math.round(m.builds.waitedMs)} ms in all; the last of them: ${JSON.stringify(m.builds.waits)}`);
-  if (out.notice) console.log(`the view said it was waiting for the graphics card: ${JSON.stringify(out.notice)} (phase, ms)`);
+  if (out.notice) console.log(`the view said it was waiting for the graphics card: ${JSON.stringify(out.notice)} (the phase it ended in, ms it was up, when it went up in ms since the page opened)`);
+  // every shader build the card finished: which kinds cost the most, and how the builds went over time
+  const built = (m.builds && m.builds.built) || [];
+  if (built.length) {
+    const kinds = {};
+    for (const [what, , ms] of built) { const k = (kinds[what.split(' ').slice(0, what.includes('(') ? 2 : 1).join(' ')] ??= { builds: 0, totalMs: 0, longestMs: 0 }); k.builds++; k.totalMs += ms; k.longestMs = Math.max(k.longestMs, ms); }
+    const total = built.reduce((a, b) => a + b[2], 0);
+    const waited = built.filter((b) => b[3]);
+    const last = (list) => list.reduce((a, b) => Math.max(a, b[1] + b[2]), 0);
+    console.log(`shader builds the card finished: ${built.length}, ${Math.round(total / 100) / 10} s of building in all (builds side by side each count in full); ${waited.length} a picture waited for, the last of those done ${Math.round(last(waited) / 100) / 10} s after the page opened, the last of all ${Math.round(last(built) / 100) / 10} s after`);
+    console.log('by kind of shader (builds, s in all, longest s): ' + Object.entries(kinds).sort((a, b) => b[1].totalMs - a[1].totalMs).slice(0, 24).map(([k, v]) => `${k}: ${v.builds}, ${Math.round(v.totalMs / 100) / 10}, ${Math.round(v.longestMs / 100) / 10}`).join(' | '));
+    console.log('the 30 that took longest (what, sent at ms, took ms, a picture waited): ' + JSON.stringify(built.slice().sort((a, b) => b[2] - a[2]).slice(0, 30)));
+  }
   if (m.record) console.log(m.record.split('\n').slice(0, 45).join('\n'));
   // the longest frames, with what ran in each
   const longest = m.m.frames.slice().sort((a, b) => b[1] - a[1]).slice(0, 30).sort((a, b) => a[0] - b[0]);

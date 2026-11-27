@@ -76,10 +76,12 @@ const GIVE_UP_ON_ONE_MS = 300_000;
  * it), and every wait for a build of a few milliseconds or more with how long it was. `leftOut`: the draws a frame
  * of the live view went without while the card built for them, by when (seconds since the page opened), what they
  * are drawn into and with what. `gaveUp`: builds the card said nothing about for too long. `atOnce`: how many builds
- * the card is given at a time (shaderQueue.ts), `heldBack` how many had to wait their turn, `mostHeld` the most that
- * waited at one time.
+ * the card is given at a time (shaderQueue.ts) while the design is being built or checked, `atOnceIdle` with nothing
+ * else on, `heldBack` how many had to wait their turn, `mostHeld` the most that waited at one time. `built`: every
+ * build the card finished, as what it was of (see `told`), when it went to the card (ms since the page opened), how
+ * long until it was seen done (ms), and whether a picture waited for it (1 or 0).
  */
-export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0, atOnce: 0, heldBack: 0, mostHeld: 0 };
+export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0, atOnce: 0, atOnceIdle: 0, heldBack: 0, mostHeld: 0, built: [] as [string, number, number, number][] };
 
 /** the draw being made, for telling what a build met at a draw was for */
 const drawing = { on: false, material: null as THREE.Material | null, object: null as THREE.Object3D | null, frame: false, canvas: false, planes: 0, shadow: false };
@@ -93,6 +95,57 @@ function drawnNow(): string {
 
 const watched = new WeakSet<object>();
 let ahead = 0;
+/** what each of the card's programs is of, for the list of builds */
+const told = new WeakMap<object, string>();
+
+/** what of the many things a material can be drawn as a shader is built for, by the defines the renderer gives it */
+const DRAWN_AS: [string, string][] = [
+  ["OPAQUE", "opaque"],
+  ["USE_INSTANCING", "instanced"],
+  ["USE_SHADOWMAP", "shadowed"],
+  ["DOUBLE_SIDED", "two-sided"],
+  ["FLIP_SIDED", "back"],
+  ["USE_COLOR", "coloured"],
+  ["USE_ENVMAP", "env"],
+  ["USE_MAP", "map"],
+  ["USE_NORMALMAP", "normals"],
+  ["USE_CLEARCOAT", "clearcoat"],
+  ["USE_SHEEN", "sheen"],
+  ["USE_TRANSMISSION", "transmission"],
+  ["USE_IRIDESCENCE", "iridescence"],
+  ["USE_ANISOTROPY", "anisotropy"],
+];
+
+/**
+ * A shader in a few words, from its text: the kind of material and its name, how long the text is, what it is built
+ * to be drawn as, under how many lights and shadows, cut by how many planes, this app's own switches, and for one
+ * with no name the first things it is given.
+ */
+function tell(vertex: string, fragment: string): string {
+  const said = (what: string) => new RegExp(`#define ${what} (\\S+)`).exec(fragment)?.[1] ?? "";
+  const kind = said("SHADER_TYPE");
+  const name = said("SHADER_NAME");
+  const has = (define: string) => new RegExp(`#define ${define}\\b`).test(fragment) || new RegExp(`#define ${define}\\b`).test(vertex);
+  const many = (what: string) => Number(new RegExp(`${what}\\[ (\\d+) \\]`).exec(fragment)?.[1] ?? 0);
+  const lights = many("directionalLights") + many("spotLights") + many("pointLights") + many("hemisphereLights") + many("rectAreaLights");
+  const shadows = many("directionalShadowMap") + many("spotShadowMap") + many("pointShadowMap");
+  const cut = many("clippingPlanes");
+  const own = [...new Set([...fragment.matchAll(/#define (KERF_[A-Z0-9_]+)/g)].map((m) => m[1].slice(5).toLowerCase()))];
+  // a shader of this app's own with no name is known by what it is given (tDepth, uRadius, ...)
+  const given = name ? [] : [...new Set([...fragment.matchAll(/uniform \w+ ([tu][A-Z]\w*)/g)].map((m) => m[1]))].slice(0, 3);
+  return [
+    `${kind || "unnamed"}${name && name !== kind ? ` (${name})` : ""}`,
+    `${Math.round((vertex.length + fragment.length) / 1000)}k`,
+    ...DRAWN_AS.filter(([define]) => has(define)).map(([, as]) => as),
+    lights ? `${lights} lights` : "",
+    shadows ? `${shadows} shadows` : "",
+    cut ? `cut ${cut}` : "",
+    ...own,
+    given.length ? `[${given.join(" ")}]` : "",
+  ]
+    .filter(Boolean)
+    .join(" ");
+}
 
 /** a wait for the card shorter than this is not written down, ms */
 const WAIT_MS = 8;
@@ -107,15 +160,19 @@ function watchBuilds(gl: WebGLRenderingContext | WebGL2RenderingContext) {
   if (watched.has(gl)) return;
   watched.add(gl);
   let name = "";
+  // (the renderer gives a program its vertex shader's text, then its fragment shader's, then links it)
+  let texts: string[] = [];
   const names = new WeakMap<WebGLProgram, string>();
   const source = gl.shaderSource;
   gl.shaderSource = function (this: unknown, shader: WebGLShader, text: string) {
     name = /#define SHADER_NAME (\S+)/.exec(text)?.[1] ?? /#define SHADER_TYPE (\S+)/.exec(text)?.[1] ?? "";
+    texts = [texts[1] ?? "", text];
     return source.call(this, shader, text);
   } as typeof gl.shaderSource;
   const link = gl.linkProgram;
   gl.linkProgram = function (this: unknown, program: WebGLProgram) {
     names.set(program, name || "unnamed");
+    told.set(program, tell(texts[0], texts[1]));
     if (ahead) shaderBuilds.ahead++;
     else {
       shaderBuilds.late++;
@@ -315,6 +372,11 @@ export class ShaderGate {
     // (the queue first: the counting and timing below go round its calls)
     this.queue = shaderQueue(r.getContext());
     shaderBuilds.atOnce = this.queue.limit;
+    shaderBuilds.atOnceIdle = this.queue.idleLimit;
+    this.queue.onBuilt = (program, sentAt, ms, urgent) => {
+      shaderBuilds.built.push([told.get(program) ?? "unnamed", Math.round(sentAt), Math.round(ms), urgent ? 1 : 0]);
+      if (shaderBuilds.built.length > 800) shaderBuilds.built.shift();
+    };
     watchBuilds(r.getContext());
     // every draw the renderer makes goes through here, a shadow's and a pass's among them
     const draw = r.renderBufferDirect;
