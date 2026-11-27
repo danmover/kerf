@@ -427,10 +427,42 @@ export function mul(a: number[], b: number[]): number[] {
 export function stableStringify(v: unknown): string {
   if (typeof v === "number") return Number.isFinite(v) ? String(Math.round(v * 1e6) / 1e6) : "null";
   if (v === null || typeof v !== "object") return JSON.stringify(v);
-  if (Array.isArray(v)) return "[" + v.map(stableStringify).join(",") + "]";
+  // Written out by hand: every part's recipe is put through this at every edit, and building a list for each
+  // array and object in it to join was a quarter of reading the design. What it writes is unchanged, to the
+  // letter: the hashes made from it name parts kept from earlier sessions.
+  if (Array.isArray(v)) {
+    let out = "[";
+    for (let i = 0; i < v.length; i++) {
+      if (i) out += ",";
+      // what cannot be written (nothing there, a function) leaves its place empty, as a joined list does
+      const item = stableStringify(v[i]) as string | undefined;
+      if (item !== undefined) out += item;
+    }
+    return out + "]";
+  }
   const o = v as Record<string, unknown>;
-  return "{" + Object.keys(o).filter((k) => o[k] !== undefined).sort().map((k) => JSON.stringify(k) + ":" + stableStringify(o[k])).join(",") + "}";
+  const keys = Object.keys(o);
+  for (let i = 1; i < keys.length; i++)
+    if (keys[i] < keys[i - 1]) {
+      keys.sort();
+      break;
+    }
+  let out = "{";
+  let first = true;
+  for (const k of keys) {
+    const item = o[k];
+    if (item === undefined) continue;
+    if (first) first = false;
+    else out += ",";
+    let name = keyNames.get(k);
+    if (name === undefined) keyNames.set(k, (name = JSON.stringify(k) + ":"));
+    out += name + stableStringify(item);
+  }
+  return out + "}";
 }
+
+/** A field's name as it is written, with its colon: the same few hundred names come up millions of times. */
+const keyNames = new Map<string, string>();
 
 /** FNV-1a 64-bit-ish hash (two 32-bit lanes) rendered as hex. */
 export function hashString(s: string): string {
