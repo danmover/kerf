@@ -22,13 +22,19 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   const kept = process.env.PROFILE;
   const browser = kept ? null : await chromium.launch(launch);
   const ctx = kept ? await chromium.launchPersistentContext(kept, { ...launch, viewport: { width: 1600, height: 900 } }) : await browser.newContext({ viewport: { width: 1600, height: 900 } });
-  await ctx.addInitScript(() => {
+  await ctx.addInitScript((everyCall) => {
     try { if (!localStorage.getItem('kerf.settings.v1')) localStorage.setItem('kerf.settings.v1', JSON.stringify({ onboarded: true, termsAccepted: '2026-10-draft-2' })); } catch {}
     // every stop of the page, and every call into the graphics card that waited, with the phase it happened in
-    const M = (window.__m = { phase: 'load', longs: [], waits: [], links: 0, lost: 0 });
+    const M = (window.__m = { phase: 'load', longs: [], waits: [], links: 0, lost: 0, frames: [] });
     try {
       for (const type of ['longtask', 'long-animation-frame'])
-        new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.duration >= 50) M.longs.push([type === 'longtask' ? 't' : 'f', Math.round(e.startTime), Math.round(e.duration), M.phase]); }).observe({ type, buffered: true });
+        new PerformanceObserver((l) => {
+          for (const e of l.getEntries()) {
+            if (e.duration >= 50) M.longs.push([type === 'longtask' ? 't' : 'f', Math.round(e.startTime), Math.round(e.duration), M.phase]);
+            // of a long frame, what ran in it: who called, the function's name and where it is in the built script (the build is minified), how long, and how much of that was layout
+            if (type !== 'longtask' && e.duration >= 150) M.frames.push([Math.round(e.startTime), Math.round(e.duration), M.phase, (e.scripts || []).filter((s) => s.duration >= 15).map((s) => `${s.invoker || s.invokerType} ${s.sourceFunctionName || '(no name)'}@${s.sourceCharPosition} ${Math.round(s.duration)} ms${s.forcedStyleAndLayoutDuration >= 5 ? `, layout ${Math.round(s.forcedStyleAndLayoutDuration)} ms` : ''}`)]);
+          }
+        }).observe({ type, buffered: true });
     } catch {}
     document.addEventListener('webglcontextlost', () => M.lost++, true);
     // when the view said it was waiting for the graphics card to build shaders, and for how long
@@ -39,9 +45,12 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
     const P = WebGL2RenderingContext.prototype;
     const wrap = (name, note) => { const f = P[name]; P[name] = function (...a) { const t = performance.now(); try { return f.apply(this, a); } finally { note(performance.now() - t, a); } }; };
     wrap('linkProgram', () => M.links++);
-    for (const n of ['getProgramParameter', 'getShaderParameter', 'getProgramInfoLog', 'getUniformLocation', 'getActiveUniform', 'readPixels', 'getBufferSubData', 'clientWaitSync', 'getError', 'finish', 'checkFramebufferStatus', 'texImage2D', 'texImage3D', 'bufferData', 'drawElements', 'drawArrays'])
+    // GLALL=1: every call there is, to find a wait in one not listed here (it costs a few milliseconds a frame)
+    const listed = ['getProgramParameter', 'getShaderParameter', 'getProgramInfoLog', 'getUniformLocation', 'getActiveUniform', 'readPixels', 'getBufferSubData', 'clientWaitSync', 'getError', 'finish', 'checkFramebufferStatus', 'texImage2D', 'texImage3D', 'bufferData', 'drawElements', 'drawArrays'];
+    const every = Object.getOwnPropertyNames(P).filter((n) => n !== 'constructor' && n !== 'linkProgram' && typeof Object.getOwnPropertyDescriptor(P, n).value === 'function');
+    for (const n of everyCall ? every : listed)
       wrap(n, (ms, a) => { if (ms >= 8) M.waits.push([M.phase, n === 'readPixels' ? (typeof a[6] === 'number' ? 'readPixels to a buffer' : 'readPixels to memory') : n, Math.round(ms)]); });
-  });
+  }, !!process.env.GLALL);
   const page = kept ? (ctx.pages()[0] ?? (await ctx.newPage())) : await ctx.newPage();
   const errs = [];
   page.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 300)));
@@ -173,7 +182,7 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   for (const [, , ms, ph] of tasks) { const s = (stops[ph] ??= { stops: 0, totalMs: 0, worstMs: 0 }); s.stops++; s.totalMs += ms; s.worstMs = Math.max(s.worstMs, ms); }
   const waits = {};
   for (const [ph, name, ms] of m.m.waits) { const w = ((waits[ph] ??= {})[name] ??= { times: 0, totalMs: 0, worstMs: 0 }); w.times++; w.totalMs += ms; w.worstMs = Math.max(w.worstMs, ms); }
-  Object.assign(out, { stops, graphicsCardWaits: waits, notice: m.m.notice.length ? m.m.notice : undefined, shaderBuilds: m.builds, shaderLinks: m.m.links, contextLost: m.m.lost, errors: errs.slice(0, 20), freezeRecord: m.record, longs: m.m.longs });
+  Object.assign(out, { stops, graphicsCardWaits: waits, notice: m.m.notice.length ? m.m.notice : undefined, shaderBuilds: m.builds, shaderLinks: m.m.links, contextLost: m.m.lost, errors: errs.slice(0, 20), freezeRecord: m.record, longFrames: m.m.frames, longs: m.m.longs });
   fs.writeFileSync(outFile, JSON.stringify(out, null, 1));
   // a short account to read
   const p = out.phases;
@@ -187,6 +196,9 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   if (m.builds && m.builds.waits) console.log(`waits for a shader build at a draw: ${Math.round(m.builds.waitedMs)} ms in all; the last of them: ${JSON.stringify(m.builds.waits)}`);
   if (out.notice) console.log(`the view said it was waiting for the graphics card: ${JSON.stringify(out.notice)} (phase, ms)`);
   if (m.record) console.log(m.record.split('\n').slice(0, 45).join('\n'));
+  // the longest frames, with what ran in each
+  const longest = m.m.frames.slice().sort((a, b) => b[1] - a[1]).slice(0, 30).sort((a, b) => a[0] - b[0]);
+  if (longest.length) console.log('the 30 longest frames (s, ms, phase: what ran):\n' + longest.map(([at, ms, ph, scripts]) => `  ${(at / 1000).toFixed(1)} s  ${ms} ms  ${ph}: ${scripts.join('; ') || 'no script'}`).join('\n'));
   // leave nothing behind in a kept profile
   await page.evaluate(async () => { const { P } = window.__kerfDbg; try { await P.closeProject(); await P.deleteProject(window.__project); } catch {} }).catch(() => {});
   await ctx.close();

@@ -37,4 +37,8 @@ Every run starts with an empty browser profile, so every shader is built from no
 after an update. With `PROFILE=<folder>` the browser keeps its files in that folder: run twice, and the second
 run has the shaders the first one built.
 
+The waits it writes down are those in the graphics calls known to wait (a shader's state, a read back, a draw).
+With `GLALL=1` it times every graphics call there is, to find a wait in one that is not on that list; this costs
+a few milliseconds a frame, so frame times from such a run are not to be compared with the others.
+
 To compare two versions, build each in its own worktree on its own port and run them turn about.
