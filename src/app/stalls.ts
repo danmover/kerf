@@ -103,17 +103,26 @@ function record(at: number, ms: number, scripts: StallPiece[]) {
   // A long frame and a long task inside it are one freeze, told twice, in either order and as much as a minute
   // apart (a long frame is told once it has been shown, after later tasks): the one that shares most of the
   // shorter's time with one already kept is that one again.
+  // A long frame can hold two long tasks (a timer's work, then the drawing of the frame), each told on its own
+  // before it: all of them are that one freeze.
+  let same: Stall | null = null;
   for (let i = stalls.length - 1; i >= 0; i--) {
     const had = stalls[i];
     const shared = Math.min(at + ms, had.at + had.ms) - Math.max(at, had.at);
     if (shared <= 0.5 * Math.min(ms, had.ms)) continue;
+    if (same) {
+      if (had.scripts.length && !same.scripts.length) same.scripts = had.scripts;
+      stalls.splice(i, 1);
+      total--;
+      continue;
+    }
+    same = had;
     if (ms > had.ms) Object.assign(had, { at: Math.round(at), ms: Math.round(ms), work: workIn(at, at + ms).slice(0, 6) });
     if (scripts.length && !had.scripts.length) had.scripts = scripts;
-    longest = Math.max(longest, ms);
-    return;
   }
-  total++;
   longest = Math.max(longest, ms);
+  if (same) return;
+  total++;
   stalls.push({ at: Math.round(at), ms: Math.round(ms), work: workIn(at, at + ms).slice(0, 6), scripts });
   if (stalls.length > KEEP) stalls.shift();
   for (const l of listeners) l();

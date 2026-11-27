@@ -91,6 +91,22 @@ describe("the freeze record", () => {
     expect(stallSummary().count).toBe(3);
   });
 
+  it("takes both long tasks inside one long frame for that one freeze", () => {
+    // a timer's work, then the frame's own drawing, each told as a long task; then the frame that held both
+    recordStallForTest(1000, 513);
+    recordStallForTest(1513, 105);
+    expect(stallSummary().count).toBe(2);
+    recordStallForTest(1000, 620);
+    const s = stallSummary();
+    expect(s.count).toBe(1);
+    expect(s.recent.map((x) => [x.at, x.ms])).toEqual([[1000, 620]]);
+    // and the other way about: the frame first, its tasks after
+    recordStallForTest(5000, 620);
+    recordStallForTest(5000, 513);
+    recordStallForTest(5513, 105);
+    expect(stallSummary().count).toBe(2);
+  });
+
   it("knows it again however many others came between, and lists them in the order they happened", () => {
     // a six second task while the card builds a shader; its long frame is told after twenty later freezes
     recordStallForTest(4800, 6307);
