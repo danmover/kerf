@@ -7,7 +7,7 @@ import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
 import { turns, type Motion } from "../core/model";
-import { findHolds } from "../core/holds";
+import { findHolds, prepareHolds } from "../core/holds";
 import { ropeParts } from "../core/ropeChecks";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
@@ -67,6 +67,7 @@ import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 import { LayerBoundary } from "./ErrorBoundary";
 import { kernel } from "../kernel/client";
+import { during } from "../app/stalls";
 import { ViewCube } from "./viewport/ViewCube";
 import { openViewportMenu } from "./viewport/contextMenus";
 
@@ -243,7 +244,7 @@ export function Viewport() {
     };
     registerViewport({
       capture: (o) => c.capture(o),
-      swatch: (m, f, col, size) => c.swatch(m, f, col, size),
+      swatch: (m, f, col, size) => during("3D view: a material swatch", () => c.swatch(m, f, col, size)),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),
       bounds: () => c.modelBounds(),
@@ -299,7 +300,7 @@ export function Viewport() {
   const building = stage === "building";
   useEffect(() => {
     boardDecor.current?.setModel(model);
-    if (model) ctl.current?.setParts(model.parts, meshes, { building });
+    if (model) during("3D view: taking in the parts", () => ctl.current?.setParts(model.parts, meshes, { building }));
   }, [model, meshVersion, scene, building]);
 
   // the exploded view: which way each part comes off and in what order, worked out when first needed
@@ -318,8 +319,13 @@ export function Viewport() {
       ctl.current?.setHolds(null);
       return;
     }
-    const t = window.setTimeout(() => ctl.current?.setHolds(findHolds(model, meshOf)), 400);
-    return () => window.clearTimeout(t);
+    // (between frames: a large assembly has hundreds of screws to measure)
+    let wanted = true;
+    const t = window.setTimeout(() => void prepareHolds(model, meshOf, () => wanted).then((h) => h && wanted && ctl.current?.setHolds(h)), 400);
+    return () => {
+      wanted = false;
+      window.clearTimeout(t);
+    };
   }, [model, meshVersion, scene]);
 
   // ropes are drawn moving with what they run on: which part each drum, sheave and tied end is

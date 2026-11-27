@@ -3,8 +3,10 @@
 
 import opencascade from "replicad-opencascadejs";
 import wasmUrl from "replicad-opencascadejs/wasm?url";
+import geomUrl from "../geom/kerf_geom.wasm?url";
 import * as R from "replicad";
 import { KernelCore } from "./core";
+import { startGeomCore } from "../geom/core";
 import { measure as measurePick, projectView } from "./drawing";
 import { dropImport, errMsg, isTrap, registerImport } from "./build";
 import { readStep } from "./stepImport";
@@ -39,8 +41,13 @@ function init() {
   if (!ready) {
     const t0 = performance.now();
     ready = (opencascade as unknown as (o: { locateFile: () => string }) => Promise<unknown>)({ locateFile: () => wasmUrl })
-      .then((OC) => {
+      .then(async (OC) => {
         R.setOC(OC as never);
+        try {
+          startGeomCore(await (await fetch(geomUrl)).arrayBuffer());
+        } catch {
+          /* the checks then put every close pair to the kernel, as they did before there was a geometry core */
+        }
         post({ type: "ready", ms: performance.now() - t0 });
       })
       .catch((e) => {
@@ -223,8 +230,13 @@ async function run(msg: ToWorker) {
         return;
       }
       case "process": {
+        // asked ahead for a design that has since changed
+        if (cancelled.delete(msg.jobId)) {
+          post({ type: "process-error", jobId: msg.jobId, message: "cancelled" });
+          return;
+        }
         try {
-          post({ type: "process", jobId: msg.jobId, results: core.process(msg.probes) });
+          post({ type: "process", jobId: msg.jobId, results: core.process(msg.probes, msg.parts) });
         } catch (e) {
           if (isTrap(e)) return fatal(msg.jobId, e);
           post({ type: "process-error", jobId: msg.jobId, message: errMsg(e) });

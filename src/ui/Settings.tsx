@@ -25,6 +25,7 @@ import { forgetOpenAIKey } from "../persist/openaiVault";
 import { AccessEditor } from "./make/AccessEditor";
 import { MachineEditor } from "./make/MachineEditor";
 import "../styles/make.css";
+import { onStall, stallReport, stallSummary, STALL_MS } from "../app/stalls";
 import { desktop, graphicsCard, isSoftwareRenderer, type ClaudeCodeInfo, type ClaudeCodeReport, type DesktopInfo, type GraphicsBackend } from "../app/desktop";
 import { MOUSE_SCHEMES, MOUSE_SCHEME_IDS, type MouseScheme } from "../app/mouse";
 
@@ -687,8 +688,43 @@ function GraphicsSettings() {
         </Row>
       )}
       {info && <Row t="Desktop app" d={`Kerf ${info.version} · Electron ${info.electron} · Chromium ${info.chrome}`} />}
+      <FreezeRecord about={[`Graphics card: ${card}`, info ? `Kerf ${info.version}, Electron ${info.electron}, Chromium ${info.chrome}, graphics ${info.running}` : "In a browser"]} />
     </Section>
   );
+}
+
+/** Every freeze of the page since Kerf opened, with what it was doing, to copy into a message. */
+function FreezeRecord({ about }: { about: string[] }) {
+  const [, tick] = useState(0);
+  useEffect(() => onStall(() => tick((n) => n + 1)), []);
+  const s = stallSummary();
+  const top = s.causes.slice(0, 3);
+  return (
+    <Row
+      t="Freezes"
+      d={
+        s.count
+          ? `Kerf stopped answering ${s.count} time${s.count === 1 ? "" : "s"} since it opened, for ${fmtMs(s.longestMs)} at the longest${top.length ? `. Mostly: ${top.map((c) => `${c.name} (${c.count === 1 ? "" : `${c.count} times, `}${fmtMs(c.ms)})`).join("; ")}` : ""}. The record says what each one was doing.`
+          : `Kerf notes every time it stops answering for ${STALL_MS} ms or more and what it was doing. None since it opened.`
+      }
+    >
+      <button
+        className="btn sm"
+        onClick={() =>
+          void navigator.clipboard.writeText(stallReport(about)).then(
+            () => toast({ kind: "success", title: "Freeze record copied", detail: "Paste it into a message to Claude or a bug report." }),
+            () => toast({ kind: "warn", title: "Could not copy", detail: "The clipboard is not available here." }),
+          )
+        }
+      >
+        <Icon.Copy size={13} /> Copy the record
+      </button>
+    </Row>
+  );
+}
+
+function fmtMs(ms: number) {
+  return ms >= 1000 ? `${(ms / 1000).toFixed(1)} s` : `${Math.round(ms)} ms`;
 }
 
 /** What one step reading a conversation of `tokens` from the cache costs on `model`, or the summary of all but its newest fifth (sent uncached, with a summary of about 4K tokens). */

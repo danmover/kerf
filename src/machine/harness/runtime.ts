@@ -12,6 +12,7 @@ import { meshes, refreshReport, useDesign } from "../../core/engine";
 import type { CheckItem } from "../../core/checks";
 import type { EvalPart, Model } from "../../core/model";
 import { registerReportPass, type ReportContext } from "../../core/reportPasses";
+import { breathe } from "../../core/slices";
 import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { posable } from "../pose";
 import { buildHarness, leadLength, routeRequests, type Harness } from "./harness";
@@ -239,7 +240,8 @@ function wiringPass(items: CheckItem[], ctx: ReportContext): CheckItem[] {
   // every part built (or failed to build) first
   if (model.parts.some((p) => !p.hidden && !ctx.buildErrors.has(p.hash) && !(meshes.get(p.hash)?.preview ?? meshes.get(p.hash)?.final))) return items;
   // routing runs in the worker; ask for it after this report is composed
-  if (model !== lastModel) queueMicrotask(() => updateHarness(model));
+  // (in a turn of its own: reading the harness of a large machine takes a moment, and the report is shown first)
+  if (model !== lastModel) void breathe().then(() => updateHarness(model));
   const st = useHarness.getState();
   if (model === lastModel && st.status === "done" && st.checked === st.key && st.harness) return [...items, ...wiringItems(st.harness, st.findings, st.mounts ?? [], model)];
   if (model === lastModel && st.status === "error")

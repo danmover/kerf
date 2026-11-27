@@ -429,6 +429,28 @@ export class KernelClient {
     return this.value<ProcessResult[]>("process", (s) => `The manufacturing checks ran for more than ${s} s, so Kerf stopped them.`, probes, (jobId) => ({ type: "process", jobId, probes }));
   }
 
+  /**
+   * The same checks for parts this worker may not have built: it builds them first. For asking a worker with time
+   * on its hands ahead of the one building the design. `cancel` drops the request if the worker has not started it.
+   */
+  processParts(probes: ProcessProbe[], parts: BuildItem[]) {
+    let id = 0;
+    const promise = this.value<ProcessResult[]>(
+      "process",
+      (s) => `The manufacturing checks ran for more than ${s} s, so Kerf stopped them.`,
+      [probes, parts.map((p) => p.hash)],
+      (jobId) => ({ type: "process", jobId, probes, parts }),
+      [],
+      (jobId) => (id = jobId),
+    );
+    return {
+      promise,
+      cancel: () => {
+        if (id) this.post({ type: "cancel", jobId: id });
+      },
+    };
+  }
+
   /** STEP of placed parts; parts given with a recipe are built (in detail) if this worker does not have them yet. */
   exportStep(items: ExportItem[]) {
     // a part whose detailed build stalled the worker goes in with its simple shape

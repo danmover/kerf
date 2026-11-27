@@ -8,6 +8,7 @@
     "dev:full": "node scripts/dev-full.mjs",
     "build": "tsc && vite build",
     "build:server": "node scripts/build-server.mjs",
+    "geom": "node scripts/build-geom.mjs",
     "start": "node server/dist/index.js",
     "preview": "vite preview",
     "desktop": "npm run build && node scripts/build-desktop.mjs && electron .desktop/app",

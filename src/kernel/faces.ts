@@ -46,7 +46,7 @@ function cylinderOf(f: R.Face): { o: V3; d: V3; r: number; a0: number; a1: numbe
 }
 
 /** The centre and radius of the circle through three points. */
-function circleThrough(a: V3, b: V3, c: V3): { c: V3; r: number } | null {
+export function circleThrough(a: V3, b: V3, c: V3): { c: V3; r: number } | null {
   const ab: V3 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
   const ac: V3 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
   const n: V3 = [ab[1] * ac[2] - ab[2] * ac[1], ab[2] * ac[0] - ab[0] * ac[2], ab[0] * ac[1] - ab[1] * ac[0]];

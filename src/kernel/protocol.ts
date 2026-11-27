@@ -94,6 +94,11 @@ export interface ChecksResult {
   contacts?: Contact[];
   /** each placed part's box in the assembly, by part id */
   boxes?: Record<string, [V3, V3]>;
+  /**
+   * How the overlap questions this check had to answer were settled: proved clear by the geometry core, proved to be
+   * no more than a film, already known for the same two solids placed the same way, or put to the kernel's exact test.
+   */
+  settled?: { proved: number; film: number; reused: number; exact: number };
 }
 
 export interface Contact {
@@ -159,7 +164,8 @@ export type ToWorker =
   | { type: "cancel"; jobId: number }
   | { type: "checks"; jobId: number; req: ChecksRequest }
   | { type: "export-step"; jobId: number; items: ExportItem[] }
-  | { type: "process"; jobId: number; probes: ProcessProbe[] }
+  // `parts`: the parts the probes are of, built first where this worker does not have them (the detail worker, asked ahead of the kernel's own build)
+  | { type: "process"; jobId: number; probes: ProcessProbe[]; parts?: BuildItem[] }
   | { type: "evict"; keep: string[] }
   | { type: "project"; jobId: number; req: ViewRequest }
   | { type: "pick-measure"; jobId: number; req: { a: PickRef; b?: PickRef } }

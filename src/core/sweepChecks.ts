@@ -835,15 +835,29 @@ export function sweepChecks(model: Model, holds: Holds, kernel: ChecksResult, me
   const t0 = performance.now();
   const built = kernel.boxes;
   if (!built) return [];
-  const bodies: Body[] = [];
+  const solids: { p: EvalPart; motion: Motion | undefined }[] = [];
   for (const p of model.parts) {
     if (p.hidden || (p.imported && p.imported.kind !== "solid") || !built[p.id] || p.band || p.libKind === "belt" || p.libKind === "rope" || p.libKind === "round_belt" || p.oring) continue;
+    solids.push({ p, motion: motionOfPart(p, holds) });
+  }
+  // nothing turns: nothing to sweep, and no surface to get ready
+  if (!solids.some((b) => turns(b.motion))) return [];
+  const bodies: Body[] = [];
+  // getting a part's surface ready (once per mesh) takes a moment: with a budget, the ones there is no time for
+  // wait for a later call, as pairs do
+  let unready = 0;
+  for (const { p, motion } of solids) {
     const md = mesh(p.hash);
+    if (md && !surfaceCache.has(md) && performance.now() - t0 > budgetMs) {
+      unready++;
+      continue;
+    }
     const s = md && sweepSurface(md);
     if (!s) continue;
     const X = xformMatrix(p.xf) as Mat4;
-    bodies.push({ p, X, Xi: rigidInverse(X), s, motion: motionOfPart(p, holds) });
+    bodies.push({ p, X, Xi: rigidInverse(X), s, motion });
   }
+  if (unready) return [{ id: "sweep:partial", category: "motion", status: "pending", title: "Sweeping the moving parts", detail: `${unready} part${unready === 1 ? "" : "s"} still to get ready for the sweep through the motion: the report updates when they are done.`, basis: "geometry" }];
   const movers = bodies.filter((b) => turns(b.motion));
   if (!movers.length) return [];
   const skip = new Set(ignore.map(([a, b]) => (a < b ? `${a}|${b}` : `${b}|${a}`)));

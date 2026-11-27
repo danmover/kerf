@@ -13,15 +13,17 @@
 // With part meshes at hand each stack is measured on them, along rays round
 // the shank inside the head's footprint (so slots, pockets, counterbores and
 // captive nuts count); without them it is read from the round holes in the
-// recipes. Pure model reading on the main thread; no kernel calls.
+// recipes. Pure model reading on the main thread; no kernel calls. A large assembly takes a few tenths of a second, so
+// callers on the page ask with prepareHolds, which works between frames.
 
 import { turns, type EvalPart, type Model, type Motion } from "./model";
 import type { MeshData } from "../kernel/build";
 import { applyXforms, frameFor, vadd, vdot, vscale, vsub, xformMatrix, type V3 } from "../kernel/recipe";
 import { axialOverlap, cylEnd, cylMid, lineDistance, partCylinders, recipeBounds, type Cyl } from "../analysis/fits/geometry";
-import { findFits } from "../analysis/fits/detect";
+import { findFits, findFitsWork } from "../analysis/fits/detect";
 import { TriBVH } from "../mfg/bvh";
 import { catalogPart } from "../machine/catalog";
+import { inSlices } from "./slices";
 
 export type MeshLookup = (hash: string) => MeshData | undefined;
 
@@ -256,6 +258,55 @@ export function meshIntervals(p: EvalPart, m: MeshData, sh: Shank, s0: number, s
   const bvh = bvhOf(m);
   if (!bvh.count) return null;
   const M = xformMatrix(p.xf);
+  // The answer depends only on the mesh and on where the shank and its rays are in the part's own frame. A design
+  // is read many times with most of its screws and parts where they were (each edit, each mesh that arrives), so
+  // each answer is kept with its mesh.
+  const { u } = frameFor(sh.axis);
+  const key = raysKey(M, sh, u, s0, s1, minAngles);
+  let kept = raysCache.get(m);
+  if (!kept) raysCache.set(m, (kept = new Map()));
+  const hit = kept.get(key);
+  if (hit !== undefined) return hit && hit.map((x) => [x[0], x[1]]);
+  const out = castIntervals(bvh, M, m, sh, s0, s1, minAngles);
+  if (kept.size >= RAYS_KEPT) kept.clear();
+  kept.set(key, out && out.map((x) => [x[0], x[1]]));
+  return out;
+}
+
+const raysCache = new WeakMap<MeshData, Map<string, [number, number][] | null>>();
+/** answers kept per mesh: a plate with a few hundred screws through it fits */
+const RAYS_KEPT = 1024;
+const q6 = (x: number) => Math.round(x * 1e6) || 0;
+const q9 = (x: number) => Math.round(x * 1e9) || 0;
+
+/** The shank and the frame its rays are cast in, as the part sees them (so the same answer is found wherever the two were moved together). */
+function raysKey(M: ArrayLike<number>, sh: Shank, u: V3, s0: number, s1: number, minAngles: number): string {
+  const x = sh.seat[0] - M[12],
+    y = sh.seat[1] - M[13],
+    z = sh.seat[2] - M[14];
+  const row = (d: V3, k: number) => M[k] * d[0] + M[k + 1] * d[1] + M[k + 2] * d[2];
+  // the placement's handedness: a mirrored part sees the rays turn the other way round
+  const det = M[0] * (M[5] * M[10] - M[6] * M[9]) - M[1] * (M[4] * M[10] - M[6] * M[8]) + M[2] * (M[4] * M[9] - M[5] * M[8]);
+  return [
+    q6(M[0] * x + M[1] * y + M[2] * z),
+    q6(M[4] * x + M[5] * y + M[6] * z),
+    q6(M[8] * x + M[9] * y + M[10] * z),
+    q9(row(sh.axis, 0)),
+    q9(row(sh.axis, 4)),
+    q9(row(sh.axis, 8)),
+    q9(row(u, 0)),
+    q9(row(u, 4)),
+    q9(row(u, 8)),
+    det < 0 ? 1 : 0,
+    q6(sh.d),
+    q6(sh.headD),
+    q6(s0),
+    q6(s1),
+    minAngles,
+  ].join(",");
+}
+
+function castIntervals(bvh: TriBVH, M: ArrayLike<number>, m: MeshData, sh: Shank, s0: number, s1: number, minAngles: number): [number, number][] | null {
   // world to the part's own frame: placements are rotations, mirrors and moves, so the inverse is the transpose
   const inv = (q: V3): V3 => {
     const x = q[0] - M[12],
@@ -415,10 +466,13 @@ function stackOf(screw: EvalPart, parts: EvalPart[], mesh: MeshLookup | undefine
   // from a little behind the seat to a nut's height past the tip
   const s0 = -0.5;
   const s1 = sh.length + Math.max(2, d);
+  // (the box first: of several hundred parts a handful are near, and only those need their names compared)
+  const from = vadd(sh.seat, vscale(sh.axis, s0));
+  const own = instanceOf(screw);
   const near = parts.filter((p) => {
-    if (p === screw || instanceOf(p) === instanceOf(screw) || p.libKind === "screw") return false;
+    if (p === screw || p.libKind === "screw") return false;
     const b = worldBox(p, mesh);
-    return !!b && boxNearSegment(b, vadd(sh.seat, vscale(sh.axis, s0)), sh.axis, s1 - s0, sh.headD / 2 + 0.5);
+    return !!b && boxNearSegment(b, from, sh.axis, s1 - s0, sh.headD / 2 + 0.5) && instanceOf(p) !== own;
   });
   const layers: Layer[] = [];
   let measured = false;
@@ -502,23 +556,69 @@ function stackOf(screw: EvalPart, parts: EvalPart[], mesh: MeshLookup | undefine
 
 // ---------- the whole design ----------
 
-const cache = new WeakMap<Model, { key: string; holds: Holds }>();
+// a model's holds as read from its recipes ("r") and as last measured on its meshes
+const cache = new WeakMap<Model, { r?: Holds; m?: { key: string; holds: Holds } }>();
 
 /**
  * How the design holds together. Cached per model; pass the mesh lookup when meshes are built and the result is
  * measured on them (it is redone as more meshes arrive).
  */
 export function findHolds(model: Model, mesh?: MeshLookup): Holds {
-  const parts = model.parts.filter(solidPart);
-  const key = mesh ? `m${parts.filter((p) => mesh(p.hash)).length}` : "r";
-  const hit = cache.get(model);
-  if (hit && hit.key === key) return hit.holds;
-  const holds = compute(model, parts, mesh);
-  cache.set(model, { key, holds });
-  return holds;
+  const work = findHoldsWork(model, mesh);
+  for (;;) {
+    const step = work.next();
+    if (step.done) return step.value;
+  }
 }
 
-function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined): Holds {
+/**
+ * findHolds a piece at a time, for a caller with a page to keep moving (core/slices.ts): a large assembly has
+ * hundreds of screws to measure. What it works out is kept, so findHolds asked afterwards answers at once.
+ */
+export function* findHoldsWork(model: Model, mesh?: MeshLookup): Generator<void, Holds> {
+  const parts = model.parts.filter(solidPart);
+  let kept = cache.get(model);
+  if (!kept) cache.set(model, (kept = {}));
+  if (!mesh) return (kept.r ??= yield* compute(model, parts, undefined));
+  let n = 0;
+  for (const p of parts) if (mesh(p.hash)) n++;
+  const key = `m${n}`;
+  if (kept.m?.key !== key) {
+    const holds = yield* compute(model, parts, mesh);
+    kept.m = { key, holds };
+  }
+  return kept.m.holds;
+}
+
+const jobs = new WeakMap<Model, { key: string; wants: (() => boolean)[]; job: Promise<Holds | null> }>();
+
+/**
+ * findHolds for a caller with a page to keep moving: worked out between frames, once however many ask for the
+ * same model at the same time (the checks, the simulations and the 3D view all do). findHolds asked afterwards
+ * answers at once. Null when everyone who asked has stopped wanting it (the design changed).
+ */
+export function prepareHolds(model: Model, mesh: MeshLookup, wanted: () => boolean = () => true): Promise<Holds | null> {
+  let n = 0;
+  for (const p of model.parts) if (solidPart(p) && mesh(p.hash)) n++;
+  const key = `m${n}`;
+  const kept = cache.get(model)?.m;
+  if (kept?.key === key) return Promise.resolve(kept.holds);
+  const running = jobs.get(model);
+  if (running?.key === key) {
+    running.wants.push(wanted);
+    return running.job;
+  }
+  const wants = [wanted];
+  const job = inSlices(findHoldsWork(model, mesh), () => wants.some((w) => w())).finally(() => {
+    if (jobs.get(model)?.job === job) jobs.delete(model);
+  });
+  jobs.set(model, { key, wants, job });
+  return job;
+}
+
+function* compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined): Generator<void, Holds> {
+  // the fits are read below; they are found a piece at a time here, and kept
+  yield* findFitsWork(model);
   const stacks: Stack[] = [];
   // nuts or inserts bought for a thread size but not drawn ("M5 drop-in T-nuts")
   const items = model.machine?.items ?? [];
@@ -527,6 +627,7 @@ function compute(model: Model, parts: EvalPart[], mesh: MeshLookup | undefined):
     if (!s.fastener || s.libKind !== "screw") continue;
     const st = stackOf(s, parts, mesh, boughtFor);
     if (st) stacks.push(st);
+    yield;
   }
 
   const joins: Join[] = [];

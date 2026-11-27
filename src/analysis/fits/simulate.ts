@@ -12,6 +12,7 @@ import { hashString, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type V3 } fr
 import { centerDistance } from "../../library/gears";
 import { materialRecord } from "../../library/materialDb";
 import { axisDistance, fitsOnAxis, type FitDef, type FitInstance, type FoundFits, type GearPair, type ScrewJoint } from "./detect";
+import type { Cyl } from "./geometry";
 import { calledTolerance, describeScatter, diameterScatter, expansion, onItsSide, positionSigma, scaleScatter, shrinkCompensated, sourceOf, type Scatter, type Source } from "./scatter";
 
 export const SAMPLES = 4000;
@@ -300,15 +301,71 @@ function suggestFix(inst: FitInstance, holeSrc: Source, shaftSrc: Source, holeMe
   return "Both parts are bought: choose parts with a closer tolerance, or add a sleeve or adhesive.";
 }
 
-function runFit(f: FitDef, ctx: Ctx, samples: Map<FitInstance, Float64Array>): FitOutcome {
+/** How one round feature comes out, with the tolerance its drawing calls (read once per run). */
+function scatterOf(c: Cyl, ctx: Ctx, plan: Plan): Scatter {
+  const called = plan.called.get(c);
+  return diameterScatter(c, sourceOf(c.part), called !== undefined ? called : calledTolerance(ctx.model, c));
+}
+
+/**
+ * One place of a fit, build by build: the hole's and the shaft's diameters as made, and the clearance between them.
+ * Seeded by the fit and the place, so it gives the same numbers whenever it is asked.
+ */
+function drawPlace(f: FitDef, idx: number, ctx: Ctx, plan: Plan, shared: (material: string) => Float64Array): { h: Float64Array; s: Float64Array; c: Float64Array } {
+  const inst = f.instances[idx];
+  const r = rng(`${f.key}#${idx}`);
+  const h = draw(scatterOf(inst.hole, ctx, plan), r, ctx.n, shared(inst.hole.part.material));
+  const s = draw(scatterOf(inst.shaft, ctx, plan), r, ctx.n, shared(inst.shaft.part.material));
+  const c = new Float64Array(ctx.n);
+  for (let i = 0; i < ctx.n; i++) c[i] = h[i] - s[i] - 2 * inst.ecc;
+  return { h, s, c };
+}
+
+/**
+ * The as-made clearance of every place of every fit, build by build. A fit that is run leaves its draws here; a gear
+ * mesh or a screw pattern that asks about a fit whose answer was kept has them drawn again then (the same numbers).
+ */
+class Draws {
+  private made = new Map<FitInstance, Float64Array>();
+  private shared = new Map<FitDef, (material: string) => Float64Array>();
+
+  constructor(
+    private plan: Plan,
+    private ctx: Ctx,
+  ) {}
+
+  /** the build-by-build draw each material shares within a fit */
+  sharedOf(f: FitDef): (material: string) => Float64Array {
+    let s = this.shared.get(f);
+    if (!s) this.shared.set(f, (s = sharedDraws(f.key, this.ctx.n)));
+    return s;
+  }
+
+  set(inst: FitInstance, c: Float64Array) {
+    this.made.set(inst, c);
+  }
+
+  get(inst: FitInstance): Float64Array | undefined {
+    let c = this.made.get(inst);
+    if (!c) {
+      const o = this.plan.owner.get(inst);
+      if (!o) return undefined;
+      c = drawPlace(o.fit, o.index, this.ctx, this.plan, this.sharedOf(o.fit)).c;
+      this.made.set(inst, c);
+    }
+    return c;
+  }
+}
+
+/** Yields after each of the fit's places, so a caller with a page to keep moving can stop there for a moment. */
+function* runFit(f: FitDef, ctx: Ctx, samples: Draws, plan: Plan): Generator<void, FitOutcome> {
   const all: Float64Array[] = [];
   const failRuns = new Map<string, Uint8Array>();
   const first = f.instances[0];
   const holeSrc = sourceOf(first.hole.part);
   const shaftSrc = sourceOf(first.shaft.part);
-  const scatterOf = (c: FitInstance["hole"]) => diameterScatter(c, sourceOf(c.part), calledTolerance(ctx.model, c));
-  const hs = scatterOf(first.hole);
-  const ss = scatterOf(first.shaft);
+  const hs = scatterOf(first.hole, ctx, plan);
+  const ss = scatterOf(first.shaft, ctx, plan);
   const j = judge(f, first, holeSrc, shaftSrc, describeScatter(hs).mean - describeScatter(ss).mean);
   const ah = expansion(holeSrc.material);
   const as = expansion(shaftSrc.material);
@@ -319,13 +376,10 @@ function runFit(f: FitDef, ctx: Ctx, samples: Map<FitInstance, Float64Array>): F
     if (!arr) failRuns.set(k, (arr = new Uint8Array(ctx.n)));
     arr[i] = 1;
   };
-  const shared = sharedDraws(f.key, ctx.n);
-  f.instances.forEach((inst, idx) => {
-    const r = rng(`${f.key}#${idx}`);
-    const h = draw(scatterOf(inst.hole), r, ctx.n, shared(inst.hole.part.material));
-    const s = draw(scatterOf(inst.shaft), r, ctx.n, shared(inst.shaft.part.material));
-    const c = new Float64Array(ctx.n);
-    for (let i = 0; i < ctx.n; i++) c[i] = h[i] - s[i] - 2 * inst.ecc;
+  const shared = samples.sharedOf(f);
+  for (let idx = 0; idx < f.instances.length; idx++) {
+    const inst = f.instances[idx];
+    const { h, s, c } = drawPlace(f, idx, ctx, plan, shared);
     samples.set(inst, c);
     all.push(c);
     for (const t of temps) {
@@ -336,7 +390,8 @@ function runFit(f: FitDef, ctx: Ctx, samples: Map<FitInstance, Float64Array>): F
         if (m) mark(m, t, i);
       }
     }
-  });
+    yield;
+  }
   // rates: share of builds where any instance shows the mode; at room temperature first, then new ones when hot or cold
   const modes: ModeRate[] = [];
   const seen = new Set<FitMode>();
@@ -405,11 +460,27 @@ function runFit(f: FitDef, ctx: Ctx, samples: Map<FitInstance, Float64Array>): F
 
 // ---------- gear meshes ----------
 
-function runGear(g: GearPair, fits: FitDef[], samples: Map<FitInstance, Float64Array>, ctx: Ctx, model: Model): FitOutcome | null {
+type Chain = { fit: FitDef; inst: FitInstance; index: number }[];
+
+/**
+ * The fits that hold each gear of a pair: its own bore, its shaft's bearings and their seats, a motor's pilot (not
+ * other gears' bores). Null for two gears of different modules, which do not mesh.
+ */
+function gearChains(g: GearPair, fits: FitDef[]): { axis: V3; ca: Chain; cb: Chain } | null {
   const A = g.a.gear!;
   const B = g.b.gear!;
   if (Math.abs(A.m - B.m) > 1e-9) return null;
   const axis = vnorm(B.axis);
+  const chain = (gear: EvalPart) => fitsOnAxis(fits, gear.gear!.center, axis).filter((x) => x.fit.kind !== "gear-bore" || x.inst.hole.part === gear);
+  return { axis, ca: chain(g.a), cb: chain(g.b) };
+}
+
+function runGear(g: GearPair, fits: FitDef[], samples: Draws, ctx: Ctx): FitOutcome | null {
+  const A = g.a.gear!;
+  const B = g.b.gear!;
+  const chains = gearChains(g, fits);
+  if (!chains) return null;
+  const { axis, ca, cb } = chains;
   const a0 = axisDistance(A.center, B.center, axis);
   const ideal = centerDistance(A.m, A.z, B.z);
   const tanA = Math.tan(((B.pa ?? 20) * Math.PI) / 180);
@@ -419,11 +490,7 @@ function runGear(g: GearPair, fits: FitDef[], samples: Map<FitInstance, Float64A
   const n = ctx.n;
   const jarr = new Float64Array(n);
   // radial float from every fit along each gear's axis; housings that hold both axes add their hole position scatter
-  // the fits that hold this gear: its own bore, its shaft's bearings and their seats, a motor's pilot (not other gears' bores)
-  const chain = (gear: EvalPart) => fitsOnAxis(fits, gear.gear!.center, axis).filter((x) => x.fit.kind !== "gear-bore" || x.inst.hole.part === gear);
-  const ca = chain(g.a);
-  const cb = chain(g.b);
-  const seatParts = (c: ReturnType<typeof chain>) => new Set(c.map((x) => x.inst.hole.part).filter((p) => p.kind === "part"));
+  const seatParts = (c: Chain) => new Set(c.map((x) => x.inst.hole.part).filter((p) => p.kind === "part"));
   const sa = seatParts(ca);
   const sb = seatParts(cb);
   const shared = [...sa].filter((p) => sb.has(p));
@@ -438,7 +505,7 @@ function runGear(g: GearPair, fits: FitDef[], samples: Map<FitInstance, Float64A
   };
   const ta = tooth(g.a);
   const tb = tooth(g.b);
-  const floatOf = (c: ReturnType<typeof chain>, i: number) => {
+  const floatOf = (c: Chain, i: number) => {
     let along = 0;
     for (const x of c) {
       const cl = samples.get(x.inst)?.[i] ?? 0;
@@ -473,7 +540,6 @@ function runGear(g: GearPair, fits: FitDef[], samples: Map<FitInstance, Float64A
     const need = Math.max(0.02, -quantile(sorted, 0.003) + 0.02);
     fix = `Give the gears about ${mm(need, 2)} mm more backlash (backlash: on lib.spur_gear, or move the axes ${mm(need / (2 * tanA), 3)} mm apart), or tighten the fits that let them float.`;
   } else if (status !== "pass") fix = "Tighten the fits that let the gears float, or reduce the drawn backlash.";
-  void model;
   return {
     key: `gear|${g.key}`,
     kind: "gear-mesh",
@@ -502,18 +568,23 @@ function perpOf(v: V3, axis: V3): V3 {
 
 const FOLLOWERS = new Set(["nut", "insert", "standoff"]);
 
-function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Array>, ctx: Ctx): FitOutcome[] {
-  // group screws by the parts they join
+/** The screw patterns of a design: its screws grouped by the parts they join, two or more to a pattern. */
+function patternGroups(joints: ScrewJoint[]): [string, ScrewJoint[]][] {
   const groups = new Map<string, ScrewJoint[]>();
   for (const j of joints) {
     const parts = [...new Set([...j.through.map((t) => t.hole.part.name), ...j.threads.map((p) => p.name)])].sort();
     if (parts.length < 2) continue;
     const key = `${j.screw.name}|${parts.join("+")}`;
-    groups.set(key, [...(groups.get(key) ?? []), j]);
+    const list = groups.get(key);
+    if (list) list.push(j);
+    else groups.set(key, [j]);
   }
-  const out: FitOutcome[] = [];
-  for (const [key, list] of groups) {
-    if (list.length < 2) continue;
+  return [...groups].filter(([, list]) => list.length >= 2);
+}
+
+/** One screw pattern; null where nothing has to line up. Yields every few hundred builds (see runFit). */
+function* runPattern(key: string, list: ScrewJoint[], samples: Draws, ctx: Ctx): Generator<void, FitOutcome | null> {
+  {
     const axis = vnorm(list[0].through[0].hole.axis);
     // every part the pattern passes through or threads into, with each screw's hole clearance in it (0 where it threads)
     const partsByName = new Map<string, EvalPart>();
@@ -531,69 +602,84 @@ function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Arra
     // a nut floats on the screw, and an insert sits in its host's pocket and moves with it: neither sets where the screw goes
     for (const [name, p] of partsByName) if (FOLLOWERS.has(p.libKind ?? "") && partsByName.size > 2) partsByName.delete(name);
     // with the washers gone, one part and the nuts or inserts that follow it leave nothing to line up
-    if (loose && [...partsByName.values()].filter((p) => !FOLLOWERS.has(p.libKind ?? "")).length < 2) continue;
+    if (loose && [...partsByName.values()].filter((p) => !FOLLOWERS.has(p.libKind ?? "")).length < 2) return null;
     const names = [...partsByName.keys()];
-    if (names.length < 2) continue;
+    if (names.length < 2) return null;
     const pos = list.map((j) => j.through[0].shaft.at);
     const centre = vscale(pos.reduce((s, p) => vadd(s, p), [0, 0, 0] as V3), 1 / pos.length);
     const r = rng(`pattern|${key}`);
     // a steel screw cuts its way through a plastic hole that is a little off: forcing, but it goes
     const sd = list[0].through[0].shaft.d;
-    const give = (name: string) => (isPlastic(partsByName.get(name)!.material) ? 0.04 * sd : 0);
     let bad = 0,
       forced = 0;
     const misses = new Float64Array(ctx.n);
     const u = vnorm(perpOf(Math.abs(axis[0]) < 0.9 ? [1, 0, 0] : [0, 1, 0], axis));
     const v = vcross(axis, u);
+    const np = pos.length;
+    // what does not change from build to build, read once: each part's scale scatter and give, where each of its
+    // holes sits across the screws and how far off it lands, and each screw's room in it (its fit's draws, or the
+    // drawn clearance where the hole is not a fit)
+    const sides = names.map((name) => {
+      const p = partsByName.get(name)!;
+      const src = sourceOf(p);
+      const sc = scaleScatter(src, p);
+      const du = new Float64Array(np);
+      const dv = new Float64Array(np);
+      const sigma = new Float64Array(np);
+      pos.forEach((q, k) => {
+        const d = perpOf(vsub(q, centre), axis);
+        du[k] = vdot(d, u);
+        dv[k] = vdot(d, v);
+        sigma[k] = positionSigma(src, vlen(d) * 2);
+      });
+      const rooms = list.map((j) => {
+        const t = j.through.find((x) => x.hole.part.name === name);
+        return t ? { draws: samples.get(t), drawn: t.hole.d - t.shaft.d } : null;
+      });
+      return { material: p.material, mean: sc.mean, sigma: sc.sigma, common: sc.common ?? 0, du, dv, pos: sigma, rooms, give: isPlastic(p.material) ? 0.04 * sd : 0, ex: new Float64Array(np), ey: new Float64Array(np) };
+    });
+    const room = (side: (typeof sides)[number], k: number, i: number) => {
+      const t = side.rooms[k];
+      return t ? Math.max(0, t.draws?.[i] ?? t.drawn) / 2 : 0;
+    };
     const common = new Map<string, number>();
     for (let i = 0; i < ctx.n; i++) {
       // each part's holes: scaled about the pattern centre plus scatter, in the plane across the screws
-      const err = new Map<string, [number, number][]>();
       common.clear();
-      for (const name of names) {
-        const p = partsByName.get(name)!;
-        const src = sourceOf(p);
-        const sc = scaleScatter(src, p);
-        if (!common.has(p.material)) common.set(p.material, gauss(r));
-        const k = sc.mean - 1 + sc.sigma * gauss(r) + (sc.common ?? 0) * common.get(p.material)!;
-        err.set(
-          name,
-          pos.map((q) => {
-            const d = perpOf(vsub(q, centre), axis);
-            const s = positionSigma(src, vlen(d) * 2);
-            return [k * vdot(d, u) + s * gauss(r), k * vdot(d, v) + s * gauss(r)];
-          }),
-        );
+      for (const side of sides) {
+        if (!common.has(side.material)) common.set(side.material, gauss(r));
+        const k = side.mean - 1 + side.sigma * gauss(r) + side.common * common.get(side.material)!;
+        for (let q = 0; q < np; q++) {
+          side.ex[q] = k * side.du[q] + side.pos[q] * gauss(r);
+          side.ey[q] = k * side.dv[q] + side.pos[q] * gauss(r);
+        }
       }
       let worst = Infinity,
         worstForced = Infinity;
-      for (let a = 0; a < names.length; a++)
-        for (let b = a + 1; b < names.length; b++) {
-          const ea = err.get(names[a])!;
-          const eb = err.get(names[b])!;
+      for (let a = 0; a < sides.length; a++)
+        for (let b = a + 1; b < sides.length; b++) {
+          const A = sides[a];
+          const B = sides[b];
           // the parts settle where the screws let them: take out the average offset
           let mx = 0,
             my = 0;
-          for (let k = 0; k < pos.length; k++) {
-            mx += ea[k][0] - eb[k][0];
-            my += ea[k][1] - eb[k][1];
+          for (let k = 0; k < np; k++) {
+            mx += A.ex[k] - B.ex[k];
+            my += A.ey[k] - B.ey[k];
           }
-          mx /= pos.length;
-          my /= pos.length;
+          mx /= np;
+          my /= np;
           for (let k = 0; k < list.length; k++) {
-            const room = (name: string) => {
-              const t = list[k].through.find((x) => x.hole.part.name === name);
-              return t ? Math.max(0, samples.get(t)?.[i] ?? t.hole.d - t.shaft.d) / 2 : 0;
-            };
-            const m = Math.hypot(ea[k][0] - eb[k][0] - mx, ea[k][1] - eb[k][1] - my);
-            const left = room(names[a]) + room(names[b]) - m;
+            const m = Math.hypot(A.ex[k] - B.ex[k] - mx, A.ey[k] - B.ey[k] - my);
+            const left = room(A, k, i) + room(B, k, i) - m;
             worst = Math.min(worst, left);
-            worstForced = Math.min(worstForced, left + give(names[a]) + give(names[b]));
+            worstForced = Math.min(worstForced, left + A.give + B.give);
           }
         }
       misses[i] = worst;
       if (worstForced < 0) bad++;
       else if (worst < 0) forced++;
+      if ((i & 255) === 255) yield;
     }
     const rate = bad / ctx.n;
     const modes: ModeRate[] = [];
@@ -609,7 +695,7 @@ function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Arra
     if (rate >= ctx.warnRate) detail += ` In ${pct(rate)} builds a screw will not go through without drilling a hole out.`;
     if (forced / ctx.n >= ctx.noteRate) detail += ` In ${pct(forced / ctx.n)} builds a screw has to be forced through the plastic.`;
     const fix = status === "pass" ? undefined : `Open the clearance holes in ${throughNames.join(" and ")} by about ${mm(Math.max(0.1, -quantile(sorted, 0.002) * 2), 2)} mm, or make one row of holes slots.`;
-    out.push({
+    return {
       key: `pattern|${key}`,
       kind: "screw-pattern",
       title: `Screw pattern lines up: ${screw.name} through ${throughNames.join(" + ")}${threads.length ? ` into ${threads.join(" + ")}` : ""}`,
@@ -626,9 +712,142 @@ function runPatterns(joints: ScrewJoint[], samples: Map<FitInstance, Float64Arra
       axis,
       detail,
       fix,
-    });
+    };
   }
-  return out;
+}
+
+// ---------- what was worked out before ----------
+//
+// A design is checked again after every edit, and most edits leave most of its fits as they were. Each answer is
+// kept under everything it was worked out from, so the next check builds only what changed. An answer found here is
+// the one a fresh run gives, digit for digit, because the draws are seeded by the fit and not by the run.
+//
+// WHATEVER THE STUDY READS MUST BE IN THESE KEYS. A fit's key holds its sizes, roles and print directions, both
+// parts (name, how each is made and of what, whether it moves), the tolerance its drawing calls, how far off line
+// each place is drawn, and the run's settings. Where the fit sits is left out, because its numbers do not depend
+// on it, and is put back from the design in hand. A screw pattern's and a gear mesh's keys also hold where
+// everything sits, and name the draws they read.
+
+const KEPT = 6000;
+const kept = new Map<string, FitOutcome>();
+
+function keep(key: string, o: FitOutcome) {
+  kept.delete(key);
+  kept.set(key, o);
+  if (kept.size > KEPT)
+    for (const k of kept.keys()) {
+      kept.delete(k);
+      if (kept.size <= KEPT) break;
+    }
+}
+
+function recall(key: string): FitOutcome | undefined {
+  const o = kept.get(key);
+  // the ones used last are kept longest
+  if (o) {
+    kept.delete(key);
+    kept.set(key, o);
+  }
+  return o;
+}
+
+/** An answer and the key it was worked out under. */
+export type FitLearned = [key: string, outcome: FitOutcome];
+
+/** Take in answers worked out elsewhere (the fit worker's), so the same question is answered here next time. */
+export function rememberFits(learned: FitLearned[]) {
+  for (const [key, o] of learned) keep(key, o);
+}
+
+/** How many answers are kept. */
+export function fitsKept(): number {
+  return kept.size;
+}
+
+/** Forget every answer kept (for tests, and for measuring a fresh run). */
+export function forgetFits() {
+  kept.clear();
+}
+
+/** A number as it goes into a key: the ones JSON cannot tell apart are spelled out. */
+const num = (x: number): number | string => (Number.isFinite(x) && !Object.is(x, -0) ? x : Object.is(x, -0) ? "-0" : String(x));
+const nums = (v: readonly number[]) => v.map(num);
+
+interface Plan {
+  /** the run's settings, as they go into every key */
+  ctxKey: string;
+  /** the tolerance each round feature's drawing calls */
+  called: Map<Cyl, [number, number] | null>;
+  /** the fit and the place each instance belongs to */
+  owner: Map<FitInstance, { fit: FitDef; index: number }>;
+  /** a key for each of found.fits and found.gears */
+  fits: string[];
+  gears: string[];
+  patterns: { key: string; list: ScrewJoint[]; memo: string }[];
+}
+
+const plans = new WeakMap<FoundFits, Plan>();
+
+/** Reads everything a run of the study depends on into keys. Yields now and then (see fitWork). */
+function* planFor(found: FoundFits, ctx: Ctx): Generator<void, Plan> {
+  const ctxKey = JSON.stringify([ctx.n, nums(ctx.temps), ctx.failRate, ctx.warnRate, ctx.noteRate]);
+  const had = plans.get(found);
+  if (had?.ctxKey === ctxKey) return had;
+  const called = new Map<Cyl, [number, number] | null>();
+  const owner = new Map<FitInstance, { fit: FitDef; index: number }>();
+  // what the study reads of a part, and of a round feature in the part's own frame
+  const parts = new Map<EvalPart, unknown[]>();
+  const partData = (p: EvalPart) => {
+    let d = parts.get(p);
+    if (!d) parts.set(p, (d = [p.id, p.name, p.kind, p.libKind ?? 0, p.material, p.process ?? 0, !!p.motion, p.gear ?? 0, p.fastener ?? 0]));
+    return d;
+  };
+  const cyls = new Map<Cyl, unknown[]>();
+  const cylData = (c: Cyl) => {
+    let d = cyls.get(c);
+    if (!d) {
+      const tol = calledTolerance(ctx.model, c);
+      called.set(c, tol);
+      cyls.set(c, (d = [c.side, num(c.d), num(c.length), nums(c.axisLocal), c.role, c.thread?.name ?? 0, c.holeFit ?? 0, tol ? nums(tol) : 0, partData(c.part)]));
+    }
+    return d;
+  };
+  /** one place's draws: what seeds them and what they are drawn from */
+  const placeData = (inst: FitInstance) => {
+    const o = owner.get(inst);
+    return [o ? [o.fit.key, o.index] : 0, cylData(inst.hole), cylData(inst.shaft), num(inst.ecc)];
+  };
+  const where = (c: Cyl) => [nums(c.at), nums(c.axis)];
+
+  const fits: string[] = [];
+  let since = 0;
+  for (const f of found.fits) {
+    f.instances.forEach((inst, index) => owner.set(inst, { fit: f, index }));
+    fits.push(JSON.stringify(["fit", ctxKey, f.key, f.kind, f.intent, f.title, num(f.nominal), f.instances.map((inst) => [cylData(inst.hole), cylData(inst.shaft), num(inst.ecc)])]));
+    if ((since += f.instances.length) >= 64) {
+      since = 0;
+      yield;
+    }
+  }
+  const gears: string[] = [];
+  for (const g of found.gears) {
+    const chains = gearChains(g, found.fits);
+    const chainData = (c: Chain) => c.map((x) => [x.fit.kind, x.fit.title, placeData(x.inst), where(x.inst.hole), nums(x.inst.at)]);
+    gears.push(JSON.stringify(["gear", ctxKey, g.key, g.title, partData(g.a), partData(g.b), chains ? [chainData(chains.ca), chainData(chains.cb)] : 0]));
+    yield;
+  }
+  const patterns: Plan["patterns"] = [];
+  for (const [key, list] of patternGroups(found.joints)) {
+    const memo = JSON.stringify(["pattern", ctxKey, key, list.map((j) => [partData(j.screw), j.through.map((t) => [placeData(t), where(t.hole), where(t.shaft)]), j.threads.map(partData)])]);
+    patterns.push({ key, list, memo });
+    if ((since += list.length) >= 32) {
+      since = 0;
+      yield;
+    }
+  }
+  const plan: Plan = { ctxKey, called, owner, fits, gears, patterns };
+  plans.set(found, plan);
+  return plan;
 }
 
 // ---------- entry ----------
@@ -638,13 +857,13 @@ export interface FitOptions {
   temps?: number[];
   samples?: number;
   quantity?: number;
+  /** filled with every answer of the run and the key it was worked out under (see rememberFits) */
+  learned?: FitLearned[];
 }
 
-/** Judge every fit, gear mesh and screw pattern over many simulated builds. */
-export function simulateFits(found: FoundFits, model: Model, opts: FitOptions = {}): FitReport {
-  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+function ctxOf(model: Model, opts: FitOptions): Ctx {
   const q = opts.quantity ?? model.brief?.quantity ?? 1;
-  const ctx: Ctx = {
+  return {
     model,
     n: opts.samples ?? SAMPLES,
     temps: opts.temps ?? (model.brief?.temp ? [model.brief.temp[0], model.brief.temp[1]] : []),
@@ -653,13 +872,80 @@ export function simulateFits(found: FoundFits, model: Model, opts: FitOptions = 
     warnRate: q >= 50 ? 0.001 : 0.005,
     noteRate: q >= 50 ? 0.02 : 0.1,
   };
-  const samples = new Map<FitInstance, Float64Array>();
-  const outcomes: FitOutcome[] = found.fits.map((f) => runFit(f, ctx, samples));
-  for (const g of found.gears) {
-    const o = runGear(g, found.fits, samples, ctx, model);
-    if (o) outcomes.push(o);
+}
+
+/** Judge every fit, gear mesh and screw pattern over many simulated builds. */
+export function simulateFits(found: FoundFits, model: Model, opts: FitOptions = {}): FitReport {
+  const work = fitWork(found, model, opts);
+  for (;;) {
+    const step = work.next();
+    if (step.done) return step.value;
   }
-  outcomes.push(...runPatterns(found.joints, samples, ctx));
+}
+
+/**
+ * simulateFits a piece at a time: it yields every few milliseconds of work, so the page can run it between frames
+ * (core/slices.ts) instead of stopping for it. The result is the same either way. Only what no earlier run has
+ * answered is built (see "what was worked out before").
+ */
+export function* fitWork(found: FoundFits, model: Model, opts: FitOptions = {}): Generator<void, FitReport> {
+  const t0 = typeof performance !== "undefined" ? performance.now() : Date.now();
+  const ctx = ctxOf(model, opts);
+  const plan = yield* planFor(found, ctx);
+  const samples = new Draws(plan, ctx);
+  const outcomes: FitOutcome[] = [];
+  const add = (key: string, o: FitOutcome) => {
+    outcomes.push(o);
+    opts.learned?.push([key, o]);
+  };
+  for (let i = 0; i < found.fits.length; i++) {
+    const f = found.fits[i];
+    const had = recall(plan.fits[i]);
+    if (had) {
+      // where it is comes from this design: nothing else in the answer depends on it
+      add(plan.fits[i], { ...had, at: f.instances.map((x) => x.at), axis: f.instances[0].hole.axis });
+      continue;
+    }
+    const o = yield* runFit(f, ctx, samples, plan);
+    keep(plan.fits[i], o);
+    add(plan.fits[i], o);
+  }
+  for (let i = 0; i < found.gears.length; i++) {
+    let o: FitOutcome | null | undefined = recall(plan.gears[i]);
+    if (!o) {
+      o = runGear(found.gears[i], found.fits, samples, ctx);
+      if (o) keep(plan.gears[i], o);
+      yield;
+    }
+    if (o) add(plan.gears[i], o);
+  }
+  for (const p of plan.patterns) {
+    let o: FitOutcome | null | undefined = recall(p.memo);
+    if (!o) {
+      o = yield* runPattern(p.key, p.list, samples, ctx);
+      if (o) keep(p.memo, o);
+    }
+    if (o) add(p.memo, o);
+  }
   const t1 = typeof performance !== "undefined" ? performance.now() : Date.now();
   return { outcomes, samples: ctx.n, temps: ctx.temps, ms: t1 - t0 };
+}
+
+/**
+ * How much of a run is still to work out, in simulated builds of one place (a fit's place counts once for each
+ * temperature it is judged at; a pattern's screw counts for each part it passes through). Nothing: every answer is
+ * kept, and the run is a matter of putting them together.
+ */
+export function* fitWorkLeft(found: FoundFits, model: Model, opts: FitOptions = {}): Generator<void, number> {
+  const ctx = ctxOf(model, opts);
+  const plan = yield* planFor(found, ctx);
+  let left = 0;
+  found.fits.forEach((f, i) => {
+    if (!kept.has(plan.fits[i])) left += f.instances.length * (1 + ctx.temps.length);
+  });
+  found.gears.forEach((_, i) => {
+    if (!kept.has(plan.gears[i])) left += 4;
+  });
+  for (const p of plan.patterns) if (!kept.has(p.memo)) left += p.list.length * (2 + p.list[0].through.length + p.list[0].threads.length);
+  return left;
 }

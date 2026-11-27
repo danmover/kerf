@@ -14,6 +14,10 @@ import "./styles/motion.css";
 import "./styles/theme.css";
 import "./styles/syntax.css";
 import { App } from "./App";
+import { watchStalls } from "./app/stalls";
+
+// every freeze of the page from here on is recorded with what it was doing (Settings, Graphics)
+watchStalls();
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>

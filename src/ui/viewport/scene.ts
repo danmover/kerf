@@ -5,6 +5,7 @@
 // while the view is still, the image refines and then the GPU rests.
 
 import * as THREE from "three";
+import { during, watchGl } from "../../app/stalls";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
 import { driveAngle, motionPose } from "../../core/kinematics";
@@ -29,6 +30,7 @@ import { ARRIVE_MS, DROP_LAND, arrivalKind, dropHeight, fillAt, fillAxis, screwL
 import { edgeSweep, editSweep, type Sweep } from "./editSweep";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { ChangeDepth } from "./render/changeDepth";
+import { readPixelsLater } from "./render/readback";
 import { ContactShadow } from "./render/contactShadow";
 import { FloorMirror, Ground, mirrorPlane, shadowCatcher } from "./render/ground";
 import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
@@ -518,6 +520,8 @@ export class SceneController {
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.classList.add("vp-canvas");
     this.softwareGL = softwareRenderer(this.renderer.getContext());
+    // calls that wait for the graphics card (a shader compile, an image read back) are named in the freeze record
+    watchGl(this.renderer.getContext());
     // a GPU that resets mid-trace must not be sent straight back into it
     this.renderer.domElement.addEventListener("webglcontextlost", () => {
       // dispose() gives the context back on purpose
@@ -703,7 +707,7 @@ export class SceneController {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(loop);
       try {
-        this.frame();
+        during("3D view: drawing a frame", () => this.frame());
         this.failedFrames = 0;
       } catch (e) {
         this.frameFailed(e);
@@ -3454,6 +3458,9 @@ export class SceneController {
     this.finishEffects();
     // an exploded capture: every part where the plan puts it at that amount, framed to fit
     const unexploded = opts.explode !== undefined ? this.poseExploded(opts.explode) : null;
+    const px = new Uint8Array(opts.width * opts.height * 4);
+    // the image is read back after the view is put back as it was: the page is not held while the card draws it
+    let read: Promise<void>;
     try {
       this.camera.aspect = opts.width / opts.height;
       let box: THREE.Box3 | undefined = opts.box ? new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])) : undefined;
@@ -3514,9 +3521,7 @@ export class SceneController {
       this.renderer.setRenderTarget(out);
       if (showOverlays) this.overlayDepth();
       this.renderer.render(this.overlay, this.camera);
-      const px = new Uint8Array(opts.width * opts.height * 4);
-      this.renderer.readRenderTargetPixels(out, 0, 0, opts.width, opts.height, px);
-      return toDataUrl(px, opts.width, opts.height, opts.mime ?? "image/png", opts.quality ?? 0.9);
+      read = readPixelsLater(this.renderer, opts.width, opts.height, px);
     } finally {
       pipe.dispose();
       out.dispose();
@@ -3544,6 +3549,8 @@ export class SceneController {
       this.controls.update();
       this.changed = true;
     }
+    await read;
+    return toDataUrl(px, opts.width, opts.height, opts.mime ?? "image/png", opts.quality ?? 0.9);
   }
 
   /** Move the camera along its line of sight until the box's corners fill the frame (captures only). */
