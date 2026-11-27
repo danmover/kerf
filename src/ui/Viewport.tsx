@@ -247,7 +247,7 @@ export function Viewport() {
     };
     registerViewport({
       capture: (o) => c.capture(o),
-      thumbnail: (o) => c.thumbnail(o),
+      captureBetweenFrames: (o) => c.captureBetweenFrames(o),
       swatch: (m, f, col, size) => c.swatch(m, f, col, size),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),

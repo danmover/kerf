@@ -88,11 +88,12 @@ export interface FilmView {
 export interface ViewportApi {
   capture(opts: CaptureOptions): Promise<string>;
   /**
-   * A small picture of the whole model from the standard corner, for a list of designs. Unlike capture() the page is
-   * not held for it: it is drawn a sample at a time between frames, once the view is at rest. Null when another was
-   * asked for meanwhile or the view went.
+   * A picture of the plain model as capture() draws it, without the page being held for it: one sample a frame
+   * after the view's own, from a camera of its own. The view goes first for `patience` ms (500 unless given), and
+   * after that the picture is drawn alongside it. A later one with the same `key` takes the place of one still
+   * waiting. Null when its place was taken, it is no longer `wanted`, or the view went.
    */
-  thumbnail(opts: { width: number; height: number; mime?: string; quality?: number; samples?: number }): Promise<string | null>;
+  captureBetweenFrames(opts: { view: ViewPreset | "current"; width: number; height: number; box?: Box; dir?: Vec3; mime?: string; quality?: number; samples?: number; key?: string; wanted?: () => boolean; patience?: number }): Promise<string | null>;
   /** a rendered ball of a material under the current lighting (data URL, transparent background), when the graphics card has drawn it */
   swatch(material: string, finish: string | undefined, color: string, size?: number): Promise<string>;
   /** show a material on parts without changing the design; null restores them */

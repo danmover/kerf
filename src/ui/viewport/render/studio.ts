@@ -472,6 +472,25 @@ export class StudioEnvironments {
   }
 }
 
+/**
+ * Where each shadow-casting light stands for sample `i` of a picture, as the sample of its own disc (0: its centre):
+ * the key first, then each of `casters` casters. Alone, the key takes a new place at every sample. With casters it
+ * moves at even samples and the casters take turns at odd ones, so one shadow map is drawn anew per sample and each
+ * light walks its own samples 1, 2, 3... however many share the picture's.
+ *
+ * It is every light's place at that sample, not only the one that moved for it: pictures drawn in turn (the view's
+ * own and one drawn between its frames) then each find the lights where their own samples have them, whatever the
+ * other left behind.
+ */
+export function lightSteps(i: number, casters: number): number[] {
+  if (casters <= 0) return [i];
+  // the casters' turns so far, counted from 0 (none before the first odd sample)
+  const turns = ((i + 1) >> 1) - 1;
+  const at = [i >> 1];
+  for (let k = 0; k < casters; k++) at.push(turns >= k ? Math.floor((turns - k) / casters) + 1 : 0);
+  return at;
+}
+
 /** Low-discrepancy sequence used for jitter: light positions, sub-pixel offsets, AO rotation. */
 export function halton(i: number, base: number): number {
   let f = 1;

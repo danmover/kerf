@@ -219,8 +219,8 @@ function useThumbnails() {
       if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
-        // drawn between frames once the view is at rest: the page is not held for it
-        const url = await vp.thumbnail({ width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12 });
+        // drawn between frames once the view is at rest, however long that takes: the page is not held for it
+        const url = await vp.captureBetweenFrames({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12, key: "thumbnail", patience: Infinity, wanted: () => useDesign.getState().rev === rev });
         // none: the design moved on meanwhile, and its next settled rebuild asks again
         if (!url || useDesign.getState().rev !== rev || useProject.getState().preview) return;
         last.current = rev;

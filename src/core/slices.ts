@@ -7,11 +7,15 @@ const waiting: (() => void)[] = [];
 /** how long the page took over its own turn the last time it was given one, and when that was */
 let pageMs = 0;
 let pageAt = -Infinity;
+/** pieces of work that have let the page have its turn and not been given theirs back yet */
+let paused = 0;
 
 /** Let the page handle what is waiting for it (input, a frame), then carry on. */
 export function breathe(): Promise<void> {
   const asked = performance.now();
+  paused++;
   const back = (ok: () => void) => () => {
+    paused--;
     pageAt = performance.now();
     pageMs = pageAt - asked;
     ok();
@@ -29,6 +33,15 @@ export function breathe(): Promise<void> {
     });
   }
   return new Promise((ok) => setTimeout(back(ok), 0));
+}
+
+/**
+ * True while work done a piece at a time is waiting for the page to have had its turn. What the page chooses to do
+ * with that turn holds the work up for as long: something that can as well be done a moment later (making a still
+ * picture finer) is better left until this says false.
+ */
+export function workWaiting(): boolean {
+  return paused > 0;
 }
 
 /** How long the page took over its last turn, if that was in the last couple of seconds (else 0: not known to be slow). */

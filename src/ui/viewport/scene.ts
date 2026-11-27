@@ -15,6 +15,8 @@ import { RopeLine } from "./ropeLine";
 import { ropeLineAt } from "../../machine/ropes";
 import type { RopeNode } from "../../machine/types";
 import type { MeshEntry } from "../../core/engine";
+import { workWaiting } from "../../core/slices";
+import { shotTurn, type ShotWaiting } from "./shotTurn";
 import { closeEnough, pickMesh, threadPitch } from "./threadLod";
 import { prepareRay } from "./fastPick";
 import type { MeshData } from "../../kernel/build";
@@ -33,7 +35,7 @@ import { ChangeDepth } from "./render/changeDepth";
 import { readPixelsLater } from "./render/readback";
 import { ContactShadow } from "./render/contactShadow";
 import { FloorMirror, Ground, mirrorPlane, shadowCatcher } from "./render/ground";
-import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
+import { StudioEnvironments, concentricDisc, dirFrom, halton, lightSteps, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
 import { MeasureOverlay } from "./measure";
@@ -77,6 +79,10 @@ const meshTolerance = (geoKey: string) => (geoKey.endsWith(":preview") ? 0.25 : 
 const SWATCH_MATS_MAX = 96;
 /** The picture is held this long (ms) for shaders being built before the page says so: most builds are quicker. */
 const SHADERS_TOLD_AFTER = 400;
+/** How long a picture drawn between frames waits for the view to come to rest, unless told otherwise, ms. */
+const SHOT_PATIENCE_MS = 500;
+/** The longest the view's picture goes without a sample while work done a piece at a time is waiting for the page's turn, ms. */
+const SAMPLE_WAIT_MS = 250;
 /** what the freeze record calls drawing a material ball */
 const SWATCH_WORK = "3D view: a material swatch";
 
@@ -178,17 +184,23 @@ export interface PartSurface {
   geometry: THREE.BufferGeometry;
 }
 
-/** A small picture on its way: drawn a sample at a time between the view's frames (see SceneController.thumbnail). */
-interface Thumb {
+/** A picture on its way that the page is not held for: drawn a sample at a time between the view's frames (see SceneController.captureBetweenFrames). */
+interface Shot extends ShotWaiting {
+  view: ViewPreset | "current";
   width: number;
   height: number;
+  /** what is framed (the whole model when none) and from which side (the view's own when none) */
+  box?: THREE.Box3;
+  dir?: THREE.Vector3;
   samples: number;
   mime: string;
   quality: number;
+  /** a later picture with the same key takes this one's place */
+  key?: string;
+  /** false once nobody wants the picture any more */
+  wanted?: () => boolean;
   /** where it is drawn from; null until its first sample */
   cam: THREE.PerspectiveCamera | null;
-  /** the model its samples so far are of (the scene's shadowStamp) */
-  stamp: number;
   done: (url: string | null) => void;
 }
 
@@ -474,9 +486,14 @@ export class SceneController {
   private raycaster = new THREE.Raycaster();
   private selAmt = 0;
   private swatchPipe: RenderPipeline | null = null;
-  /** a small picture being drawn a sample at a time between the view's frames (see thumbnail) */
-  private thumb: Thumb | null = null;
-  private thumbPipe: RenderPipeline | null = null;
+  /** pictures being drawn a sample at a time between the view's frames, the first in the list first (see captureBetweenFrames) */
+  private shots: Shot[] = [];
+  private shotPipe: RenderPipeline | null = null;
+  /** when the view's picture last got a sample, and a picture drawn between frames last got one */
+  private sampledAt = 0;
+  private shotAt = 0;
+  /** rounded edges arrived since the last frame (bevelReady) */
+  private edgesCame = false;
   /** the camera the bevels' width and the floor's mirror were last set for (see beforeSample) */
   private viewOf: THREE.Camera | null = null;
   /** selection fill, faded out while materials are being chosen so parts show their true colour */
@@ -804,8 +821,8 @@ export class SceneController {
     this.pipe.dispose();
     this.contact.dispose();
     this.swatchPipe?.dispose();
-    this.thumb?.done(null);
-    this.thumbPipe?.dispose();
+    for (const t of [...this.shots]) t.done(null);
+    this.shotPipe?.dispose();
     for (const m of [...this.retired, ...this.swatchMats.values()]) m.dispose();
     this.swatchStage?.ball.geometry.dispose();
     this.swatchStage?.backdrop.traverse((o) => {
@@ -857,6 +874,8 @@ export class SceneController {
     this.envs.forget();
     this.applyLighting(false);
     this.maskDirty = true;
+    // what was drawn of a picture between frames went with the context: each starts again
+    for (const t of this.shots) t.cam = null;
   }
 
   /**
@@ -990,23 +1009,21 @@ export class SceneController {
 
   /**
    * Position the shadow-casting lights for sample i: each at its centre for i = 0, then spread over its area. With
-   * casters, the key moves on even samples and the casters take turns on odd ones (the others stay put, their shadow
-   * maps still good), so each sample redraws one shadow map as before.
+   * casters, the key moves on even samples and the casters take turns on odd ones (lightSteps), so each sample
+   * redraws one shadow map: a light put where it already stands keeps its map (prepareShadows). Every light is
+   * placed, not only the one whose turn it is: a picture drawn between the view's frames has its own samples, and
+   * each of the two would otherwise be lit in part by where the other's last sample left the lights.
    */
   private placeKey(i: number) {
-    const n = this.casters.length;
-    // each light walks its own disc samples 1, 2, 3...: well spread however many lights share the samples
-    this.placeLight(this.key, this.keyDir, this.preset.key.size, i === 0 ? 0 : n === 0 ? i : i % 2 === 0 ? i / 2 : -1);
-    const odd = i > 0 && i % 2 === 1;
-    const turn = odd ? ((i - 1) / 2) % n : -1;
-    const step = odd ? Math.floor((i - 1) / 2 / n) + 1 : 0;
+    const at = lightSteps(i, this.casters.length);
+    this.placeLight(this.key, this.keyDir, this.preset.key.size, at[0]);
     const sizes = this.preset.casters ?? [];
-    this.casters.forEach((l, k) => this.placeLight(l, this.casterDirs[k], sizes[k]?.size ?? 10, i === 0 ? 0 : turn === k ? step : -1));
+    this.casters.forEach((l, k) => this.placeLight(l, this.casterDirs[k], sizes[k]?.size ?? 10, at[k + 1]));
   }
 
-  /** Put a light at sample `i` of its disc of angular radius `sizeDeg` (0: its centre; -1: leave it where it is). */
+  /** Put a light at sample `i` of its disc of angular radius `sizeDeg` (0: its centre). */
   private placeLight(l: THREE.DirectionalLight, dir: THREE.Vector3 | undefined, sizeDeg: number, i: number) {
-    if (i < 0 || !dir) return;
+    if (!dir) return;
     const size = Math.max(this.bounds.getSize(new THREE.Vector3()).length(), 20);
     const c = this.bounds.getCenter(new THREE.Vector3());
     const d = dir.clone();
@@ -1387,7 +1404,7 @@ export class SceneController {
     if (!g || this.disposed) return;
     g.bevel = bands ? bevelGeometry(bands) : null;
     for (const obj of this.parts.values()) if (obj.geoKey === key) this.attachBevel(obj);
-    this.changed = true;
+    this.edgesCame = true;
   }
 
   /** Give a part its mesh's rounded edges (hidden until they are found, and while the part is see-through). */
@@ -3106,6 +3123,13 @@ export class SceneController {
       this.contact.dirty = true;
       this.shadowStamp++;
     }
+    // Rounded edges found since the last frame: the view's picture starts again with them. They cast no shadow, so
+    // the shadows stay as drawn, and so does a picture being drawn between frames (the edges of a large assembly
+    // arrive a mesh at a time for seconds, and it would start again at each).
+    if (this.edgesCame) {
+      this.edgesCame = false;
+      this.changed = true;
+    }
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
     this.camera.updateMatrixWorld();
@@ -3143,14 +3167,31 @@ export class SceneController {
     // which is seconds for the parts' shader with Direct3D (see ShaderGate).
     if ((this.changed || this.needComposite || this.shadersHeld !== null) && !this.shadersBuilt(now)) return;
     // and a draw the card turns out not to be ready for is left out of the frame: such a frame is not shown
+    let whole = this.drawWatched(now, frameMs, dt);
+    // When the card had the shader for what was left out all along (a new part, drawn with shaders other parts are
+    // drawn with), there is nothing to wait for: the frame is drawn again here, whole, instead of the picture
+    // missing a turn. While a design is built, a part arrives at most frames.
+    if (!whole && this.pipe.ready(this.scene, this.camera, this.overlay)) {
+      this.changed = true;
+      this.contact.dirty = true;
+      this.shadowStamp++;
+      whole = this.drawWatched(now, frameMs, 0);
+    }
+    if (!whole) this.shadersHeld ??= now;
+    // the view has had its turn: a picture waiting to be drawn between frames gets a sample
+    if (this.shots.length) this.stepShots(now);
+  }
+
+  /** Draws a frame of the live view with every draw the card is not ready for left out. False when any was: the frame was not shown. */
+  private drawWatched(now: number, frameMs: number, dt: number): boolean {
+    let partial = true;
     this.pipe.frameBegins();
     try {
       this.draw(now, frameMs, dt);
     } finally {
-      if (this.pipe.frameDrawn()) this.shadersHeld ??= now;
+      partial = this.pipe.frameDrawn();
     }
-    // the view has had its turn: a small picture waiting to be drawn gets a sample when the view is at rest
-    if (this.thumb) this.stepThumbnail(this.thumb);
+    return !partial;
   }
 
   /** Draw what is due of the live view: the next sample of the image, the selection's mask, the picture on screen. */
@@ -3198,7 +3239,13 @@ export class SceneController {
     // under the photoreal view the interactive image is only a preview
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
     let rastered = false;
-    if (this.pipe.samples < rasterMax) {
+    // Every sample makes the picture finer. With a picture on screen, the next one waits a moment while work done a
+    // piece at a time is waiting for the page's turn (the checks after an edit): each sample drawn then holds that
+    // work up for as long as a frame takes, which on a large design is most of the time. Never for long: the
+    // picture gets a sample a few times a second whatever is waiting.
+    const later = this.pipe.samples >= 1 && workWaiting() && now - this.sampledAt < SAMPLE_WAIT_MS;
+    if (this.pipe.samples < rasterMax && !later) {
+      this.sampledAt = now;
       this.pipe.lens = this.lens;
       this.pipe.renderSample(this.scene, this.camera, (i) => {
         this.beforeSample(i);
@@ -3664,51 +3711,112 @@ export class SceneController {
   }
 
   /**
-   * A small picture of the whole model from the standard corner, for a list of designs: what capture() draws for
-   * { view: "iso", overlays: false }, without the page being held for it. capture() draws all its samples in one go,
-   * which for a large assembly is half a second in which nothing else moves, and the view starts its own picture
-   * again after. This waits until the view has finished its picture and nothing in it moves, then draws one sample
-   * a frame from a camera of its own; when the model changes on the way, it starts again from the model as it then
-   * is. Null when another was asked for meanwhile, or the view went. Where it cannot be drawn this way (the
-   * photoreal look is on, or results are drawn over the parts), it is drawn at once as capture() does.
+   * A picture of the plain model that the page is not held for: what capture() draws for the same view, size, box
+   * and direction with { overlays: false }. capture() draws all its samples in one go, which for a large assembly
+   * is half a second or more in which nothing else moves, and the view starts its own picture again after. This
+   * draws one sample a frame, after the view's own, from a camera of its own; the view and its camera are left as
+   * they are. The view goes first: for `patience` ms the picture waits until the view has finished its own and
+   * nothing in it moves, and after that it is drawn alongside (a view being turned stays live, at a lower frame
+   * rate for as long as the picture takes). When anything but the camera changes on the way, it starts again from
+   * the scene as it then is (rounded edges arriving do not count: they cast no shadow and it carries on), and when
+   * that has gone on for two seconds (a mechanism playing) it is drawn at once of the scene as it is. Several are
+   * drawn in the order they were asked for, one that has begun before the next, and one with the `key` of another
+   * still waiting takes its place. Null when its place was taken, it is no longer `wanted`, or the view went.
+   * Where it cannot be drawn this way (the photoreal look is on, or results are drawn in place of parts), it is
+   * drawn at once as capture() does.
    */
-  async thumbnail(opts: { width: number; height: number; mime?: string; quality?: number; samples?: number }): Promise<string | null> {
+  async captureBetweenFrames(opts: { view: ViewPreset | "current"; width: number; height: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; mime?: string; quality?: number; samples?: number; key?: string; wanted?: () => boolean; patience?: number }): Promise<string | null> {
     await this.whenLit();
     if (this.disposed || this.contextLost) return null;
-    this.thumb?.done(null);
-    if (this.photoLookOn || this.overlays.size || this.filming) return this.capture({ view: "iso", width: opts.width, height: opts.height, mime: opts.mime, quality: opts.quality, samples: opts.samples, overlays: false });
+    if (opts.wanted && !opts.wanted()) return null;
+    if (opts.key !== undefined) for (const t of this.shots.filter((t) => t.key === opts.key)) t.done(null);
     return new Promise((resolve) => {
-      const t: Thumb = {
+      const t: Shot = {
+        view: opts.view,
         width: opts.width,
         height: opts.height,
-        samples: opts.samples ?? 12,
+        box: opts.box && new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])),
+        dir: opts.dir && new THREE.Vector3(...opts.dir),
+        samples: opts.samples ?? Math.max(16, Math.min(96, this.pipe.maxSamples)),
         mime: opts.mime ?? "image/png",
         quality: opts.quality ?? 0.9,
+        key: opts.key,
+        wanted: opts.wanted,
+        patience: opts.patience ?? SHOT_PATIENCE_MS,
+        asked: performance.now(),
+        begun: 0,
         cam: null,
         stamp: -1,
         done: (url) => {
-          if (this.thumb === t) this.thumb = null;
+          const i = this.shots.indexOf(t);
+          if (i >= 0) this.shots.splice(i, 1);
           resolve(url);
         },
       };
-      this.thumb = t;
+      this.shots.push(t);
+      // a film has the renderer and no frames are drawn; the picture is drawn at once, as before
+      if (this.filming) this.shotAtOnce(t);
     });
   }
 
-  /** One sample of the small picture, when the view has nothing of its own to draw; after the last, the picture is read back. */
-  private stepThumbnail(t: Thumb) {
-    if (this.photoLookOn || this.overlays.size) return t.done(null);
-    // the view first: its own picture finished, nothing moving or arriving, nothing waiting for the card
-    if (this.changed || this.shadersHeld !== null || this.pipe.samples < this.pipe.maxSamples || this.effectsRunning()) return;
+  /** Whether anything drawn over the parts stands in for some of them: a picture of the plain model then needs them put back, which capture() does. */
+  private overlaysReplace(): boolean {
+    for (const o of this.overlays) if (o.replaces.size) return true;
+    return false;
+  }
+
+  /** A picture that cannot be drawn between frames, drawn in one go as capture() does. */
+  private shotAtOnce(t: Shot) {
+    const i = this.shots.indexOf(t);
+    if (i >= 0) this.shots.splice(i, 1);
+    const box = t.box && ([t.box.min.toArray(), t.box.max.toArray()] as [[number, number, number], [number, number, number]]);
+    this.capture({ view: t.view, width: t.width, height: t.height, box, dir: t.dir?.toArray(), mime: t.mime, quality: t.quality, samples: t.samples, overlays: false }).then(t.done, () => t.done(null));
+  }
+
+  /** One sample of a picture being drawn between frames: of the first in line whose turn it is. After its last, the picture is read back. */
+  private stepShots(now: number) {
+    for (const t of [...this.shots]) if (t.wanted && !t.wanted()) t.done(null);
+    if (!this.shots.length) return;
+    // none can be drawn this way now: each is drawn in one go, as it used to be
+    if (this.photoLookOn || this.overlaysReplace()) {
+      for (const t of [...this.shots]) this.shotAtOnce(t);
+      return;
+    }
+    // nothing is drawn while the card builds what the view needs
+    if (this.shadersHeld !== null) return;
+    // The view first: its own picture finished, nothing moving or arriving. Each picture gives it so long
+    // (shotTurn).
+    const moving = this.effectsRunning();
+    const busy = moving || this.changed || this.pipe.samples < this.pipe.maxSamples;
+    const turn = shotTurn(this.shots, busy, now, this.shadowStamp);
+    if (!turn) return;
+    const t = turn.shot;
+    if (moving) {
+      // as capture() does: what is still arriving or changing ends, and the picture starts from the scene after
+      this.finishEffects();
+      this.changed = true;
+      return;
+    }
+    // and work waiting for the page's turn goes first too, as it does before the view's own samples
+    if (workWaiting() && now - this.shotAt < SAMPLE_WAIT_MS) return;
+    this.shotAt = now;
     const r = this.renderer;
-    const pipe = (this.thumbPipe ??= new RenderPipeline(r));
+    const pipe = (this.shotPipe ??= new RenderPipeline(r));
+    // the scene keeps changing under it (a mechanism playing): in one go of the scene as it is now, as it used to be
+    if (turn.atOnce) {
+      this.shotAtOnce(t);
+      return;
+    }
+    t.begun ||= now;
     if (!t.cam || t.stamp !== this.shadowStamp) {
-      // the first sample, or the model changed since the last one: from the start, framed on the model as it is now
+      // the first sample, or the scene changed since the last one: from the start, framed on the model as it is now
       t.stamp = this.shadowStamp;
-      t.cam = this.cornerCamera(t.width / t.height);
+      t.cam = this.cameraFor(t.view, t.width / t.height, t.box, t.dir);
       pipe.setSize(t.width, t.height, 1);
       Object.assign(pipe.look, this.pipe.look);
       pipe.reset();
+      // (they share the one set of buffers: another that had begun begins again when its turn comes)
+      for (const o of this.shots) if (o !== t) o.cam = null;
     }
     const cam = t.cam;
     try {
@@ -3720,9 +3828,16 @@ export class SceneController {
       try {
         pipe.composite(out, { time: 0 });
         r.setRenderTarget(out);
-        r.render(this.overlay, cam);
-        // read back in the card's own time; no more samples meanwhile
-        this.thumb = null;
+        // the view's own marks, without what is drawn over the parts (cables, results)
+        const over = [...this.overlays].filter((o) => o.object.visible);
+        for (const o of over) o.object.visible = false;
+        try {
+          r.render(this.overlay, cam);
+        } finally {
+          for (const o of over) o.object.visible = true;
+        }
+        // read back in the card's own time; the next in line is drawn meanwhile
+        this.shots.splice(this.shots.indexOf(t), 1);
         readPixelsLater(r, t.width, t.height, px).then(
           () => t.done(toDataUrl(px, t.width, t.height, t.mime, t.quality)),
           () => t.done(null),
@@ -3740,14 +3855,14 @@ export class SceneController {
     }
   }
 
-  /** A camera of its own at the standard corner view with the whole model in frame, as capture() frames it. The view's camera is left as it was. */
-  private cornerCamera(aspect: number): THREE.PerspectiveCamera {
+  /** A camera of its own that frames `box` (the whole model when none) as capture() frames it for that view. The view's camera is left as it was. */
+  private cameraFor(view: ViewPreset | "current", aspect: number, box?: THREE.Box3, dir?: THREE.Vector3): THREE.PerspectiveCamera {
     const live = this.camera;
     const was = { pos: live.position.clone(), quat: live.quaternion.clone(), aspect: live.aspect };
     try {
       live.aspect = aspect;
-      const { pos, target } = this.framing("iso", aspect);
-      live.position.copy(this.tighten(pos, target, this.bounds));
+      const { pos, target } = this.framing(view, aspect, box, dir);
+      live.position.copy(this.tighten(pos, target, box ?? this.bounds));
       live.lookAt(target);
       live.updateProjectionMatrix();
       live.updateMatrixWorld();

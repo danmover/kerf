@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inSlices, pacer, sliceAfter } from "../src/core/slices";
+import { inSlices, pacer, sliceAfter, workWaiting } from "../src/core/slices";
 
 // Work done a few milliseconds at a time, so the page can draw and answer in between.
 
@@ -33,6 +33,14 @@ describe("work in slices", () => {
     expect(await job).toBeNull();
     // and leaves the rest undone
     expect(work.next().done).toBe(false);
+  });
+
+  it("says when work is waiting for the page to have had its turn", async () => {
+    expect(workWaiting()).toBe(false);
+    const job = inSlices(count(40, 1), () => true, 2);
+    expect(workWaiting()).toBe(true);
+    await job;
+    expect(workWaiting()).toBe(false);
   });
 
   it("does work that fits in one stretch at once, with no pause", () => {
