@@ -228,7 +228,7 @@ export function Dock({ projectKey }: { projectKey: string }) {
       {open && (
         <div className="dock-body">
           <div className={`dock-file ${current === "code" ? "shown" : ""}`} style={{ display: current === "code" ? "block" : "none", position: "absolute", inset: 0 }}>
-            <CodeEditor key={projectKey} />
+            <CodeEditor key={projectKey} shown={current === "code"} />
           </div>
           {!def.file && (
             <div key={current} className="dock-pane">
