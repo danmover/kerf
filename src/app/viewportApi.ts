@@ -87,8 +87,8 @@ export interface FilmView {
 
 export interface ViewportApi {
   capture(opts: CaptureOptions): Promise<string>;
-  /** a rendered ball of a material under the current lighting (data URL, transparent background) */
-  swatch(material: string, finish: string | undefined, color: string, size?: number): string;
+  /** a rendered ball of a material under the current lighting (data URL, transparent background), when the graphics card has drawn it */
+  swatch(material: string, finish: string | undefined, color: string, size?: number): Promise<string>;
   /** show a material on parts without changing the design; null restores them */
   preview(ids: string[], look: { material: string; finish?: string; color: string } | null): void;
   /** the material picker is open: show selected parts in their true colours */

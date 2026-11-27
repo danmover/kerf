@@ -244,7 +244,7 @@ export function Viewport() {
     };
     registerViewport({
       capture: (o) => c.capture(o),
-      swatch: (m, f, col, size) => during("3D view: a material swatch", () => c.swatch(m, f, col, size)),
+      swatch: (m, f, col, size) => c.swatch(m, f, col, size),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),
       bounds: () => c.modelBounds(),

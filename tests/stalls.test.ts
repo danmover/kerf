@@ -1,5 +1,5 @@
 import { beforeEach, describe, expect, it } from "vitest";
-import { clearStalls, during, noteWork, onStall, recordStallForTest, STALL_MS, stallReport, stallSummary, watchStalls } from "../src/app/stalls";
+import { BROWSER_WORK, clearStalls, during, noteWork, onStall, recordStallForTest, STALL_MS, stallReport, stallSummary, watchStalls } from "../src/app/stalls";
 
 // The freeze record: every stretch where the page stopped answering, and what Kerf was doing in it.
 
@@ -17,7 +17,7 @@ describe("the freeze record", () => {
     during("checks: fits", () => spin(30));
     during("3D view: drawing a frame", () => spin(8));
     const end = performance.now();
-    recordStallForTest(start, end - start + 80);
+    recordStallForTest(start, end - start + 20);
     const s = stallSummary();
     expect(s.count).toBe(1);
     expect(s.recent[0].work.map((w) => w.name)).toEqual(["checks: fits", "3D view: drawing a frame"]);
@@ -75,6 +75,32 @@ describe("the freeze record", () => {
     expect(s.longestMs).toBe(400);
   });
 
+  it("knows a stretch again when its longer account comes after others", () => {
+    // two long tasks, then the long frame the first was part of
+    recordStallForTest(1000, 300);
+    recordStallForTest(1600, 200);
+    recordStallForTest(990, 330);
+    const s = stallSummary();
+    expect(s.count).toBe(2);
+    expect(s.recent.map((x) => [x.at, x.ms])).toEqual([
+      [990, 330],
+      [1600, 200],
+    ]);
+    // one that only brushes another is its own freeze
+    recordStallForTest(1790, 400);
+    expect(stallSummary().count).toBe(3);
+  });
+
+  it("does not blame a freeze on work that was a sliver of it", () => {
+    const start = performance.now();
+    during("3D view: drawing a frame", () => spin(6));
+    recordStallForTest(start, 600);
+    const s = stallSummary();
+    expect(s.causes[0].name).toBe(BROWSER_WORK);
+    // the sliver is still in the record, for whoever reads it
+    expect(s.recent[0].work[0].name).toBe("3D view: drawing a frame");
+  });
+
   it("keeps counting past what it keeps", () => {
     for (let i = 0; i < 260; i++) recordStallForTest(i * 1000, 120);
     const s = stallSummary();
@@ -94,7 +120,7 @@ describe("the freeze record", () => {
 
   it("writes a record that can be pasted into a message", () => {
     const start = performance.now();
-    during("checks: fits", () => spin(12));
+    during("checks: fits", () => spin(170));
     recordStallForTest(start, 640);
     recordStallForTest(start + 20_000, 130);
     const text = stallReport(["Graphics: test card"]);
@@ -103,7 +129,8 @@ describe("the freeze record", () => {
     expect(lines[1]).toBe("Graphics: test card");
     expect(text).toContain("By cause:");
     expect(text).toMatch(/checks: fits: 1 time, 640 ms in all/);
-    expect(text).toMatch(/not named: 1 time, 130 ms in all/);
+    // nothing of Kerf's ran in the second one: the browser's own work
+    expect(text).toContain(`${BROWSER_WORK}: 1 time, 130 ms in all`);
     expect(text).toMatch(/640 ms {2}checks: fits \d+ ms/);
   });
 

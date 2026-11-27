@@ -75,6 +75,8 @@ const VISIT_BACK_MS = 800;
 const meshTolerance = (geoKey: string) => (geoKey.endsWith(":preview") ? 0.25 : 0.03);
 /** How many material-ball materials are kept */
 const SWATCH_MATS_MAX = 96;
+/** what the freeze record calls drawing a material ball */
+const SWATCH_WORK = "3D view: a material swatch";
 
 interface GeoEntry {
   mesh: THREE.BufferGeometry;
@@ -459,6 +461,9 @@ export class SceneController {
   private turntable = false;
   private lightDrag: { x: number; angle: number } | null = null;
   private swatchCache = new Map<string, string>();
+  /** balls being drawn, by what they will be kept as, and the line they wait in */
+  private swatchJobs = new Map<string, Promise<string>>();
+  private swatchLine: Promise<unknown> = Promise.resolve();
   /** the material ball's scene, built once */
   private swatchStage: { scene: THREE.Scene; ball: THREE.Mesh; key: THREE.DirectionalLight; backdrop: THREE.Group; cam: THREE.PerspectiveCamera } | null = null;
   /** one ball material per look, kept so each look's shader compiles once */
@@ -3992,15 +3997,32 @@ export class SceneController {
     return mat;
   }
 
-  /** A rendered ball of a material under the current lighting, as a data URL with a transparent background. */
-  swatch(material: string, finish: string | undefined, color: string, size = 96): string {
+  /**
+   * A rendered ball of a material under the current lighting, as a data URL with a transparent background. The page
+   * is not held for the graphics card: the ball's shader is built and the image read back in the card's own time.
+   * Balls are drawn one at a time, since they share a stage, and a card handed a dozen at once holds up the view.
+   */
+  swatch(material: string, finish: string | undefined, color: string, size = 96): Promise<string> {
     const look = appearanceFor(material, finish, color);
     const key = `${look.key}|${this.preset.id}|${size}`;
     const hit = this.swatchCache.get(key);
-    if (hit) return hit;
-    const r = this.renderer;
+    if (hit) return Promise.resolve(hit);
+    let job = this.swatchJobs.get(key);
+    if (!job) {
+      const mine = this.swatchLine.then(() => this.drawSwatch(look, size));
+      const over = () => {
+        if (this.swatchJobs.get(key) === mine) this.swatchJobs.delete(key);
+      };
+      this.swatchLine = mine.then(over, over);
+      this.swatchJobs.set(key, (job = mine));
+    }
+    return job;
+  }
+
+  /** The ball on its stage, lit as the view is now. */
+  private poseSwatch(look: Appearance) {
     const st = this.stageSwatch();
-    const { scene, ball, cam } = st;
+    const { scene, ball } = st;
     scene.environment = this.scene.environment;
     scene.environmentIntensity = this.scene.environmentIntensity;
     scene.environmentRotation.copy(this.scene.environmentRotation);
@@ -4010,37 +4032,73 @@ export class SceneController {
     // same angle to the camera as the key light has to the default view
     st.key.position.copy(dirFrom(this.preset.key.az - 36, this.preset.key.el)).multiplyScalar(50);
     st.backdrop.visible = look.transmission > 0;
+    return st;
+  }
+
+  private async drawSwatch(look: Appearance, size: number): Promise<string> {
+    const gone = () => {
+      if (this.disposed || this.contextLost) throw new Error("The 3D view is not there to draw a material in");
+    };
+    gone();
+    const r = this.renderer;
     // one small pipeline reused for every swatch, and kept: its shaders compile once
     const pipe = (this.swatchPipe ??= new RenderPipeline(r));
-    Object.assign(pipe.look, this.pipe.look);
-    pipe.look.ao = 0;
-    pipe.look.bloom = 0;
     pipe.setSize(size, size, 1);
-    pipe.reset();
-    const out = new THREE.WebGLRenderTarget(size, size, { type: THREE.UnsignedByteType, depthBuffer: false });
-    try {
-      for (let i = 0; i < 12; i++) pipe.renderSample(scene, cam);
-      pipe.composite(out, { transparent: !look.transmission });
-      const px = new Uint8Array(size * size * 4);
-      r.readRenderTargetPixels(out, 0, 0, size, size, px);
-      if (look.transmission > 0) {
-        // clear materials render over a backdrop to show refraction; cut that back to the ball
-        const rad = (Math.tan(Math.asin(10 / cam.position.length())) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2))) * (size / 2);
-        for (let y = 0; y < size; y++)
-          for (let x = 0; x < size; x++) {
-            const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
-            const i = (y * size + x) * 4 + 3;
-            px[i] = Math.round(px[i] * Math.min(1, Math.max(0, rad - d + 0.5)));
-          }
+    await this.shadersBuilt(
+      during(SWATCH_WORK, () => {
+        const { scene, cam } = this.poseSwatch(look);
+        return pipe.compile(scene, cam);
+      }),
+    );
+    gone();
+    // the lighting may have changed while the shader was built: the ball is lit, and kept, as the view is now
+    const key = `${look.key}|${this.preset.id}|${size}`;
+    const hit = this.swatchCache.get(key);
+    if (hit) return hit;
+    const { scene, cam } = this.poseSwatch(look);
+    const px = new Uint8Array(size * size * 4);
+    await during(SWATCH_WORK, () => {
+      Object.assign(pipe.look, this.pipe.look);
+      pipe.look.ao = 0;
+      pipe.look.bloom = 0;
+      pipe.reset();
+      const out = new THREE.WebGLRenderTarget(size, size, { type: THREE.UnsignedByteType, depthBuffer: false });
+      try {
+        for (let i = 0; i < 12; i++) pipe.renderSample(scene, cam);
+        pipe.composite(out, { transparent: !look.transmission });
+        r.setRenderTarget(out);
+        return readPixelsLater(r, size, size, px);
+      } finally {
+        out.dispose();
+        r.setRenderTarget(null);
+        this.needComposite = true;
       }
-      const url = toDataUrl(px, size, size, "image/png", 1);
-      this.swatchCache.set(key, url);
-      return url;
-    } finally {
-      out.dispose();
-      r.setRenderTarget(null);
-      this.needComposite = true;
+    });
+    if (look.transmission > 0) {
+      // clear materials render over a backdrop to show refraction; cut that back to the ball
+      const rad = (Math.tan(Math.asin(10 / cam.position.length())) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2))) * (size / 2);
+      for (let y = 0; y < size; y++)
+        for (let x = 0; x < size; x++) {
+          const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
+          const i = (y * size + x) * 4 + 3;
+          px[i] = Math.round(px[i] * Math.min(1, Math.max(0, rad - d + 0.5)));
+        }
     }
+    const url = toDataUrl(px, size, size, "image/png", 1);
+    this.swatchCache.set(key, url);
+    return url;
+  }
+
+  /** Waits for the card to say shaders are built, but not for a view that has gone: a lost card never says so. */
+  private shadersBuilt(built: Promise<void>): Promise<void> {
+    return new Promise((resolve) => {
+      const end = () => {
+        clearInterval(watch);
+        resolve();
+      };
+      const watch = setInterval(() => (this.disposed || this.contextLost) && end(), 200);
+      built.then(end, end);
+    });
   }
 }
 

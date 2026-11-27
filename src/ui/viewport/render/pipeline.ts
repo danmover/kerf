@@ -470,6 +470,8 @@ export class RenderPipeline {
     uEncode: { value: 1 },
   });
   private black: THREE.DataTexture;
+  /** one pixel to draw a pass into when only the pass matters (compile) */
+  private scratchRT: THREE.WebGLRenderTarget | null = null;
   private savedProj = new THREE.Matrix4();
   private savedProjInv = new THREE.Matrix4();
   private lastView = new THREE.Matrix4();
@@ -632,6 +634,27 @@ export class RenderPipeline {
     r.setRenderTarget(prevTarget);
   }
 
+  /**
+   * Has the graphics card build the shaders `scene` is drawn with by renderSample(), and resolves when they are
+   * ready. The page is not held for it: drawing a material whose shader is not built yet waits for the card there
+   * and then, which is seconds for a large shader with Direct3D.
+   */
+  compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
+    const r = this.r;
+    const prev = r.getRenderTarget();
+    // The renderer takes how many clipping planes a shader is built for from whatever it drew last: a pass of our
+    // own, which has none, goes first, or a section in the view would have the card build a shader nothing uses.
+    this.copyMat.uniforms.tSrc.value = this.black;
+    this.pass(this.copyMat, (this.scratchRT ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false })));
+    // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
+    r.setRenderTarget(this.sampleRT);
+    try {
+      return r.compileAsync(scene, camera).then(() => undefined);
+    } finally {
+      r.setRenderTarget(prev);
+    }
+  }
+
   get accumTexture() {
     return this.accum[this.cur].texture;
   }
@@ -776,6 +799,7 @@ export class RenderPipeline {
     for (const rt of [this.sampleRT, this.aoRT, this.aoBlurRT, ...this.accum, this.maskRT, this.viewDepthRT, ...this.bloomRTs, ...this.photoRTs]) rt.dispose();
     for (const m of [this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.depthPackMat, this.depthWriteMat, this.compMat, this.denoiseMat, this.photoMixMat]) m.dispose();
     this.quad.dispose();
+    this.scratchRT?.dispose();
     this.black.dispose();
   }
 }

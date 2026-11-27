@@ -12,6 +12,8 @@ export const STALL_MS = 100;
 /** A call into the graphics card that takes this long (ms) is recorded as a piece of work. */
 const GL_MS = 8;
 const KEEP = 200;
+/** A piece of work is a freeze's cause when it ran for at least this share of it. */
+const CAUSE_SHARE = 0.25;
 const KEEP_SPANS = 400;
 
 export interface StallPiece {
@@ -34,6 +36,9 @@ interface Span {
   start: number;
   end: number;
 }
+
+/** What a freeze is called when none of Kerf's named work and no script ran in it. */
+export const BROWSER_WORK = "the browser itself, drawing the page or waiting for the graphics card";
 
 const stalls: Stall[] = [];
 const spans: Span[] = [];
@@ -95,11 +100,14 @@ function scriptsOf(entry: PerformanceEntry): StallPiece[] {
 }
 
 function record(at: number, ms: number, scripts: StallPiece[]) {
-  // a long frame and the long task inside it are one freeze
-  const last = stalls[stalls.length - 1];
-  if (last && at < last.at + last.ms && at + ms > last.at) {
-    if (ms > last.ms) Object.assign(last, { at, ms: Math.round(ms), work: workIn(at, at + ms).slice(0, 6) });
-    if (scripts.length && !last.scripts.length) last.scripts = scripts;
+  // A long frame and a long task inside it are one freeze, told twice and in either order: the one that shares most
+  // of the shorter's time with a recent one is that one again.
+  for (let i = stalls.length - 1; i >= 0 && i >= stalls.length - 8; i--) {
+    const had = stalls[i];
+    const shared = Math.min(at + ms, had.at + had.ms) - Math.max(at, had.at);
+    if (shared <= 0.5 * Math.min(ms, had.ms)) continue;
+    if (ms > had.ms) Object.assign(had, { at: Math.round(at), ms: Math.round(ms), work: workIn(at, at + ms).slice(0, 6) });
+    if (scripts.length && !had.scripts.length) had.scripts = scripts;
     longest = Math.max(longest, ms);
     return;
   }
@@ -110,25 +118,31 @@ function record(at: number, ms: number, scripts: StallPiece[]) {
   for (const l of listeners) l();
 }
 
-/** Start recording. Safe to call more than once, and where the browser cannot tell (nothing is recorded there). */
+/**
+ * Start recording. Safe to call more than once, and where the browser cannot tell (nothing is recorded there).
+ *
+ * Both of the browser's accounts are kept. A long frame says which script ran. A long task is all an older browser
+ * gives, and it is the only word of a stop inside the browser itself: when its own drawing of the page waits for a
+ * graphics card that is behind, no script runs and there is no long frame to report.
+ */
 export function watchStalls() {
   if (started || typeof PerformanceObserver === "undefined") return;
-  started = true;
   const kinds = PerformanceObserver.supportedEntryTypes ?? [];
-  // a long frame says which script ran; a long task is all older browsers give
-  const kind = kinds.includes("long-animation-frame") ? "long-animation-frame" : kinds.includes("longtask") ? "longtask" : "";
-  if (!kind) return;
-  try {
-    new PerformanceObserver((list) => {
-      for (const e of list.getEntries()) {
-        // of a long frame, the part that held the page up
-        const blocked = (e as unknown as { blockingDuration?: number }).blockingDuration;
-        const ms = kind === "longtask" ? e.duration : Math.max(blocked ?? 0, e.duration - 16);
-        if (ms >= STALL_MS) record(e.startTime, e.duration, scriptsOf(e));
-      }
-    }).observe({ type: kind, buffered: true });
-  } catch {
-    started = false;
+  for (const kind of ["long-animation-frame", "longtask"]) {
+    if (!kinds.includes(kind)) continue;
+    try {
+      new PerformanceObserver((list) => {
+        for (const e of list.getEntries()) {
+          // of a long frame, the part that held the page up
+          const blocked = (e as unknown as { blockingDuration?: number }).blockingDuration;
+          const ms = kind === "longtask" ? e.duration : Math.max(blocked ?? 0, e.duration - 16);
+          if (ms >= STALL_MS) record(e.startTime, e.duration, scriptsOf(e));
+        }
+      }).observe({ type: kind, buffered: true });
+      started = true;
+    } catch {
+      // this kind cannot be watched here: the other may be
+    }
   }
 }
 
@@ -187,7 +201,10 @@ export interface StallSummary {
 export function stallSummary(): StallSummary {
   const by = new Map<string, { count: number; ms: number }>();
   for (const s of stalls) {
-    const name = s.work[0]?.name ?? s.scripts[0]?.name ?? "not named";
+    // the cause is the largest piece when it is a fair share of the freeze: a few milliseconds of Kerf's work in a
+    // half-second stop did not cause it
+    const piece = [s.work[0], s.scripts[0]].find((w) => w && w.ms >= CAUSE_SHARE * s.ms);
+    const name = piece?.name ?? BROWSER_WORK;
     const c = by.get(name) ?? { count: 0, ms: 0 };
     c.count++;
     c.ms += s.ms;
@@ -214,7 +231,7 @@ export function stallReport(about: string[] = []): string {
     lines.push("", "Each one (seconds since Kerf opened, how long, what ran):");
     for (const st of s.recent) {
       const what = [...st.work.map((w) => `${w.name} ${w.ms} ms`), ...st.scripts.map((w) => `[${w.name} ${w.ms} ms]`)].join(", ");
-      lines.push(`  ${(st.at / 1000).toFixed(1)} s  ${st.ms} ms  ${what || "not named"}`);
+      lines.push(`  ${(st.at / 1000).toFixed(1)} s  ${st.ms} ms  ${what || BROWSER_WORK}`);
     }
   }
   return lines.join("\n");

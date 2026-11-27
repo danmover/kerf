@@ -27,27 +27,34 @@ interface Look {
   color: string;
 }
 
-// Swatches render a few per animation frame so opening the picker stays
-// smooth. Newest requests go first: what just changed is what you look at.
+// Swatches are drawn one at a time, each when the graphics card has finished the one before, and no more than a
+// few milliseconds of them between frames, so opening the picker stays smooth. Newest requests go first: what just
+// changed is what you look at.
 interface Job {
   alive: () => boolean;
-  run: () => void;
+  run: () => Promise<void> | void;
 }
 const queue: Job[] = [];
 let pumping = false;
-function pump() {
+const nextFrame = () => new Promise<void>((done) => requestAnimationFrame(() => done()));
+async function pump() {
   if (pumping) return;
   pumping = true;
-  const step = () => {
-    const t0 = performance.now();
-    while (queue.length && performance.now() - t0 < 6) {
+  try {
+    await nextFrame();
+    let t0 = performance.now();
+    while (queue.length) {
       const job = queue.pop()!;
-      if (job.alive()) job.run();
+      if (!job.alive()) continue;
+      await job.run();
+      if (performance.now() - t0 >= 6) {
+        await nextFrame();
+        t0 = performance.now();
+      }
     }
-    if (queue.length) requestAnimationFrame(step);
-    else pumping = false;
-  };
-  requestAnimationFrame(step);
+  } finally {
+    pumping = false;
+  }
 }
 
 /** A rendered material ball, refreshed when the lighting changes. */
@@ -61,16 +68,17 @@ export function useSwatch(material: string, finish: string | undefined, color: s
       run: () => {
         const v = viewport();
         // the viewport mounts after the panels; try again once it exists
-        if (!v) return whenViewport(() => alive && (queue.push(job), pump()));
-        try {
-          setUrl(v.swatch(material, finish, color, size));
-        } catch {
-          /* no WebGL: the swatch stays a plain colour */
-        }
+        if (!v) return void whenViewport(() => alive && (queue.push(job), void pump()));
+        return v.swatch(material, finish, color, size).then(
+          (drawn) => void (alive && setUrl(drawn)),
+          () => {
+            /* no WebGL, or the view was reset meanwhile: the swatch stays a plain colour */
+          },
+        );
       },
     };
     queue.push(job);
-    pump();
+    void pump();
     return () => {
       alive = false;
     };
