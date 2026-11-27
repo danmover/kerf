@@ -100,9 +100,10 @@ function scriptsOf(entry: PerformanceEntry): StallPiece[] {
 }
 
 function record(at: number, ms: number, scripts: StallPiece[]) {
-  // A long frame and a long task inside it are one freeze, told twice and in either order: the one that shares most
-  // of the shorter's time with a recent one is that one again.
-  for (let i = stalls.length - 1; i >= 0 && i >= stalls.length - 8; i--) {
+  // A long frame and a long task inside it are one freeze, told twice, in either order and as much as a minute
+  // apart (a long frame is told once it has been shown, after later tasks): the one that shares most of the
+  // shorter's time with one already kept is that one again.
+  for (let i = stalls.length - 1; i >= 0; i--) {
     const had = stalls[i];
     const shared = Math.min(at + ms, had.at + had.ms) - Math.max(at, had.at);
     if (shared <= 0.5 * Math.min(ms, had.ms)) continue;
@@ -210,7 +211,7 @@ export function stallSummary(): StallSummary {
     c.ms += s.ms;
     by.set(name, c);
   }
-  return { count: total, longestMs: Math.round(longest), recent: stalls.slice(), causes: [...by].map(([name, c]) => ({ name, ...c })).sort((a, b) => b.ms - a.ms) };
+  return { count: total, longestMs: Math.round(longest), recent: stalls.slice().sort((a, b) => a.at - b.at), causes: [...by].map(([name, c]) => ({ name, ...c })).sort((a, b) => b.ms - a.ms) };
 }
 
 /** Told when a freeze is recorded. Returns how to stop being told. */

@@ -24,7 +24,7 @@ npx vite build
 npx vite preview --port 5302 --strictPort
 ```
 
-Then, from any folder where `playwright-core` (or `playwright`) can be required:
+Then, from a folder that has `playwright-core` (or `playwright`) installed:
 
 ```
 node bench/measure.cjs http://localhost:5302/ bench/designs/robot-dog.kerf out.json new

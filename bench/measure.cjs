@@ -3,8 +3,10 @@
 //   node measure.cjs <url> <design.kerf> <out.json> [label]
 // The build must have been hooked first (hook.cjs). On Windows it drives the installed Microsoft Edge in a window
 // (Direct3D, like the desktop app); elsewhere a bundled Chromium with software graphics.
-let pw;
-try { pw = require('playwright-core'); } catch { pw = require('playwright'); }
+// playwright from beside this script, or from the folder the script is run in
+const find = (name) => { try { return require(name); } catch { try { return require(require.resolve(name, { paths: [process.cwd()] })); } catch { return null; } } };
+const pw = find('playwright-core') ?? find('playwright');
+if (!pw) { console.error('playwright-core is not installed here: run this from a folder that has it (npm i playwright-core)'); process.exit(1); }
 const { chromium } = pw;
 const fs = require('fs');
 const [url, file, outFile, label = ''] = process.argv.slice(2);
@@ -29,6 +31,10 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
         new PerformanceObserver((l) => { for (const e of l.getEntries()) if (e.duration >= 50) M.longs.push([type === 'longtask' ? 't' : 'f', Math.round(e.startTime), Math.round(e.duration), M.phase]); }).observe({ type, buffered: true });
     } catch {}
     document.addEventListener('webglcontextlost', () => M.lost++, true);
+    // when the view said it was waiting for the graphics card to build shaders, and for how long
+    M.notice = [];
+    let up = 0;
+    setInterval(() => { const on = !!document.body && !!document.querySelector('[data-shaders-building]'); if (on && !up) up = performance.now(); if (!on && up) { M.notice.push([M.phase, Math.round(performance.now() - up)]); up = 0; } }, 100);
     if (typeof WebGL2RenderingContext === 'undefined') return;
     const P = WebGL2RenderingContext.prototype;
     const wrap = (name, note) => { const f = P[name]; P[name] = function (...a) { const t = performance.now(); try { return f.apply(this, a); } finally { note(performance.now() - t, a); } }; };
@@ -46,7 +52,7 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   const phase = (name) => page.evaluate((n) => { window.__m.phase = n; }, name);
   const out = { label, url, design: require('path').basename(file), when: new Date().toISOString(), cores: require('os').cpus().length, cpu: require('os').cpus()[0].model, phases: {} };
   out.gpu = await page.evaluate(() => { const gl = document.createElement('canvas').getContext('webgl2'); const ext = gl && gl.getExtension('WEBGL_debug_renderer_info'); return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'no webgl2'; });
-  out.browser = (browser ?? ctx.browser())?.version() ?? '';
+  out.browser = (browser ?? ctx.browser())?.version() || (await page.evaluate(() => (/Edg\/[\d.]+|Chrome\/[\d.]+/.exec(navigator.userAgent) ?? [''])[0]));
   out.keptProfile = !!kept;
   // a kept profile opens the design it had open last: nothing may be running when the timing starts
   await page.evaluate(async () => { const { P } = window.__kerfDbg; if (P.useProject.getState().current) await P.closeProject(); });
@@ -160,14 +166,14 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   }
 
   await phase('end');
-  const m = await page.evaluate(() => ({ m: window.__m, record: window.__kerfDbg.St && window.__kerfDbg.St.stallReport ? window.__kerfDbg.St.stallReport([]) : null }));
+  const m = await page.evaluate(() => ({ m: window.__m, builds: window.__kerfDbg.Gate ? window.__kerfDbg.Gate.shaderBuilds : null, record: window.__kerfDbg.St && window.__kerfDbg.St.stallReport ? window.__kerfDbg.St.stallReport([]) : null }));
   // the page's stops, per phase: long tasks of 100 ms or more (a long frame and the task inside it count once)
   const stops = {};
   const tasks = m.m.longs.filter((l) => l[0] === 't' && l[2] >= 100);
   for (const [, , ms, ph] of tasks) { const s = (stops[ph] ??= { stops: 0, totalMs: 0, worstMs: 0 }); s.stops++; s.totalMs += ms; s.worstMs = Math.max(s.worstMs, ms); }
   const waits = {};
   for (const [ph, name, ms] of m.m.waits) { const w = ((waits[ph] ??= {})[name] ??= { times: 0, totalMs: 0, worstMs: 0 }); w.times++; w.totalMs += ms; w.worstMs = Math.max(w.worstMs, ms); }
-  Object.assign(out, { stops, graphicsCardWaits: waits, shaderLinks: m.m.links, contextLost: m.m.lost, errors: errs.slice(0, 20), freezeRecord: m.record, longs: m.m.longs });
+  Object.assign(out, { stops, graphicsCardWaits: waits, notice: m.m.notice.length ? m.m.notice : undefined, shaderBuilds: m.builds, shaderLinks: m.m.links, contextLost: m.m.lost, errors: errs.slice(0, 20), freezeRecord: m.record, longs: m.m.longs });
   fs.writeFileSync(outFile, JSON.stringify(out, null, 1));
   // a short account to read
   const p = out.phases;
@@ -177,7 +183,9 @@ const ONE = ['cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1', 'cut bo
   for (const k of ['orbit', 'section orbit', 'orbit during checks']) if (p[k]) console.log(`${k}: ${JSON.stringify(p[k])}`);
   console.log('stops of 100 ms or more, by phase: ' + JSON.stringify(stops));
   console.log('graphics card waits of 8 ms or more, by phase: ' + JSON.stringify(waits));
-  console.log(`shader links ${out.shaderLinks}, context lost ${out.contextLost}, errors ${JSON.stringify(out.errors)}`);
+  console.log(`shader links ${out.shaderLinks}${m.builds ? ` (${m.builds.ahead} handed to the card ahead, ${m.builds.late} met at a draw: ${JSON.stringify(m.builds.lateFor)})` : ''}, context lost ${out.contextLost}, errors ${JSON.stringify(out.errors)}`);
+  if (m.builds && m.builds.waits) console.log(`waits for a shader build at a draw: ${Math.round(m.builds.waitedMs)} ms in all; the last of them: ${JSON.stringify(m.builds.waits)}`);
+  if (out.notice) console.log(`the view said it was waiting for the graphics card: ${JSON.stringify(out.notice)} (phase, ms)`);
   if (m.record) console.log(m.record.split('\n').slice(0, 45).join('\n'));
   // leave nothing behind in a kept profile
   await page.evaluate(async () => { const { P } = window.__kerfDbg; try { await P.closeProject(); await P.deleteProject(window.__project); } catch {} }).catch(() => {});

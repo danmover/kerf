@@ -7,7 +7,7 @@ const dir = process.argv[2];
 const main = path.join(dir, 'src', 'main.tsx');
 let src = fs.readFileSync(main, 'utf8');
 if (src.includes('__kerfDbg')) { console.log('already hooked'); process.exit(0); }
-const mods = { E: 'core/engine', P: 'app/project', K: 'kernel/client', W: 'machine/harness/runtime', St: 'app/stalls', Sim: 'sim/runtime', Ui: 'app/ui', Vp: 'app/viewportApi', View: 'app/view' };
+const mods = { E: 'core/engine', P: 'app/project', K: 'kernel/client', W: 'machine/harness/runtime', St: 'app/stalls', Sim: 'sim/runtime', Ui: 'app/ui', Vp: 'app/viewportApi', View: 'app/view', Gate: 'ui/viewport/render/shaderGate', Set: 'app/settings' };
 const have = Object.entries(mods).filter(([, m]) => ['.ts', '.tsx'].some((x) => fs.existsSync(path.join(dir, 'src', m + x))));
 src += '\n' + have.map(([k, m]) => `import * as __${k} from "./${m}";`).join('\n');
 src += `\n(window as unknown as { __kerfDbg: unknown }).__kerfDbg = { ${have.map(([k]) => `${k}: __${k}`).join(', ')} };\n`;

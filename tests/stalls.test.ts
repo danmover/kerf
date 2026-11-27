@@ -91,6 +91,20 @@ describe("the freeze record", () => {
     expect(stallSummary().count).toBe(3);
   });
 
+  it("knows it again however many others came between, and lists them in the order they happened", () => {
+    // a six second task while the card builds a shader; its long frame is told after twenty later freezes
+    recordStallForTest(4800, 6307);
+    for (let i = 0; i < 20; i++) recordStallForTest(12000 + i * 500, 150);
+    recordStallForTest(4810, 6300);
+    const s = stallSummary();
+    expect(s.count).toBe(21);
+    expect(s.recent.filter((x) => x.ms > 6000)).toHaveLength(1);
+    // told out of order, listed in order
+    recordStallForTest(100, 200);
+    expect(stallSummary().recent.map((x) => x.at)).toEqual([...stallSummary().recent.map((x) => x.at)].sort((a, b) => a - b));
+    expect(stallSummary().recent[0].at).toBe(100);
+  });
+
   it("does not blame a freeze on work that was a sliver of it", () => {
     const start = performance.now();
     during("3D view: drawing a frame", () => spin(6));
