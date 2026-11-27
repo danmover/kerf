@@ -1,0 +1,1695 @@
+design "Robot Dog"
+note "A 15.6 kg four-legged robot in the class of MIT's Mini Cheetah: twelve CubeMars AK70-10 quasi-direct-drive actuators (24.8 N.m peak, 10:1 planetary, 14-bit encoder) on two CAN buses, an NVIDIA Jetson Orin Nano Super for perception and planning, an Intel RealSense D435i depth camera in the head, and a Teensy 4.1 that runs the 500 Hz leg control. A Tattu 6S 10 Ah LiPo (222 Wh) gives about an hour of walking at 150 to 200 W. Rendered and simulated in Kerf; not yet built."
+note "Each leg: the ab/ad actuator sits in the bulkhead with its output along the body; it swings an orange hip carrier that holds the hip actuator crosswise; the hip actuator turns the thigh, a box of two 7075 plates. The knee actuator rides on the thigh 80 mm below the hip in a black cup and drives the knee through an HTD 8M belt, 20 mm wide, on two 22-tooth pulleys (1:1), so the knee keeps the actuator's full 24.8 N.m. The knee pulley runs in a 6808 bearing in the outer plate and a 12 mm knee pin in a 6801 in the inner plate; the knee crank on the pulley's hub holds a 20 mm carbon shank tube with a 42 mm TPU ball foot."
+
+brief {
+  purpose: "A four-legged robot dog of about 15 kg in the class of MIT's Mini Cheetah: it stands up from lying folded, walks and trots on twelve quasi-direct-drive actuators, sees with a depth camera in its head and walks for about an hour on one battery"
+  setting: "Indoors on hard floors and short carpet, in a lab or a home, built and run by a robotics student or a maker; people stand near it while it walks"
+  priorities: ["real, buyable actuators, boards and battery, drawn as the products", "every joint and board screwed down, every cable modelled", "an e-stop that cuts all twelve actuators in hardware", "each leg's supply fused", "about an hour of walking on one charge", "machined aluminium where loads go, printed covers where they do not", "parts from Australian shops"]
+  look: "Black anodised body with white printed covers, orange hip carriers, clear anodised thighs, carbon shanks and black rubber feet, a dark glass face over the depth camera"
+
+  temp: 5C .. 40C
+  outdoor: false
+
+  process: mfg.cnc_mill(tool_d: 6)
+  material: "Aluminum 6061"
+  quantity: 1
+
+  use walk "Stands up from lying folded and trots at up to 0.5 m/s on its own firmware, the actuators commanded over CAN" { on: belly }
+  use safe "Goes limp when the e-stop is pressed: the relay drops and every actuator loses power" { on: cover }
+  use land "Lands from a 15 cm drop on one foot (three times body weight through one leg) with every leg part inside its limit" { on: fl_thigh_out }
+
+  given t_peak = 24.8Nm "CubeMars AK70-10 KV100 peak torque at 24 V (CubeMars product page and its driver manual); rated 8.3 N.m"
+  given body_mass = 15.6kg "the design's own mass: made parts by their volume and material, bought parts at their catalogue weights; the wiring not counted"
+
+  reference ak70 "CubeMars AK70-10 actuator: drawings, MIT-mode CAN protocol, specs" { url: "https://www.cubemars.com/goods-1031-AK70-10.html" }
+  reference teensy "PJRC Teensy 4.1: pinout and CAN pins" { url: "https://www.pjrc.com/store/teensy41.html" }
+  reference flexcan "FlexCAN_T4, the Teensy 4 CAN library" { url: "https://github.com/tonton81/FlexCAN_T4" }
+  reference jetson "NVIDIA Jetson Orin Nano Super Developer Kit" { url: "https://developer.nvidia.com/embedded/learn/jetson-orin-nano-devkit-user-guide/index.html" }
+  reference d435i "Intel RealSense D435i depth camera: datasheet and drawing" { url: "https://www.intelrealsense.com/depth-camera-d435i/" }
+  reference battery "Tattu 10000 mAh 6S 25C LiPo, XT90" { url: "https://genstattu.com/tattu-10000mah-22-2v-25c-6s1p-lipo-battery-pack-with-xt90-plug/" }
+  reference cheetah "Katz, Di Carlo, Kim: Mini Cheetah, a platform for pushing the limits of dynamic quadruped control (ICRA 2019)" { url: "https://dspace.mit.edu/handle/1721.1/126619" }
+
+  assume "Each actuator's zero is set once on a jig in the standing pose; the firmware counts every joint angle from there"
+  assume "Walking takes 150 to 200 W on hard floors (Mini Cheetah class robots), so the 222 Wh pack gives about an hour"
+  assume "The knee belt runs at 560 N installed tension, set with the knee actuator's slotted mount in its cup"
+}
+
+
+param thigh_l = 210 range 190 .. 240 "Thigh: hip axis to knee axis, mm"
+param shank_l = 210 range 190 .. 240 "Shank: knee axis to the centre of the foot, mm"
+param body_w = 200 range 200 .. 240 "Body: width across the side plates, mm"
+param stand_h = 320 range 290 .. 360 "Standing height: hip axes over the floor, mm"
+
+// the pose drawn: standing, every foot under its hip; leg angles from the two lengths and the height
+let hz = stand_h
+let bw2 = body_w / 2
+let aby = bw2 - 52.5
+let leg_d = hz - 21
+let th = acos((thigh_l * thigh_l + leg_d * leg_d - shank_l * shank_l) / (2 * thigh_l * leg_d))
+let cth = cos(th)
+let sth = sin(th)
+let qs = atan2(-thigh_l * sth, leg_d - thigh_l * cth)
+let cqs = cos(qs)
+let sqs = sin(qs)
+// the knee belt: the nearest made-to-order loop (8 mm steps) to a knee actuator 80 mm down the thigh,
+// and the centres it sets when stretched to 560 N (EA 400 kN)
+let belt_len = round(2 * (thigh_l - 80) + 176, step: 8)
+let belt_c = (belt_len * (1 + 560 / 400000) - 176) / 2
+let km = thigh_l - belt_c
+
+part side_l {
+  label: "Side plate, left: 5 mm 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Body"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z])
+  at: (0, 0, hz)
+  finish: "anodized"
+  body extrude(polygon([(-152, -62), (152, -62), (152, 44), (138, 58), (-138, 58), (-152, 44)], r: 4), 5, at: (0, bw2, 0), dir: -Y) as plate
+  cut extrude(polygon([(-88, -48), (-12, -48), (-12, 40), (-76, 40)], r: 8), 7, at: (0, bw2 + 1, 0), dir: -Y) as window_1
+  cut extrude(polygon([(12, -48), (88, -48), (76, 40), (12, 40)], r: 8), 7, at: (0, bw2 + 1, 0), dir: -Y) as window_2
+  cut extrude(polygon([(110, 22), (136, 22), (136, 44), (128, 48), (110, 48)], r: 5), 7, at: (0, bw2 + 1, 0), dir: -Y) as window_3
+  cut extrude(polygon([(-110, 22), (-110, 48), (-128, 48), (-136, 44), (-136, 22)], r: 5), 7, at: (0, bw2 + 1, 0), dir: -Y) as window_4
+  cut cylinder(d: 40, h: 7, at: (128, bw2 + 1, -4), dir: -Y) as port_f
+  cut cylinder(d: 4.5, h: 7, at: (102.25, bw2 + 1, -14), dir: -Y) as bh_f_36
+  cut cylinder(d: 4.5, h: 7, at: (102.25, bw2 + 1, 13), dir: -Y) as bh_f_63
+  cut cylinder(d: 4.5, h: 7, at: (102.25, bw2 + 1, 40), dir: -Y) as bh_f_90
+  cut cylinder(d: 40, h: 7, at: (-128, bw2 + 1, -4), dir: -Y) as port_r
+  cut cylinder(d: 4.5, h: 7, at: (-102.25, bw2 + 1, -14), dir: -Y) as bh_r_36
+  cut cylinder(d: 4.5, h: 7, at: (-102.25, bw2 + 1, 13), dir: -Y) as bh_r_63
+  cut cylinder(d: 4.5, h: 7, at: (-102.25, bw2 + 1, 40), dir: -Y) as bh_r_90
+  cut cylinder(d: 2.5, h: 8, at: (-60, (bw2 - 5 + bw2) / 2, 50), dir: Z) as top_tap_40
+  cut cylinder(d: 2.5, h: 8, at: (-60, (bw2 - 5 + bw2) / 2, -62.01), dir: Z) as belly_tap_40
+  cut cylinder(d: 2.5, h: 8, at: (0, (bw2 - 5 + bw2) / 2, 50), dir: Z) as top_tap_100
+  cut cylinder(d: 2.5, h: 8, at: (0, (bw2 - 5 + bw2) / 2, -62.01), dir: Z) as belly_tap_100
+  cut cylinder(d: 2.5, h: 8, at: (60, (bw2 - 5 + bw2) / 2, 50), dir: Z) as top_tap_160
+  cut cylinder(d: 2.5, h: 8, at: (60, (bw2 - 5 + bw2) / 2, -62.01), dir: Z) as belly_tap_160
+  cut cylinder(d: 48, h: 7, at: (205 + (-km) * sth, bw2 + 1, hz + (-km) * cth - hz), dir: -Y) as pulley_relief
+  chamfer(0.8, edges: along(Y))
+}
+component side_l_f_screws = lib.screw(M4, 14, head: "button") { at: [(102.25, bw2, hz - 14), (102.25, bw2, hz + 13), (102.25, bw2, hz + 40)], axis: -Y, group: "Body", label: "M4 x 14 button screw: left side plate to the front bulkhead" }
+component side_l_r_screws = lib.screw(M4, 14, head: "button") { at: [(-102.25, bw2, hz - 14), (-102.25, bw2, hz + 13), (-102.25, bw2, hz + 40)], axis: -Y, group: "Body", label: "M4 x 14 button screw: left side plate to the rear bulkhead" }
+part side_r {
+  label: "Side plate, right: 5 mm 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Body"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z])
+  at: (0, 0, hz)
+  finish: "anodized"
+  body extrude(polygon([(-152, -62), (152, -62), (152, 44), (138, 58), (-138, 58), (-152, 44)], r: 4), 5, at: (0, -bw2 + 5, 0), dir: -Y) as plate
+  cut extrude(polygon([(-88, -48), (-12, -48), (-12, 40), (-76, 40)], r: 8), 7, at: (0, -bw2 + 5 + 1, 0), dir: -Y) as window_1
+  cut extrude(polygon([(12, -48), (88, -48), (76, 40), (12, 40)], r: 8), 7, at: (0, -bw2 + 5 + 1, 0), dir: -Y) as window_2
+  cut extrude(polygon([(110, 22), (136, 22), (136, 44), (128, 48), (110, 48)], r: 5), 7, at: (0, -bw2 + 5 + 1, 0), dir: -Y) as window_3
+  cut extrude(polygon([(-110, 22), (-110, 48), (-128, 48), (-136, 44), (-136, 22)], r: 5), 7, at: (0, -bw2 + 5 + 1, 0), dir: -Y) as window_4
+  cut cylinder(d: 40, h: 7, at: (128, -bw2 + 5 + 1, -4), dir: -Y) as port_f
+  cut cylinder(d: 4.5, h: 7, at: (102.25, -bw2 + 5 + 1, -14), dir: -Y) as bh_f_36
+  cut cylinder(d: 4.5, h: 7, at: (102.25, -bw2 + 5 + 1, 13), dir: -Y) as bh_f_63
+  cut cylinder(d: 4.5, h: 7, at: (102.25, -bw2 + 5 + 1, 40), dir: -Y) as bh_f_90
+  cut cylinder(d: 40, h: 7, at: (-128, -bw2 + 5 + 1, -4), dir: -Y) as port_r
+  cut cylinder(d: 4.5, h: 7, at: (-102.25, -bw2 + 5 + 1, -14), dir: -Y) as bh_r_36
+  cut cylinder(d: 4.5, h: 7, at: (-102.25, -bw2 + 5 + 1, 13), dir: -Y) as bh_r_63
+  cut cylinder(d: 4.5, h: 7, at: (-102.25, -bw2 + 5 + 1, 40), dir: -Y) as bh_r_90
+  cut cylinder(d: 2.5, h: 8, at: (-60, (-bw2 + (-bw2 + 5)) / 2, 50), dir: Z) as top_tap_40
+  cut cylinder(d: 2.5, h: 8, at: (-60, (-bw2 + (-bw2 + 5)) / 2, -62.01), dir: Z) as belly_tap_40
+  cut cylinder(d: 2.5, h: 8, at: (0, (-bw2 + (-bw2 + 5)) / 2, 50), dir: Z) as top_tap_100
+  cut cylinder(d: 2.5, h: 8, at: (0, (-bw2 + (-bw2 + 5)) / 2, -62.01), dir: Z) as belly_tap_100
+  cut cylinder(d: 2.5, h: 8, at: (60, (-bw2 + (-bw2 + 5)) / 2, 50), dir: Z) as top_tap_160
+  cut cylinder(d: 2.5, h: 8, at: (60, (-bw2 + (-bw2 + 5)) / 2, -62.01), dir: Z) as belly_tap_160
+  cut cylinder(d: 48, h: 7, at: (205 + (-km) * sth, -bw2 + 5 + 1, hz + (-km) * cth - hz), dir: -Y) as pulley_relief
+  chamfer(0.8, edges: along(Y))
+}
+component side_r_f_screws = lib.screw(M4, 14, head: "button") { at: [(102.25, -bw2, hz - 14), (102.25, -bw2, hz + 13), (102.25, -bw2, hz + 40)], axis: Y, group: "Body", label: "M4 x 14 button screw: right side plate to the front bulkhead" }
+component side_r_r_screws = lib.screw(M4, 14, head: "button") { at: [(-102.25, -bw2, hz - 14), (-102.25, -bw2, hz + 13), (-102.25, -bw2, hz + 40)], axis: Y, group: "Body", label: "M4 x 14 button screw: right side plate to the rear bulkhead" }
+part bulk_f {
+  label: "Bulkhead, front: 6.5 mm 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Body"
+  process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y, Z, -Z])
+  at: (0, 0, hz)
+  finish: "anodized"
+  body box(6.5, 2 * (bw2 - 5), 120, at: (102.25, 0, -62)) as plate
+  cut cylinder(d: 66, h: 8.5, at: (98, aby, 0), dir: X) as cover_hole_l
+  cut cylinder(d: 3.4, h: 8.5, at: (98, aby - 37.616, 5.392), dir: X) as m_l_1
+  cut cylinder(d: 3.4, h: 8.5, at: (98, aby - 23.477, -29.88), dir: X) as m_l_2
+  cut cylinder(d: 3.4, h: 8.5, at: (98, aby + 14.138, -35.272), dir: X) as m_l_3
+  cut cylinder(d: 3.4, h: 8.5, at: (98, aby + 37.616, -5.392), dir: X) as m_l_4
+  cut cylinder(d: 3.4, h: 8.5, at: (98, aby + 23.477, 29.88), dir: X) as m_l_5
+  cut cylinder(d: 3.4, h: 8.5, at: (98, aby - 14.138, 35.272), dir: X) as m_l_6
+  cut cylinder(d: 26, h: 8.5, at: (98, aby, 58), dir: X) as cable_slot_l
+  cut cylinder(d: 3.3, h: 12, at: (102.25, bw2 - 5, -14), dir: -Y) as edge_l_36
+  cut cylinder(d: 3.3, h: 12, at: (102.25, bw2 - 5, 13), dir: -Y) as edge_l_63
+  cut cylinder(d: 3.3, h: 12, at: (102.25, bw2 - 5, 40), dir: -Y) as edge_l_90
+  cut cylinder(d: 66, h: 8.5, at: (98, -aby, 0), dir: X) as cover_hole_r
+  cut cylinder(d: 3.4, h: 8.5, at: (98, -aby - 37.616, 5.392), dir: X) as m_r_1
+  cut cylinder(d: 3.4, h: 8.5, at: (98, -aby - 23.477, -29.88), dir: X) as m_r_2
+  cut cylinder(d: 3.4, h: 8.5, at: (98, -aby + 14.138, -35.272), dir: X) as m_r_3
+  cut cylinder(d: 3.4, h: 8.5, at: (98, -aby + 37.616, -5.392), dir: X) as m_r_4
+  cut cylinder(d: 3.4, h: 8.5, at: (98, -aby + 23.477, 29.88), dir: X) as m_r_5
+  cut cylinder(d: 3.4, h: 8.5, at: (98, -aby - 14.138, 35.272), dir: X) as m_r_6
+  cut cylinder(d: 26, h: 8.5, at: (98, -aby, 58), dir: X) as cable_slot_r
+  cut cylinder(d: 3.3, h: 12, at: (102.25, -(bw2 - 5), -14), dir: Y) as edge_r_36
+  cut cylinder(d: 3.3, h: 12, at: (102.25, -(bw2 - 5), 13), dir: Y) as edge_r_63
+  cut cylinder(d: 3.3, h: 12, at: (102.25, -(bw2 - 5), 40), dir: Y) as edge_r_90
+  cut cylinder(d: 2.5, h: 5.5, at: (99, -14, 13), dir: X) as tray_tap_6
+  cut cylinder(d: 2.5, h: 5.5, at: (99, 14, 13), dir: X) as tray_tap_34
+  cut cylinder(d: 2.5, h: 8, at: (102.25, -18, 50), dir: Z) as top_tap_82
+  cut cylinder(d: 2.5, h: 8, at: (102.25, 0, 50), dir: Z) as top_tap_100
+  cut cylinder(d: 2.5, h: 8, at: (102.25, 18, 50), dir: Z) as top_tap_118
+  cut cylinder(d: 3.3, h: 10, at: (102.25, -60, -62.01), dir: Z) as belly_tap_40
+  cut cylinder(d: 3.3, h: 10, at: (102.25, 0, -62.01), dir: Z) as belly_tap_100
+  cut cylinder(d: 3.3, h: 10, at: (102.25, 60, -62.01), dir: Z) as belly_tap_160
+  cut extrude(polygon([(-8, 20), (8, 20), (8, 40), (-8, 40)], r: 5), 8.5, at: (98, 0, 0), dir: X) as lighten_1
+  cut extrude(polygon([(-8, -46), (8, -46), (8, -14), (-8, -14)], r: 5), 8.5, at: (98, 0, 0), dir: X) as lighten_2
+}
+component fl_abad_screws = lib.screw(M3, 12) { at: [(99, aby - 37.616, hz + 5.392), (99, aby - 23.477, hz - 29.88), (99, aby + 14.138, hz - 35.272), (99, aby + 37.616, hz - 5.392), (99, aby + 23.477, hz + 29.88), (99, aby - 14.138, hz + 35.272)], axis: X, group: "Body", label: "M3 x 12 socket screw: front left ab/ad actuator to the front bulkhead" }
+component fr_abad_screws = lib.screw(M3, 12) { at: [(99, -aby - 37.616, hz + 5.392), (99, -aby - 23.477, hz - 29.88), (99, -aby + 14.138, hz - 35.272), (99, -aby + 37.616, hz - 5.392), (99, -aby + 23.477, hz + 29.88), (99, -aby - 14.138, hz + 35.272)], axis: X, group: "Body", label: "M3 x 12 socket screw: front right ab/ad actuator to the front bulkhead" }
+part bulk_r {
+  label: "Bulkhead, rear: 6.5 mm 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Body"
+  process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y, Z, -Z])
+  at: (0, 0, hz)
+  finish: "anodized"
+  body box(6.5, 2 * (bw2 - 5), 120, at: (-102.25, 0, -62)) as plate
+  cut cylinder(d: 66, h: 8.5, at: (-106.5, aby, 0), dir: X) as cover_hole_l
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, aby + 37.616, 5.392), dir: X) as m_l_1
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, aby + 23.477, -29.88), dir: X) as m_l_2
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, aby - 14.138, -35.272), dir: X) as m_l_3
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, aby - 37.616, -5.392), dir: X) as m_l_4
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, aby - 23.477, 29.88), dir: X) as m_l_5
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, aby + 14.138, 35.272), dir: X) as m_l_6
+  cut cylinder(d: 26, h: 8.5, at: (-106.5, aby, 58), dir: X) as cable_slot_l
+  cut cylinder(d: 3.3, h: 12, at: (-102.25, bw2 - 5, -14), dir: -Y) as edge_l_36
+  cut cylinder(d: 3.3, h: 12, at: (-102.25, bw2 - 5, 13), dir: -Y) as edge_l_63
+  cut cylinder(d: 3.3, h: 12, at: (-102.25, bw2 - 5, 40), dir: -Y) as edge_l_90
+  cut cylinder(d: 66, h: 8.5, at: (-106.5, -aby, 0), dir: X) as cover_hole_r
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, -aby + 37.616, 5.392), dir: X) as m_r_1
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, -aby + 23.477, -29.88), dir: X) as m_r_2
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, -aby - 14.138, -35.272), dir: X) as m_r_3
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, -aby - 37.616, -5.392), dir: X) as m_r_4
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, -aby - 23.477, 29.88), dir: X) as m_r_5
+  cut cylinder(d: 3.4, h: 8.5, at: (-106.5, -aby + 14.138, 35.272), dir: X) as m_r_6
+  cut cylinder(d: 26, h: 8.5, at: (-106.5, -aby, 58), dir: X) as cable_slot_r
+  cut cylinder(d: 3.3, h: 12, at: (-102.25, -(bw2 - 5), -14), dir: Y) as edge_r_36
+  cut cylinder(d: 3.3, h: 12, at: (-102.25, -(bw2 - 5), 13), dir: Y) as edge_r_63
+  cut cylinder(d: 3.3, h: 12, at: (-102.25, -(bw2 - 5), 40), dir: Y) as edge_r_90
+  cut cylinder(d: 2.5, h: 5.5, at: (-99, -14, 13), dir: -X) as tray_tap_6
+  cut cylinder(d: 2.5, h: 5.5, at: (-99, 14, 13), dir: -X) as tray_tap_34
+  cut cylinder(d: 2.5, h: 8, at: (-102.25, -66, 50), dir: Z) as top_tap_34
+  cut cylinder(d: 2.5, h: 8, at: (-102.25, 0, 50), dir: Z) as top_tap_100
+  cut cylinder(d: 2.5, h: 8, at: (-102.25, 66, 50), dir: Z) as top_tap_166
+  cut cylinder(d: 3.3, h: 10, at: (-102.25, -60, -62.01), dir: Z) as belly_tap_40
+  cut cylinder(d: 3.3, h: 10, at: (-102.25, 0, -62.01), dir: Z) as belly_tap_100
+  cut cylinder(d: 3.3, h: 10, at: (-102.25, 60, -62.01), dir: Z) as belly_tap_160
+  cut extrude(polygon([(-8, 20), (8, 20), (8, 40), (-8, 40)], r: 5), 8.5, at: (-106.5, 0, 0), dir: X) as lighten_1
+  cut extrude(polygon([(-8, -46), (8, -46), (8, -14), (-8, -14)], r: 5), 8.5, at: (-106.5, 0, 0), dir: X) as lighten_2
+}
+component rl_abad_screws = lib.screw(M3, 12) { at: [(-99, aby + 37.616, hz + 5.392), (-99, aby + 23.477, hz - 29.88), (-99, aby - 14.138, hz - 35.272), (-99, aby - 37.616, hz - 5.392), (-99, aby - 23.477, hz + 29.88), (-99, aby + 14.138, hz + 35.272)], axis: -X, group: "Body", label: "M3 x 12 socket screw: rear left ab/ad actuator to the rear bulkhead" }
+component rr_abad_screws = lib.screw(M3, 12) { at: [(-99, -aby + 37.616, hz + 5.392), (-99, -aby + 23.477, hz - 29.88), (-99, -aby - 14.138, hz - 35.272), (-99, -aby - 37.616, hz - 5.392), (-99, -aby - 23.477, hz + 29.88), (-99, -aby + 14.138, hz + 35.272)], axis: -X, group: "Body", label: "M3 x 12 socket screw: rear right ab/ad actuator to the rear bulkhead" }
+part belly {
+  label: "Belly plate: 2.5 mm carbon fibre sheet, waterjet cut"
+  color: #1b1c1f
+  material: "Carbon fiber"
+  group: "Body"
+  process: mfg.laser_cut(source: "waterjet")
+  at: (0, 0, hz)
+  body box(211, body_w + 3, 2.5, at: (0, 0, -64.5), r: 6) as sheet_
+  cut cylinder(d: 4.5, h: 4.5, at: (102.25, -60, -65.5), dir: Z) as b_f_40
+  cut cylinder(d: 4.5, h: 4.5, at: (102.25, 0, -65.5), dir: Z) as b_f_100
+  cut cylinder(d: 4.5, h: 4.5, at: (102.25, 60, -65.5), dir: Z) as b_f_160
+  cut cylinder(d: 4.5, h: 4.5, at: (-102.25, -60, -65.5), dir: Z) as b_r_40
+  cut cylinder(d: 4.5, h: 4.5, at: (-102.25, 0, -65.5), dir: Z) as b_r_100
+  cut cylinder(d: 4.5, h: 4.5, at: (-102.25, 60, -65.5), dir: Z) as b_r_160
+  cut cylinder(d: 3.4, h: 4.5, at: (-60, bw2 - 2.5, -65.5), dir: Z) as s_l_40
+  cut cylinder(d: 3.4, h: 4.5, at: (0, bw2 - 2.5, -65.5), dir: Z) as s_l_100
+  cut cylinder(d: 3.4, h: 4.5, at: (60, bw2 - 2.5, -65.5), dir: Z) as s_l_160
+  cut cylinder(d: 3.4, h: 4.5, at: (-66, 36.5, -65.5), dir: Z) as rail_l_34
+  cut cylinder(d: 3.4, h: 4.5, at: (0, 36.5, -65.5), dir: Z) as rail_l_100
+  cut cylinder(d: 3.4, h: 4.5, at: (66, 36.5, -65.5), dir: Z) as rail_l_166
+  cut cylinder(d: 3.4, h: 4.5, at: (-60, -(bw2 - 2.5), -65.5), dir: Z) as s_r_40
+  cut cylinder(d: 3.4, h: 4.5, at: (0, -(bw2 - 2.5), -65.5), dir: Z) as s_r_100
+  cut cylinder(d: 3.4, h: 4.5, at: (60, -(bw2 - 2.5), -65.5), dir: Z) as s_r_160
+  cut cylinder(d: 3.4, h: 4.5, at: (-66, -36.5, -65.5), dir: Z) as rail_r_34
+  cut cylinder(d: 3.4, h: 4.5, at: (0, -36.5, -65.5), dir: Z) as rail_r_100
+  cut cylinder(d: 3.4, h: 4.5, at: (66, -36.5, -65.5), dir: Z) as rail_r_166
+}
+component belly_bulk_screws = lib.screw(M4, 10, head: "button") { at: [(102.25, -60, hz - 64.5), (102.25, 0, hz - 64.5), (102.25, 60, hz - 64.5), (-102.25, -60, hz - 64.5), (-102.25, 0, hz - 64.5), (-102.25, 60, hz - 64.5)], axis: Z, group: "Body", label: "M4 x 10 button screw: belly plate to the bulkheads" }
+component belly_side_screws = lib.screw(M3, 8, head: "button") { at: [(-60, bw2 - 2.5, hz - 64.5), (0, bw2 - 2.5, hz - 64.5), (60, bw2 - 2.5, hz - 64.5), (-60, -(bw2 - 2.5), hz - 64.5), (0, -(bw2 - 2.5), hz - 64.5), (60, -(bw2 - 2.5), hz - 64.5)], axis: Z, group: "Body", label: "M3 x 8 button screw: belly plate to the side plates" }
+part tray {
+  label: "Electronics tray: 3 mm 6061-T6 with a tab at each end, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Electronics"
+  process: mfg.cnc_mill(tool_d: 3, setups: [Z, -Z, X, -X])
+  at: (0, 0, hz)
+  finish: "anodized"
+  removable
+  body box(191.6, 2 * (bw2 - 5 - 1.5), 3, at: (0, 0, 0), r: 4) as deck
+  add box(3, 40, 17, at: (97.3, 0, 0)) as tab_f
+  cut cylinder(d: 3.6, h: 17.02, at: (95.8, -20, -0.01), dir: Z) as relief_f_0
+  cut cylinder(d: 3.6, h: 17.02, at: (95.8, 20, -0.01), dir: Z) as relief_f_40
+  add box(3, 40, 17, at: (-97.3, 0, 0)) as tab_r
+  cut cylinder(d: 3.6, h: 17.02, at: (-95.8, -20, -0.01), dir: Z) as relief_r_0
+  cut cylinder(d: 3.6, h: 17.02, at: (-95.8, 20, -0.01), dir: Z) as relief_r_40
+  cut cylinder(d: 3.4, h: 5, at: (94.8, -14, 13), dir: X) as tab_hole_f_6
+  cut cylinder(d: 3.4, h: 5, at: (94.8, 14, 13), dir: X) as tab_hole_f_34
+  cut cylinder(d: 7, h: 5, at: (94.8, aby - 37.616, 5.392), dir: X) as head_pocket_fl_1
+  cut cylinder(d: 3.4, h: 5, at: (-94.8, -14, 13), dir: -X) as tab_hole_r_6
+  cut cylinder(d: 3.4, h: 5, at: (-94.8, 14, 13), dir: -X) as tab_hole_r_34
+  cut cylinder(d: 7, h: 5, at: (-99.8, -aby + 37.616, 5.392), dir: X) as head_pocket_rr_1
+  cut cylinder(d: 2.05, h: 3.02, at: (-49, -19, -0.01), dir: Z) as jet_tap_1
+  cut cylinder(d: 2.05, h: 3.02, at: (37, -19, -0.01), dir: Z) as jet_tap_2
+  cut cylinder(d: 2.05, h: 3.02, at: (-49, 39, -0.01), dir: Z) as jet_tap_3
+  cut cylinder(d: 2.05, h: 3.02, at: (37, 39, -0.01), dir: Z) as jet_tap_4
+  cut cylinder(d: 2.05, h: 3.02, at: (-50, 53, -0.01), dir: Z) as car_tap_1
+  cut cylinder(d: 2.05, h: 3.02, at: (-50, 88, -0.01), dir: Z) as car_tap_2
+  cut cylinder(d: 2.05, h: 3.02, at: (56, 53, -0.01), dir: Z) as car_tap_3
+  cut cylinder(d: 2.05, h: 3.02, at: (56, 88, -0.01), dir: Z) as car_tap_4
+  cut cylinder(d: 1.6, h: 3.02, at: (-64.84, -82.16, -0.01), dir: Z) as reg12_tap_1
+  cut cylinder(d: 1.6, h: 3.02, at: (-85.16, -61.84, -0.01), dir: Z) as reg12_tap_2
+  cut cylinder(d: 1.6, h: 3.02, at: (-46.73, -83, -0.01), dir: Z) as reg5_tap_1
+  cut cylinder(d: 1.6, h: 3.02, at: (-33.27, -67, -0.01), dir: Z) as reg5_tap_2
+  cut cylinder(d: 2.05, h: 3.02, at: (47.74, 12.36, -0.01), dir: Z) as imu_tap_1
+  cut cylinder(d: 2.05, h: 3.02, at: (68.26, 12.36, -0.01), dir: Z) as imu_tap_2
+  cut box(42, 36, 5, at: (63, -66, -1), r: 6) as lighten_1
+  cut box(24, 86, 5, at: (-76, -3, -1), r: 6) as lighten_2
+}
+component tray_screws_f = lib.screw(M3, 8, head: "button") { at: [(95.8, -14, hz + 13), (95.8, 14, hz + 13)], axis: X, group: "Electronics", label: "M3 x 8 button screw: tray tab to the front bulkhead", removable }
+component tray_screws_r = lib.screw(M3, 8, head: "button") { at: [(-95.8, -14, hz + 13), (-95.8, 14, hz + 13)], axis: -X, group: "Electronics", label: "M3 x 8 button screw: tray tab to the rear bulkhead", removable }
+part fl_carrier {
+  label: "Hip carrier, front left: 6061-T6, orange anodised"
+  color: #e8641e
+  material: "Aluminum 6061"
+  group: "Leg front left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y])
+  at: (0, aby, hz)
+  finish: "anodized"
+  body extrude(polygon([(29, -38), (-17, -38), (-22, -36.66), (-25.66, -33), (-27, -28), (-27, 28), (-25.66, 33), (-22, 36.66), (-17, 38), (29, 38)]), 6, at: (149.5, 0, 0), dir: X) as abad_plate
+  add extrude(polygon([(153.5, 38), (180.896, 38), (182.5, 38.971), (189.609, 42.286), (197.186, 44.316), (205, 45), (212.814, 44.316), (220.391, 42.286), (227.5, 38.971), (233.925, 34.472), (239.472, 28.925), (243.971, 22.5), (247.286, 15.391), (249.316, 7.814), (250, 0), (249.316, -7.814), (247.286, -15.391), (243.971, -22.5), (239.472, -28.925), (233.925, -34.472), (227.5, -38.971), (220.391, -42.286), (212.814, -44.316), (205, -45), (197.186, -44.316), (189.609, -42.286), (182.5, -38.971), (180.896, -38), (153.5, -38)], r: 4), 8, at: (0, 29, 0), dir: -Y) as hip_plate
+  cut cylinder(d: 66, h: 10, at: (205, 20, 0), dir: Y) as cover_hole
+  cut cylinder(d: 3.4, h: 10, at: (231.857, 20, 26.883), dir: Y) as hip_m_1
+  cut cylinder(d: 6.5, h: 3.21, at: (231.857, 20.99, 26.883), dir: Y) as hip_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (241.71, 20, -9.818), dir: Y) as hip_m_2
+  cut cylinder(d: 6.5, h: 3.21, at: (241.71, 20.99, -9.818), dir: Y) as hip_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (214.852, 20, -36.701), dir: Y) as hip_m_3
+  cut cylinder(d: 6.5, h: 3.21, at: (214.852, 20.99, -36.701), dir: Y) as hip_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (178.143, 20, -26.883), dir: Y) as hip_m_4
+  cut cylinder(d: 6.5, h: 3.21, at: (178.143, 20.99, -26.883), dir: Y) as hip_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (168.29, 20, 9.818), dir: Y) as hip_m_5
+  cut cylinder(d: 6.5, h: 3.21, at: (168.29, 20.99, 9.818), dir: Y) as hip_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (195.148, 20, 36.701), dir: Y) as hip_m_6
+  cut cylinder(d: 6.5, h: 3.21, at: (195.148, 20.99, 36.701), dir: Y) as hip_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -17.332, 4.858), dir: X) as abad_m_1
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -17.332, 4.858), dir: X) as abad_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -15.691, -8.821), dir: X) as abad_m_2
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -15.691, -8.821), dir: X) as abad_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -4.858, -17.332), dir: X) as abad_m_3
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -4.858, -17.332), dir: X) as abad_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 8.821, -15.691), dir: X) as abad_m_4
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 8.821, -15.691), dir: X) as abad_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 17.332, -4.858), dir: X) as abad_m_5
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 17.332, -4.858), dir: X) as abad_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 15.691, 8.821), dir: X) as abad_m_6
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 15.691, 8.821), dir: X) as abad_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 4.858, 17.332), dir: X) as abad_m_7
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 4.858, 17.332), dir: X) as abad_cb_7
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -8.821, 15.691), dir: X) as abad_m_8
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -8.821, 15.691), dir: X) as abad_cb_8
+  add cylinder(d: 13.8, h: 1.11, at: (148.4, 0, 0), dir: X) as spigot
+}
+component fl_carrier_screws = lib.screw(M3, 8) { at: [(152.2, aby - 17.332, hz + 4.858), (152.2, aby - 15.691, hz - 8.821), (152.2, aby - 4.858, hz - 17.332), (152.2, aby + 8.821, hz - 15.691), (152.2, aby + 17.332, hz - 4.858), (152.2, aby + 15.691, hz + 8.821), (152.2, aby + 4.858, hz + 17.332), (152.2, aby - 8.821, hz + 15.691)], axis: -X, group: "Leg front left", label: "M3 x 8 socket screw: hip carrier to the front left ab/ad actuator's output" }
+component fl_hip_screws = lib.screw(M3, 10) { at: [(231.857, aby + 21 + 3.2, hz + 26.883), (241.71, aby + 21 + 3.2, hz - 9.818), (214.852, aby + 21 + 3.2, hz - 36.701), (178.143, aby + 21 + 3.2, hz - 26.883), (168.29, aby + 21 + 3.2, hz + 9.818), (195.148, aby + 21 + 3.2, hz + 36.701)], axis: Y, group: "Leg front left", label: "M3 x 10 socket screw: front left hip actuator's back face to its carrier, in a counterbore" }
+part fl_thigh_in {
+  label: "Thigh inner plate, front left: 5 mm 7075-T6, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg front left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (205, aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-30.07, 10.945), (-24.513, 20.569), (-16, 27.713), (-5.557, 31.514), (5.557, 31.514), (16, 27.713), (24.513, 20.569), (30.07, 10.945), (52, -30), (55.5, -45), (55, -60), (40, -km - 6), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0), (-40, -km - 6), (-55, -60), (-55.5, -45), (-52, -30)], r: 3), 5, at: (0, 78, 0), dir: -Y) as plate
+  cut cylinder(d: 3.4, h: 8, at: (10.951 * cth - (14.286 * sth), 72, 10.951 * sth + 14.286 * cth), dir: Y) as hip_m_1
+  cut cylinder(d: 3.4, h: 8, at: (17.845 * cth - (2.358 * sth), 72, 17.845 * sth + 2.358 * cth), dir: Y) as hip_m_2
+  cut cylinder(d: 3.4, h: 8, at: (14.286 * cth - ((-10.951) * sth), 72, 14.286 * sth + (-10.951) * cth), dir: Y) as hip_m_3
+  cut cylinder(d: 3.4, h: 8, at: (2.358 * cth - ((-17.845) * sth), 72, 2.358 * sth + (-17.845) * cth), dir: Y) as hip_m_4
+  cut cylinder(d: 3.4, h: 8, at: ((-10.951) * cth - ((-14.286) * sth), 72, (-10.951) * sth + (-14.286) * cth), dir: Y) as hip_m_5
+  cut cylinder(d: 3.4, h: 8, at: ((-17.845) * cth - ((-2.358) * sth), 72, (-17.845) * sth + (-2.358) * cth), dir: Y) as hip_m_6
+  cut cylinder(d: 3.4, h: 8, at: ((-14.286) * cth - (10.951 * sth), 72, (-14.286) * sth + 10.951 * cth), dir: Y) as hip_m_7
+  cut cylinder(d: 3.4, h: 8, at: ((-2.358) * cth - (17.845 * sth), 72, (-2.358) * sth + 17.845 * cth), dir: Y) as hip_m_8
+  cut cylinder(d: 20, h: 8, at: (0, 72, 0), dir: Y) as hip_bore
+  cut cylinder(d: 50, h: 8, at: (0, 72, -km), dir: Y) as pulley_access
+  cut cylinder(d: 21, h: 5.01, at: (0, 73, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 16.05, h: 8, at: (0, 72, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 8, at: (45.899, 72, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 8.5, h: 2.51, at: (45.899, 72.99, -km + 26.5), dir: Y) as post_cb_1
+  cut cylinder(d: 4.5, h: 8, at: (-26.5, 72, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 8.5, h: 2.51, at: (-26.5, 72.99, -km + 45.899), dir: Y) as post_cb_2
+  cut cylinder(d: 4.5, h: 8, at: (0, 72, -(thigh_l - 40)), dir: Y) as post_3
+  cut cylinder(d: 8.5, h: 2.51, at: (0, 72.99, -(thigh_l - 40)), dir: Y) as post_cb_3
+  cut extrude(polygon([(-27, -km - 34), (27, -km - 34), (24, -thigh_l + 52), (-24, -thigh_l + 52)], r: 6), 8, at: (0, 79, 0), dir: -Y) as window
+  cut extrude(polygon([(14, -30), (30, -22), (36, -34), (28, -km + 27.7), (16, -km + 27.7)], r: 4), 8, at: (0, 79, 0), dir: -Y) as window_hip
+}
+part fl_thigh_out {
+  label: "Thigh outer plate, front left: 6.5 mm 7075-T6 with the knee bearing boss, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg front left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (205, aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-56.5, -km + 0), (-56.017, -km + 7.375), (-54.575, -km + 14.623), (-52.199, -km + 21.622), (-48.93, -km + 28.25), (-44.824, -km + 34.395), (-39.952, -km + 39.952), (-36.83, -km + 47.998), (-30.25, -km + 52.395), (-23.152, -km + 55.895), (-14.623, -km + 54.575), (-7.375, -km + 56.017), (0, -km + 56.5), (7.375, -km + 56.017), (14.623, -km + 54.575), (21.622, -km + 52.199), (28.25, -km + 48.93), (34.395, -km + 44.824), (39.952, -km + 39.952), (47.998, -km + 36.83), (52.395, -km + 30.25), (55.895, -km + 23.152), (54.575, -km + 14.623), (56.017, -km + 7.375), (56.5, -km), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0)], r: 4), 6.5, at: (0, 111.6, 0), dir: -Y) as plate
+  add cylinder(d: 60, h: 9.5, at: (0, 105.1, -thigh_l), dir: Y) as knee_boss
+  cut cylinder(d: 49, h: 9, at: (0, 104.1, -km), dir: Y) as pulley_hole
+  cut cylinder(d: 3.3, h: 9, at: (-45.899, 104.1, -km - 26.5), dir: Y) as cup_tap_1
+  cut cylinder(d: 3.3, h: 9, at: (45.899, 104.1, -km - 26.5), dir: Y) as cup_tap_2
+  cut cylinder(d: 52, h: 8.01, at: (0, 106.6, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 46, h: 11.5, at: (0, 104.1, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 9, at: (45.899, 104.1, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 4.5, h: 9, at: (-26.5, 104.1, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 4.5, h: 9, at: (0, 104.1, -(thigh_l - 40)), dir: Y) as post_3
+  cut extrude(polygon([(-30, -km - 34), (30, -km - 34), (22, -thigh_l + 52), (-22, -thigh_l + 52)], r: 6), 9, at: (0, 112.6, 0), dir: -Y) as window
+  cut extrude(polygon([(31.449, -km + 34.928), (24.347, -km + 40.202), (16.383, -km + 44.052), (7.838, -km + 46.342), (-0.984, -km + 46.99), (-9.772, -km + 45.973), (-6.237, -km + 29.344), (-0.628, -km + 29.993), (5.003, -km + 29.58), (10.457, -km + 28.118), (15.541, -km + 25.661), (20.074, -km + 22.294)], r: 4), 9, at: (0, 112.6, 0), dir: -Y) as window_ring_1
+  cut extrude(polygon([(-34.928, -km + 31.449), (-40.427, -km + 23.972), (-44.35, -km + 15.56), (-46.543, -km + 6.541), (-29.708, -km + 4.175), (-28.308, -km + 9.932), (-25.804, -km + 15.301), (-22.294, -km + 20.074)], r: 4), 9, at: (0, 112.6, 0), dir: -Y) as window_ring_2
+}
+part fl_post_1 {
+  label: "Thigh spacer post 1, front left: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg front left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 + 45.899 * cth + (-km + 26.5) * sth, aby, hz - (45.899 * sth) + (-km + 26.5) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, 78, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, 77.99, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, 95.11, 0), dir: Y) as tap_b
+}
+part fl_post_2 {
+  label: "Thigh spacer post 2, front left: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg front left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 + (-26.5) * cth + (-km + 45.899) * sth, aby, hz - ((-26.5) * sth) + (-km + 45.899) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, 78, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, 77.99, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, 95.11, 0), dir: Y) as tap_b
+}
+part fl_post_3 {
+  label: "Thigh spacer post 3, front left: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg front left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 + (-(thigh_l - 40)) * sth, aby, hz + (-(thigh_l - 40)) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, 78, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, 77.99, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, 95.11, 0), dir: Y) as tap_b
+}
+component fl_post_screws_in = lib.screw(M4, 12, head: "button") { at: [(205 + 45.899 * cth + (-km + 26.5) * sth, aby + 75.5, hz - (45.899 * sth) + (-km + 26.5) * cth), (205 + (-26.5) * cth + (-km + 45.899) * sth, aby + 75.5, hz - ((-26.5) * sth) + (-km + 45.899) * cth), (205 + (-(thigh_l - 40)) * sth, aby + 75.5, hz + (-(thigh_l - 40)) * cth)], axis: Y, group: "Leg front left", label: "M4 x 12 button screw: inner thigh plate to the spacer posts, front left" }
+component fl_post_screws_out = lib.screw(M4, 12, head: "button") { at: (205 + (-(thigh_l - 40)) * sth, aby + 111.6, hz + (-(thigh_l - 40)) * cth), axis: -Y, group: "Leg front left", label: "M4 x 12 button screw: outer thigh plate to the lower spacer post, front left" }
+component fl_thigh_screws = lib.screw(M3, 10) { at: [(215.951, aby + 78, hz + 14.286), (222.845, aby + 78, hz + 2.358), (219.286, aby + 78, hz - 10.951), (207.358, aby + 78, hz - 17.845), (194.049, aby + 78, hz - 14.286), (187.155, aby + 78, hz - 2.358), (190.714, aby + 78, hz + 10.951), (202.642, aby + 78, hz + 17.845)], axis: -Y, group: "Leg front left", label: "M3 x 10 socket screw: inner thigh plate to the front left hip actuator's output" }
+part fl_cup {
+  label: "Knee actuator cup, front left: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg front left"
+  process: mfg.cnc_mill(tool_d: 3, setups: [Y, -Y, X, -X, Z, -Z])
+  at: (205, aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(50, -km), (49.572, -km + 6.526), (48.296, -km + 12.941), (54.047, -km + 22.387), (50.662, -km + 29.25), (46.411, -km + 35.613), (35.355, -km + 35.355), (30.438, -km + 39.668), (25, -km + 43.301), (19.134, -km + 46.194), (12.941, -km + 48.296), (6.526, -km + 49.572), (0, -km + 50), (-6.526, -km + 49.572), (-12.941, -km + 48.296), (-22.387, -km + 54.047), (-29.25, -km + 50.662), (-35.613, -km + 46.411), (-35.355, -km + 35.355), (-39.668, -km + 30.438), (-43.301, -km + 25), (-46.194, -km + 19.134), (-48.296, -km + 12.941), (-49.572, -km + 6.526), (-50, -km + 0), (-49.572, -km - 6.526), (-48.296, -km - 12.941), (-54.047, -km - 22.387), (-50.662, -km - 29.25), (-46.411, -km - 35.613), (-35.355, -km - 35.355), (-30.438, -km - 39.668), (-25, -km - 43.301), (-19.134, -km - 46.194), (-12.941, -km - 48.296), (-6.526, -km - 49.572), (0, -km - 50), (6.526, -km - 49.572), (12.941, -km - 48.296), (19.134, -km - 46.194), (25, -km - 43.301), (30.438, -km - 39.668), (35.355, -km - 35.355), (46.411, -km - 35.613), (50.662, -km - 29.25), (54.047, -km - 22.387), (48.296, -km - 12.941), (49.572, -km - 6.526)], r: 2), 4, at: (0, 115.6, 0), dir: -Y) as rim
+  add cylinder(d: 97, h: 42.01, at: (0, 115.59, -km), dir: Y) as wall
+  add cylinder(d: 97, h: 4.01, at: (0, 157.59, -km), dir: Y) as back
+  cut cylinder(d: 91, h: 46.02, at: (0, 111.59, -km), dir: Y) as bore
+  cut cylinder(d: 66, h: 6, at: (0, 156.6, -km), dir: Y) as back_hole
+  cut cylinder(d: 3.4, h: 6, at: (-37.616, 156.6, -km + 5.392), dir: Y) as m_1
+  cut cylinder(d: 3.4, h: 6, at: (-23.477, 156.6, -km - 29.88), dir: Y) as m_2
+  cut cylinder(d: 3.4, h: 6, at: (14.138, 156.6, -km - 35.272), dir: Y) as m_3
+  cut cylinder(d: 3.4, h: 6, at: (37.616, 156.6, -km - 5.392), dir: Y) as m_4
+  cut cylinder(d: 3.4, h: 6, at: (23.477, 156.6, -km + 29.88), dir: Y) as m_5
+  cut cylinder(d: 3.4, h: 6, at: (-14.138, 156.6, -km + 35.272), dir: Y) as m_6
+  cut cylinder(d: 4.5, h: 6, at: (45.899, 110.6, -km + 26.5), dir: Y) as rim_hole_1
+  cut cylinder(d: 4.5, h: 6, at: (-26.5, 110.6, -km + 45.899), dir: Y) as rim_hole_2
+  cut cylinder(d: 4.5, h: 6, at: (-45.899, 110.6, -km - 26.5), dir: Y) as rim_hole_3
+  cut cylinder(d: 4.5, h: 6, at: (45.899, 110.6, -km - 26.5), dir: Y) as rim_hole_4
+  cut extrude(polygon([(120.6, -km - 15), (152.6, -km - 15), (152.6, -km + 15), (120.6, -km + 15)], r: 8), 100, at: (-50, 0, 0), dir: X) as window_across
+  cut extrude(polygon([(-15, 120.6), (15, 120.6), (15, 152.6), (-15, 152.6)], r: 8), 100, at: (0, 0, -km - 50), dir: Z) as window_along
+  cut extrude(polygon([(-44.766, -km - 4.581), (-44.338, -km - 7.693), (-43.693, -km - 10.767), (-42.836, -km - 13.788), (-41.769, -km - 16.743), (-40.5, -km - 19.616), (-39.033, -km - 22.393), (-37.376, -km - 25.061), (-35.536, -km - 27.607), (-27.639, -km - 21.472), (-29.07, -km - 19.492), (-30.359, -km - 17.417), (-31.5, -km - 15.257), (-32.487, -km - 13.022), (-33.317, -km - 10.724), (-33.983, -km - 8.374), (-34.485, -km - 5.983), (-34.818, -km - 3.563)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_1
+  cut extrude(polygon([(-18.416, -km - 41.059), (-15.507, -km - 42.244), (-12.522, -km - 43.223), (-9.477, -km - 43.991), (-6.385, -km - 44.545), (-3.262, -km - 44.882), (-0.123, -km - 45), (3.016, -km - 44.899), (6.14, -km - 44.579), (4.776, -km - 34.673), (2.346, -km - 34.921), (-0.096, -km - 35), (-2.537, -km - 34.908), (-4.966, -km - 34.646), (-7.371, -km - 34.215), (-9.74, -km - 33.618), (-12.061, -km - 32.856), (-14.323, -km - 31.935)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_2
+  cut extrude(polygon([(26.35, -km - 36.478), (28.831, -km - 34.551), (31.171, -km - 32.456), (33.359, -km - 30.203), (35.384, -km - 27.802), (37.237, -km - 25.266), (38.909, -km - 22.607), (40.391, -km - 19.838), (41.677, -km - 16.972), (32.415, -km - 13.2), (31.416, -km - 15.429), (30.263, -km - 17.583), (28.962, -km - 19.651), (27.521, -km - 21.624), (25.946, -km - 23.491), (24.244, -km - 25.244), (22.424, -km - 26.873), (20.495, -km - 28.372)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_3
+  cut extrude(polygon([(44.766, -km + 4.581), (44.338, -km + 7.693), (43.693, -km + 10.767), (42.836, -km + 13.788), (41.769, -km + 16.743), (40.5, -km + 19.616), (39.033, -km + 22.393), (37.376, -km + 25.061), (35.536, -km + 27.607), (27.639, -km + 21.472), (29.07, -km + 19.492), (30.359, -km + 17.417), (31.5, -km + 15.257), (32.487, -km + 13.022), (33.317, -km + 10.724), (33.983, -km + 8.374), (34.485, -km + 5.983), (34.818, -km + 3.563)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_4
+  cut extrude(polygon([(18.416, -km + 41.059), (15.507, -km + 42.244), (12.522, -km + 43.223), (9.477, -km + 43.991), (6.385, -km + 44.545), (3.262, -km + 44.882), (0.123, -km + 45), (-3.016, -km + 44.899), (-6.14, -km + 44.579), (-4.776, -km + 34.673), (-2.346, -km + 34.921), (0.096, -km + 35), (2.537, -km + 34.908), (4.966, -km + 34.646), (7.371, -km + 34.215), (9.74, -km + 33.618), (12.061, -km + 32.856), (14.323, -km + 31.935)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_5
+  cut extrude(polygon([(-26.35, -km + 36.478), (-28.831, -km + 34.551), (-31.171, -km + 32.456), (-33.359, -km + 30.203), (-35.384, -km + 27.802), (-37.237, -km + 25.266), (-38.909, -km + 22.607), (-40.391, -km + 19.838), (-41.677, -km + 16.972), (-32.415, -km + 13.2), (-31.416, -km + 15.429), (-30.263, -km + 17.583), (-28.962, -km + 19.651), (-27.521, -km + 21.624), (-25.946, -km + 23.491), (-24.244, -km + 25.244), (-22.424, -km + 26.873), (-20.495, -km + 28.372)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_6
+}
+component fl_cup_post_screws = lib.screw(M4, 20, head: "button") { at: [(205 + 45.899 * cth + (-km + 26.5) * sth, aby + 115.6, hz - (45.899 * sth) + (-km + 26.5) * cth), (205 + (-26.5) * cth + (-km + 45.899) * sth, aby + 115.6, hz - ((-26.5) * sth) + (-km + 45.899) * cth)], axis: -Y, group: "Leg front left", label: "M4 x 20 button screw: knee cup through the outer thigh plate into the upper spacer posts, front left" }
+component fl_cup_screws = lib.screw(M4, 10, head: "button") { at: [(205 + (-45.899) * cth + (-km - 26.5) * sth, aby + 115.6, hz - ((-45.899) * sth) + (-km - 26.5) * cth), (205 + 45.899 * cth + (-km - 26.5) * sth, aby + 115.6, hz - (45.899 * sth) + (-km - 26.5) * cth)], axis: -Y, group: "Leg front left", label: "M4 x 10 button screw: knee cup to the outer thigh plate, front left" }
+component fl_knee_m_screws = lib.screw(M3, 8) { at: [(205 + (-37.616) * cth + (-km + 5.392) * sth, aby + 161.6, hz - ((-37.616) * sth) + (-km + 5.392) * cth), (205 + (-23.477) * cth + (-km - 29.88) * sth, aby + 161.6, hz - ((-23.477) * sth) + (-km - 29.88) * cth), (205 + 14.138 * cth + (-km - 35.272) * sth, aby + 161.6, hz - (14.138 * sth) + (-km - 35.272) * cth), (205 + 37.616 * cth + (-km - 5.392) * sth, aby + 161.6, hz - (37.616 * sth) + (-km - 5.392) * cth), (205 + 23.477 * cth + (-km + 29.88) * sth, aby + 161.6, hz - (23.477 * sth) + (-km + 29.88) * cth), (205 + (-14.138) * cth + (-km + 35.272) * sth, aby + 161.6, hz - ((-14.138) * sth) + (-km + 35.272) * cth)], axis: -Y, group: "Leg front left", label: "M3 x 8 socket screw: front left knee actuator's back face to its cup" }
+component fl_mpul = lib.pulley("htd8m_22t_20_flanged") { at: (205 + (-km) * sth, aby + 113.6, hz + (-km) * cth), axis: -Y, rotate: 141.843 - th, group: "Leg front left", label: "Knee motor pulley, front left: HTD 8M 22-tooth on the knee actuator's output" }
+component fl_mpul_screws = lib.screw(M3, 40) { at: [(205 + (-17.332) * cth + (-km + 4.858) * sth, aby + 79.1, hz - ((-17.332) * sth) + (-km + 4.858) * cth), (205 + (-15.691) * cth + (-km - 8.821) * sth, aby + 79.1, hz - ((-15.691) * sth) + (-km - 8.821) * cth), (205 + (-4.858) * cth + (-km - 17.332) * sth, aby + 79.1, hz - ((-4.858) * sth) + (-km - 17.332) * cth), (205 + 8.821 * cth + (-km - 15.691) * sth, aby + 79.1, hz - (8.821 * sth) + (-km - 15.691) * cth), (205 + 17.332 * cth + (-km - 4.858) * sth, aby + 79.1, hz - (17.332 * sth) + (-km - 4.858) * cth), (205 + 15.691 * cth + (-km + 8.821) * sth, aby + 79.1, hz - (15.691 * sth) + (-km + 8.821) * cth), (205 + 4.858 * cth + (-km + 17.332) * sth, aby + 79.1, hz - (4.858 * sth) + (-km + 17.332) * cth), (205 + (-8.821) * cth + (-km + 15.691) * sth, aby + 79.1, hz - ((-8.821) * sth) + (-km + 15.691) * cth)], axis: Y, group: "Leg front left", label: "M3 x 40 socket screw: motor pulley to the knee actuator's output, front left" }
+component fl_kpul = lib.pulley("htd8m_22t_20_flanged_tapped") { at: (205 + (-thigh_l) * sth, aby + 116.1, hz + (-thigh_l) * cth), axis: -Y, rotate: -qs, group: "Leg front left", label: "Knee pulley, front left: HTD 8M 22-tooth with the long hub, in the 6808 bearing" }
+component fl_belt = lib.belt("htd8m_20_loop", path: [fl_mpul, fl_kpul], tension: 560N, torque: 24800) { group: "Leg front left", label: "Knee belt, front left: HTD 8M, 20 mm wide, closed loop" }
+component fl_b6808 = lib.bearing("6808") { at: (205 + (-thigh_l) * sth, aby + 106.6, hz + (-thigh_l) * cth), axis: Y, group: "Leg front left", label: "Knee pulley bearing, front left: 6808-2RS, 40 x 52 x 7" }
+component fl_b6801 = lib.bearing("6801") { at: (205 + (-thigh_l) * sth, aby + 73, hz + (-thigh_l) * cth), axis: Y, group: "Leg front left", label: "Knee pin bearing, front left: 6801-2RS, 12 x 21 x 5" }
+part fl_crank {
+  label: "Knee crank, front left: 7075-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 7075"
+  group: "Leg front left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z])
+  at: (205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body extrude(polygon([(13, -24.799), (17.998, -21.449), (24.249, -14), (27.575, -4.862), (27.575, 4.862), (24.249, 14), (17.998, 21.449), (9.577, 26.311), (0, 28), (-9.577, 26.311), (-17.998, 21.449), (-24.249, 14), (-27.575, 4.862), (-27.575, -4.862), (-24.249, -14), (-17.998, -21.449), (-13, -24.799), (-13, -64), (13, -64)], r: 4), 27, at: (0, 143.1, 0), dir: -Y) as blank
+  cut box(64, 18, 64, at: (0, 135.1, -30)) as disc_face
+  cut cylinder(d: 12, h: 12, at: (0, 115.1, 0), dir: Y) as pin_bore
+  cut cylinder(d: 20.1, h: 45, at: (0, 129.6, -34), dir: -Z) as tube_bore
+  cut cylinder(d: 3.4, h: 12, at: (16.63, 115.1, 6.888), dir: Y) as m_1
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, 122.1, 6.888), dir: Y) as cb_1
+  cut cylinder(d: 3.4, h: 12, at: (6.888, 115.1, 16.63), dir: Y) as m_2
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, 122.1, 16.63), dir: Y) as cb_2
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, 115.1, 16.63), dir: Y) as m_3
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, 122.1, 16.63), dir: Y) as cb_3
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, 115.1, 6.888), dir: Y) as m_4
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, 122.1, 6.888), dir: Y) as cb_4
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, 115.1, -6.888), dir: Y) as m_5
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, 122.1, -6.888), dir: Y) as cb_5
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, 115.1, -16.63), dir: Y) as m_6
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, 122.1, -16.63), dir: Y) as cb_6
+  cut cylinder(d: 3.4, h: 12, at: (6.888, 115.1, -16.63), dir: Y) as m_7
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, 122.1, -16.63), dir: Y) as cb_7
+  cut cylinder(d: 3.4, h: 12, at: (16.63, 115.1, -6.888), dir: Y) as m_8
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, 122.1, -6.888), dir: Y) as cb_8
+}
+component fl_crank_screws = lib.screw(M3, 12) { at: [(205 - (thigh_l * sth) + 16.63 * cqs + 6.888 * sqs, aby + 122.1, hz - (thigh_l * cth) - (16.63 * sqs) + 6.888 * cqs), (205 - (thigh_l * sth) + 6.888 * cqs + 16.63 * sqs, aby + 122.1, hz - (thigh_l * cth) - (6.888 * sqs) + 16.63 * cqs), (205 - (thigh_l * sth) + (-6.888) * cqs + 16.63 * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-6.888) * sqs) + 16.63 * cqs), (205 - (thigh_l * sth) + (-16.63) * cqs + 6.888 * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-16.63) * sqs) + 6.888 * cqs), (205 - (thigh_l * sth) + (-16.63) * cqs + (-6.888) * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-16.63) * sqs) + (-6.888) * cqs), (205 - (thigh_l * sth) + (-6.888) * cqs + (-16.63) * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-6.888) * sqs) + (-16.63) * cqs), (205 - (thigh_l * sth) + 6.888 * cqs + (-16.63) * sqs, aby + 122.1, hz - (thigh_l * cth) - (6.888 * sqs) + (-16.63) * cqs), (205 - (thigh_l * sth) + 16.63 * cqs + (-6.888) * sqs, aby + 122.1, hz - (thigh_l * cth) - (16.63 * sqs) + (-6.888) * cqs)], axis: -Y, group: "Leg front left", label: "M3 x 12 socket screw: knee crank to the knee pulley's hub, front left" }
+part fl_pin {
+  label: "Knee pin, front left: 12 mm Ti-6Al-4V, gun-drilled, with a collar and head"
+  color: #8a8d91
+  material: "Titanium"
+  group: "Leg front left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body cylinder(d: 12, h: 53.1, at: (0, 73, 0), dir: Y) as shaft
+  add cylinder(d: 16, h: 1, at: (0, 78.05, 0), dir: Y) as collar
+  add cylinder(d: 18, h: 3, at: (0, 126.1, 0), dir: Y) as head
+  cut cylinder(d: 4.2, h: 10, at: (0, 72.99, 0), dir: Y) as tap
+  cut cylinder(d: 6, h: 43.1, at: (0, 129.11, 0), dir: -Y) as bore
+}
+component fl_pin_screw = lib.screw(M5, 10, head: "button") { at: (205 - (thigh_l * sth), aby + 73, hz - (thigh_l * cth)), axis: Y, group: "Leg front left", label: "M5 x 10 button screw: holds the knee pin in its bearing, front left" }
+part fl_tube {
+  label: "Shank tube, front left: 20 x 17 mm roll-wrapped carbon fibre"
+  color: #1b1c1f
+  material: "Carbon fiber"
+  group: "Leg front left"
+  process: false
+  held: "bonded into the knee crank and the foot hub with 3M DP420 epoxy"
+  at: (205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body tube(od: 20, id: 17, h: shank_l - 52, at: (0, 129.6, -34), dir: -Z) as tube_body
+}
+part fl_foot_hub {
+  label: "Foot hub, front left: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg front left"
+  process: mfg.cnc_lathe()
+  at: (205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body cylinder(d: 24, h: 40, at: (0, 129.6, -shank_l + 40), dir: -Z) as socket
+  add sphere(d: 30, at: (0, 129.6, -shank_l)) as ball
+  cut cylinder(d: 20.1, h: 22, at: (0, 129.6, -shank_l + 40.01), dir: -Z) as tube_bore
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, 129.6, -shank_l + 3), dir: Z) as barb_1
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, 129.6, -shank_l + 3 + 3), dir: Z) as barb_2
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, 129.6, -shank_l + 3 + 6), dir: Z) as barb_3
+}
+part fl_foot {
+  label: "Foot, front left: 42 mm ball, TPU 95A"
+  color: #1d1e20
+  material: "TPU"
+  group: "Leg front left"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  held: "stretched over the foot hub's barbed ball and bonded with cyanoacrylate"
+  at: (205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "matte"
+  body sphere(d: 42, at: (0, 129.6, -shank_l)) as ball
+  cut cylinder(d: 26.2, h: 30, at: (0, 129.6, -shank_l + 4), dir: Z) as neck
+  cut sphere(d: 30.1, at: (0, 129.6, -shank_l)) as core
+}
+part fr_carrier {
+  label: "Hip carrier, front right: 6061-T6, orange anodised"
+  color: #e8641e
+  material: "Aluminum 6061"
+  group: "Leg front right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y])
+  at: (0, -aby, hz)
+  finish: "anodized"
+  body extrude(polygon([(-29, -38), (17, -38), (22, -36.66), (25.66, -33), (27, -28), (27, 28), (25.66, 33), (22, 36.66), (17, 38), (-29, 38)]), 6, at: (149.5, 0, 0), dir: X) as abad_plate
+  add extrude(polygon([(153.5, 38), (180.896, 38), (182.5, 38.971), (189.609, 42.286), (197.186, 44.316), (205, 45), (212.814, 44.316), (220.391, 42.286), (227.5, 38.971), (233.925, 34.472), (239.472, 28.925), (243.971, 22.5), (247.286, 15.391), (249.316, 7.814), (250, 0), (249.316, -7.814), (247.286, -15.391), (243.971, -22.5), (239.472, -28.925), (233.925, -34.472), (227.5, -38.971), (220.391, -42.286), (212.814, -44.316), (205, -45), (197.186, -44.316), (189.609, -42.286), (182.5, -38.971), (180.896, -38), (153.5, -38)], r: 4), 8, at: (0, -21, 0), dir: -Y) as hip_plate
+  cut cylinder(d: 66, h: 10, at: (205, -30, 0), dir: Y) as cover_hole
+  cut cylinder(d: 3.4, h: 10, at: (171.672, -30, -18.256), dir: Y) as hip_m_1
+  cut cylinder(d: 6.5, h: 3.21, at: (171.672, -24.2, -18.256), dir: Y) as hip_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (204.146, -30, -37.99), dir: Y) as hip_m_2
+  cut cylinder(d: 6.5, h: 3.21, at: (204.146, -24.2, -37.99), dir: Y) as hip_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (237.474, -30, -19.735), dir: Y) as hip_m_3
+  cut cylinder(d: 6.5, h: 3.21, at: (237.474, -24.2, -19.735), dir: Y) as hip_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (238.328, -30, 18.256), dir: Y) as hip_m_4
+  cut cylinder(d: 6.5, h: 3.21, at: (238.328, -24.2, 18.256), dir: Y) as hip_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (205.854, -30, 37.99), dir: Y) as hip_m_5
+  cut cylinder(d: 6.5, h: 3.21, at: (205.854, -24.2, 37.99), dir: Y) as hip_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (172.526, -30, 19.735), dir: Y) as hip_m_6
+  cut cylinder(d: 6.5, h: 3.21, at: (172.526, -24.2, 19.735), dir: Y) as hip_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -17.332, 4.858), dir: X) as abad_m_1
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -17.332, 4.858), dir: X) as abad_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -15.691, -8.821), dir: X) as abad_m_2
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -15.691, -8.821), dir: X) as abad_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -4.858, -17.332), dir: X) as abad_m_3
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -4.858, -17.332), dir: X) as abad_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 8.821, -15.691), dir: X) as abad_m_4
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 8.821, -15.691), dir: X) as abad_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 17.332, -4.858), dir: X) as abad_m_5
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 17.332, -4.858), dir: X) as abad_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 15.691, 8.821), dir: X) as abad_m_6
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 15.691, 8.821), dir: X) as abad_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (148.5, 4.858, 17.332), dir: X) as abad_m_7
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, 4.858, 17.332), dir: X) as abad_cb_7
+  cut cylinder(d: 3.4, h: 10, at: (148.5, -8.821, 15.691), dir: X) as abad_m_8
+  cut cylinder(d: 6.5, h: 3.31, at: (152.2, -8.821, 15.691), dir: X) as abad_cb_8
+  add cylinder(d: 13.8, h: 1.11, at: (148.4, 0, 0), dir: X) as spigot
+}
+component fr_carrier_screws = lib.screw(M3, 8) { at: [(152.2, -aby - 17.332, hz + 4.858), (152.2, -aby - 15.691, hz - 8.821), (152.2, -aby - 4.858, hz - 17.332), (152.2, -aby + 8.821, hz - 15.691), (152.2, -aby + 17.332, hz - 4.858), (152.2, -aby + 15.691, hz + 8.821), (152.2, -aby + 4.858, hz + 17.332), (152.2, -aby - 8.821, hz + 15.691)], axis: -X, group: "Leg front right", label: "M3 x 8 socket screw: hip carrier to the front right ab/ad actuator's output" }
+component fr_hip_screws = lib.screw(M3, 10) { at: [(171.672, -(aby + 21 + 3.2), hz - 18.256), (204.146, -(aby + 21 + 3.2), hz - 37.99), (237.474, -(aby + 21 + 3.2), hz - 19.735), (238.328, -(aby + 21 + 3.2), hz + 18.256), (205.854, -(aby + 21 + 3.2), hz + 37.99), (172.526, -(aby + 21 + 3.2), hz + 19.735)], axis: -Y, group: "Leg front right", label: "M3 x 10 socket screw: front right hip actuator's back face to its carrier, in a counterbore" }
+part fr_thigh_in {
+  label: "Thigh inner plate, front right: 5 mm 7075-T6, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg front right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (205, -aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-30.07, 10.945), (-24.513, 20.569), (-16, 27.713), (-5.557, 31.514), (5.557, 31.514), (16, 27.713), (24.513, 20.569), (30.07, 10.945), (52, -30), (55.5, -45), (55, -60), (40, -km - 6), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0), (-40, -km - 6), (-55, -60), (-55.5, -45), (-52, -30)], r: 3), 5, at: (0, -73, 0), dir: -Y) as plate
+  cut cylinder(d: 3.4, h: 8, at: ((-16.78) * cth - ((-6.513) * sth), -79, (-16.78) * sth + (-6.513) * cth), dir: Y) as hip_m_1
+  cut cylinder(d: 3.4, h: 8, at: ((-7.26) * cth - ((-16.471) * sth), -79, (-7.26) * sth + (-16.471) * cth), dir: Y) as hip_m_2
+  cut cylinder(d: 3.4, h: 8, at: (6.513 * cth - ((-16.78) * sth), -79, 6.513 * sth + (-16.78) * cth), dir: Y) as hip_m_3
+  cut cylinder(d: 3.4, h: 8, at: (16.471 * cth - ((-7.26) * sth), -79, 16.471 * sth + (-7.26) * cth), dir: Y) as hip_m_4
+  cut cylinder(d: 3.4, h: 8, at: (16.78 * cth - (6.513 * sth), -79, 16.78 * sth + 6.513 * cth), dir: Y) as hip_m_5
+  cut cylinder(d: 3.4, h: 8, at: (7.26 * cth - (16.471 * sth), -79, 7.26 * sth + 16.471 * cth), dir: Y) as hip_m_6
+  cut cylinder(d: 3.4, h: 8, at: ((-6.513) * cth - (16.78 * sth), -79, (-6.513) * sth + 16.78 * cth), dir: Y) as hip_m_7
+  cut cylinder(d: 3.4, h: 8, at: ((-16.471) * cth - (7.26 * sth), -79, (-16.471) * sth + 7.26 * cth), dir: Y) as hip_m_8
+  cut cylinder(d: 20, h: 8, at: (0, -79, 0), dir: Y) as hip_bore
+  cut cylinder(d: 50, h: 8, at: (0, -79, -km), dir: Y) as pulley_access
+  cut cylinder(d: 21, h: 5.01, at: (0, -78.01, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 16.05, h: 8, at: (0, -79, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 8, at: (45.899, -79, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 8.5, h: 2.51, at: (45.899, -75.5, -km + 26.5), dir: Y) as post_cb_1
+  cut cylinder(d: 4.5, h: 8, at: (-26.5, -79, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 8.5, h: 2.51, at: (-26.5, -75.5, -km + 45.899), dir: Y) as post_cb_2
+  cut cylinder(d: 4.5, h: 8, at: (0, -79, -(thigh_l - 40)), dir: Y) as post_3
+  cut cylinder(d: 8.5, h: 2.51, at: (0, -75.5, -(thigh_l - 40)), dir: Y) as post_cb_3
+  cut extrude(polygon([(-27, -km - 34), (27, -km - 34), (24, -thigh_l + 52), (-24, -thigh_l + 52)], r: 6), 8, at: (0, -72, 0), dir: -Y) as window
+  cut extrude(polygon([(14, -30), (30, -22), (36, -34), (28, -km + 27.7), (16, -km + 27.7)], r: 4), 8, at: (0, -72, 0), dir: -Y) as window_hip
+}
+part fr_thigh_out {
+  label: "Thigh outer plate, front right: 6.5 mm 7075-T6 with the knee bearing boss, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg front right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (205, -aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-56.5, -km + 0), (-56.017, -km + 7.375), (-54.575, -km + 14.623), (-52.199, -km + 21.622), (-48.93, -km + 28.25), (-44.824, -km + 34.395), (-39.952, -km + 39.952), (-36.83, -km + 47.998), (-30.25, -km + 52.395), (-23.152, -km + 55.895), (-14.623, -km + 54.575), (-7.375, -km + 56.017), (0, -km + 56.5), (7.375, -km + 56.017), (14.623, -km + 54.575), (21.622, -km + 52.199), (28.25, -km + 48.93), (34.395, -km + 44.824), (39.952, -km + 39.952), (47.998, -km + 36.83), (52.395, -km + 30.25), (55.895, -km + 23.152), (54.575, -km + 14.623), (56.017, -km + 7.375), (56.5, -km), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0)], r: 4), 6.5, at: (0, -105.1, 0), dir: -Y) as plate
+  add cylinder(d: 60, h: 9.5, at: (0, -114.6, -thigh_l), dir: Y) as knee_boss
+  cut cylinder(d: 49, h: 9, at: (0, -112.6, -km), dir: Y) as pulley_hole
+  cut cylinder(d: 3.3, h: 9, at: (-45.899, -112.6, -km - 26.5), dir: Y) as cup_tap_1
+  cut cylinder(d: 3.3, h: 9, at: (45.899, -112.6, -km - 26.5), dir: Y) as cup_tap_2
+  cut cylinder(d: 52, h: 8.01, at: (0, -114.61, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 46, h: 11.5, at: (0, -115.6, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 9, at: (45.899, -112.6, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 4.5, h: 9, at: (-26.5, -112.6, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 4.5, h: 9, at: (0, -112.6, -(thigh_l - 40)), dir: Y) as post_3
+  cut extrude(polygon([(-30, -km - 34), (30, -km - 34), (22, -thigh_l + 52), (-22, -thigh_l + 52)], r: 6), 9, at: (0, -104.1, 0), dir: -Y) as window
+  cut extrude(polygon([(31.449, -km + 34.928), (24.347, -km + 40.202), (16.383, -km + 44.052), (7.838, -km + 46.342), (-0.984, -km + 46.99), (-9.772, -km + 45.973), (-6.237, -km + 29.344), (-0.628, -km + 29.993), (5.003, -km + 29.58), (10.457, -km + 28.118), (15.541, -km + 25.661), (20.074, -km + 22.294)], r: 4), 9, at: (0, -104.1, 0), dir: -Y) as window_ring_1
+  cut extrude(polygon([(-34.928, -km + 31.449), (-40.427, -km + 23.972), (-44.35, -km + 15.56), (-46.543, -km + 6.541), (-29.708, -km + 4.175), (-28.308, -km + 9.932), (-25.804, -km + 15.301), (-22.294, -km + 20.074)], r: 4), 9, at: (0, -104.1, 0), dir: -Y) as window_ring_2
+}
+part fr_post_1 {
+  label: "Thigh spacer post 1, front right: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg front right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 + 45.899 * cth + (-km + 26.5) * sth, -aby, hz - (45.899 * sth) + (-km + 26.5) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, -105.1, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, -105.11, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, -87.99, 0), dir: Y) as tap_b
+}
+part fr_post_2 {
+  label: "Thigh spacer post 2, front right: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg front right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 + (-26.5) * cth + (-km + 45.899) * sth, -aby, hz - ((-26.5) * sth) + (-km + 45.899) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, -105.1, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, -105.11, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, -87.99, 0), dir: Y) as tap_b
+}
+part fr_post_3 {
+  label: "Thigh spacer post 3, front right: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg front right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 + (-(thigh_l - 40)) * sth, -aby, hz + (-(thigh_l - 40)) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, -105.1, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, -105.11, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, -87.99, 0), dir: Y) as tap_b
+}
+component fr_post_screws_in = lib.screw(M4, 12, head: "button") { at: [(205 + 45.899 * cth + (-km + 26.5) * sth, -(aby + 75.5), hz - (45.899 * sth) + (-km + 26.5) * cth), (205 + (-26.5) * cth + (-km + 45.899) * sth, -(aby + 75.5), hz - ((-26.5) * sth) + (-km + 45.899) * cth), (205 + (-(thigh_l - 40)) * sth, -(aby + 75.5), hz + (-(thigh_l - 40)) * cth)], axis: -Y, group: "Leg front right", label: "M4 x 12 button screw: inner thigh plate to the spacer posts, front right" }
+component fr_post_screws_out = lib.screw(M4, 12, head: "button") { at: (205 + (-(thigh_l - 40)) * sth, -(aby + 111.6), hz + (-(thigh_l - 40)) * cth), axis: Y, group: "Leg front right", label: "M4 x 12 button screw: outer thigh plate to the lower spacer post, front right" }
+component fr_thigh_screws = lib.screw(M3, 10) { at: [(188.22, -(aby + 78), hz - 6.513), (197.74, -(aby + 78), hz - 16.471), (211.513, -(aby + 78), hz - 16.78), (221.471, -(aby + 78), hz - 7.26), (221.78, -(aby + 78), hz + 6.513), (212.26, -(aby + 78), hz + 16.471), (198.487, -(aby + 78), hz + 16.78), (188.529, -(aby + 78), hz + 7.26)], axis: Y, group: "Leg front right", label: "M3 x 10 socket screw: inner thigh plate to the front right hip actuator's output" }
+part fr_cup {
+  label: "Knee actuator cup, front right: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg front right"
+  process: mfg.cnc_mill(tool_d: 3, setups: [Y, -Y, X, -X, Z, -Z])
+  at: (205, -aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(50, -km), (49.572, -km + 6.526), (48.296, -km + 12.941), (54.047, -km + 22.387), (50.662, -km + 29.25), (46.411, -km + 35.613), (35.355, -km + 35.355), (30.438, -km + 39.668), (25, -km + 43.301), (19.134, -km + 46.194), (12.941, -km + 48.296), (6.526, -km + 49.572), (0, -km + 50), (-6.526, -km + 49.572), (-12.941, -km + 48.296), (-22.387, -km + 54.047), (-29.25, -km + 50.662), (-35.613, -km + 46.411), (-35.355, -km + 35.355), (-39.668, -km + 30.438), (-43.301, -km + 25), (-46.194, -km + 19.134), (-48.296, -km + 12.941), (-49.572, -km + 6.526), (-50, -km + 0), (-49.572, -km - 6.526), (-48.296, -km - 12.941), (-54.047, -km - 22.387), (-50.662, -km - 29.25), (-46.411, -km - 35.613), (-35.355, -km - 35.355), (-30.438, -km - 39.668), (-25, -km - 43.301), (-19.134, -km - 46.194), (-12.941, -km - 48.296), (-6.526, -km - 49.572), (0, -km - 50), (6.526, -km - 49.572), (12.941, -km - 48.296), (19.134, -km - 46.194), (25, -km - 43.301), (30.438, -km - 39.668), (35.355, -km - 35.355), (46.411, -km - 35.613), (50.662, -km - 29.25), (54.047, -km - 22.387), (48.296, -km - 12.941), (49.572, -km - 6.526)], r: 2), 4, at: (0, -111.6, 0), dir: -Y) as rim
+  add cylinder(d: 97, h: 42.01, at: (0, -157.6, -km), dir: Y) as wall
+  add cylinder(d: 97, h: 4.01, at: (0, -161.6, -km), dir: Y) as back
+  cut cylinder(d: 91, h: 46.02, at: (0, -157.61, -km), dir: Y) as bore
+  cut cylinder(d: 66, h: 6, at: (0, -162.6, -km), dir: Y) as back_hole
+  cut cylinder(d: 3.4, h: 6, at: (37.616, -162.6, -km + 5.392), dir: Y) as m_1
+  cut cylinder(d: 3.4, h: 6, at: (23.477, -162.6, -km - 29.88), dir: Y) as m_2
+  cut cylinder(d: 3.4, h: 6, at: (-14.138, -162.6, -km - 35.272), dir: Y) as m_3
+  cut cylinder(d: 3.4, h: 6, at: (-37.616, -162.6, -km - 5.392), dir: Y) as m_4
+  cut cylinder(d: 3.4, h: 6, at: (-23.477, -162.6, -km + 29.88), dir: Y) as m_5
+  cut cylinder(d: 3.4, h: 6, at: (14.138, -162.6, -km + 35.272), dir: Y) as m_6
+  cut cylinder(d: 4.5, h: 6, at: (45.899, -116.6, -km + 26.5), dir: Y) as rim_hole_1
+  cut cylinder(d: 4.5, h: 6, at: (-26.5, -116.6, -km + 45.899), dir: Y) as rim_hole_2
+  cut cylinder(d: 4.5, h: 6, at: (-45.899, -116.6, -km - 26.5), dir: Y) as rim_hole_3
+  cut cylinder(d: 4.5, h: 6, at: (45.899, -116.6, -km - 26.5), dir: Y) as rim_hole_4
+  cut extrude(polygon([(-152.6, -km - 15), (-120.6, -km - 15), (-120.6, -km + 15), (-152.6, -km + 15)], r: 8), 100, at: (-50, 0, 0), dir: X) as window_across
+  cut extrude(polygon([(-15, -152.6), (15, -152.6), (15, -120.6), (-15, -120.6)], r: 8), 100, at: (0, 0, -km - 50), dir: Z) as window_along
+  cut extrude(polygon([(44.766, -km - 4.581), (44.338, -km - 7.693), (43.693, -km - 10.767), (42.836, -km - 13.788), (41.769, -km - 16.743), (40.5, -km - 19.616), (39.033, -km - 22.393), (37.376, -km - 25.061), (35.536, -km - 27.607), (27.639, -km - 21.472), (29.07, -km - 19.492), (30.359, -km - 17.417), (31.5, -km - 15.257), (32.487, -km - 13.022), (33.317, -km - 10.724), (33.983, -km - 8.374), (34.485, -km - 5.983), (34.818, -km - 3.563)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_1
+  cut extrude(polygon([(18.416, -km - 41.059), (15.507, -km - 42.244), (12.522, -km - 43.223), (9.477, -km - 43.991), (6.385, -km - 44.545), (3.262, -km - 44.882), (0.123, -km - 45), (-3.016, -km - 44.899), (-6.14, -km - 44.579), (-4.776, -km - 34.673), (-2.346, -km - 34.921), (0.096, -km - 35), (2.537, -km - 34.908), (4.966, -km - 34.646), (7.371, -km - 34.215), (9.74, -km - 33.618), (12.061, -km - 32.856), (14.323, -km - 31.935)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_2
+  cut extrude(polygon([(-26.35, -km - 36.478), (-28.831, -km - 34.551), (-31.171, -km - 32.456), (-33.359, -km - 30.203), (-35.384, -km - 27.802), (-37.237, -km - 25.266), (-38.909, -km - 22.607), (-40.391, -km - 19.838), (-41.677, -km - 16.972), (-32.415, -km - 13.2), (-31.416, -km - 15.429), (-30.263, -km - 17.583), (-28.962, -km - 19.651), (-27.521, -km - 21.624), (-25.946, -km - 23.491), (-24.244, -km - 25.244), (-22.424, -km - 26.873), (-20.495, -km - 28.372)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_3
+  cut extrude(polygon([(-44.766, -km + 4.581), (-44.338, -km + 7.693), (-43.693, -km + 10.767), (-42.836, -km + 13.788), (-41.769, -km + 16.743), (-40.5, -km + 19.616), (-39.033, -km + 22.393), (-37.376, -km + 25.061), (-35.536, -km + 27.607), (-27.639, -km + 21.472), (-29.07, -km + 19.492), (-30.359, -km + 17.417), (-31.5, -km + 15.257), (-32.487, -km + 13.022), (-33.317, -km + 10.724), (-33.983, -km + 8.374), (-34.485, -km + 5.983), (-34.818, -km + 3.563)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_4
+  cut extrude(polygon([(-18.416, -km + 41.059), (-15.507, -km + 42.244), (-12.522, -km + 43.223), (-9.477, -km + 43.991), (-6.385, -km + 44.545), (-3.262, -km + 44.882), (-0.123, -km + 45), (3.016, -km + 44.899), (6.14, -km + 44.579), (4.776, -km + 34.673), (2.346, -km + 34.921), (-0.096, -km + 35), (-2.537, -km + 34.908), (-4.966, -km + 34.646), (-7.371, -km + 34.215), (-9.74, -km + 33.618), (-12.061, -km + 32.856), (-14.323, -km + 31.935)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_5
+  cut extrude(polygon([(26.35, -km + 36.478), (28.831, -km + 34.551), (31.171, -km + 32.456), (33.359, -km + 30.203), (35.384, -km + 27.802), (37.237, -km + 25.266), (38.909, -km + 22.607), (40.391, -km + 19.838), (41.677, -km + 16.972), (32.415, -km + 13.2), (31.416, -km + 15.429), (30.263, -km + 17.583), (28.962, -km + 19.651), (27.521, -km + 21.624), (25.946, -km + 23.491), (24.244, -km + 25.244), (22.424, -km + 26.873), (20.495, -km + 28.372)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_6
+}
+component fr_cup_post_screws = lib.screw(M4, 20, head: "button") { at: [(205 + 45.899 * cth + (-km + 26.5) * sth, -(aby + 115.6), hz - (45.899 * sth) + (-km + 26.5) * cth), (205 + (-26.5) * cth + (-km + 45.899) * sth, -(aby + 115.6), hz - ((-26.5) * sth) + (-km + 45.899) * cth)], axis: Y, group: "Leg front right", label: "M4 x 20 button screw: knee cup through the outer thigh plate into the upper spacer posts, front right" }
+component fr_cup_screws = lib.screw(M4, 10, head: "button") { at: [(205 + (-45.899) * cth + (-km - 26.5) * sth, -(aby + 115.6), hz - ((-45.899) * sth) + (-km - 26.5) * cth), (205 + 45.899 * cth + (-km - 26.5) * sth, -(aby + 115.6), hz - (45.899 * sth) + (-km - 26.5) * cth)], axis: Y, group: "Leg front right", label: "M4 x 10 button screw: knee cup to the outer thigh plate, front right" }
+component fr_knee_m_screws = lib.screw(M3, 8) { at: [(205 + 37.616 * cth + (-km + 5.392) * sth, -(aby + 161.6), hz - (37.616 * sth) + (-km + 5.392) * cth), (205 + 23.477 * cth + (-km - 29.88) * sth, -(aby + 161.6), hz - (23.477 * sth) + (-km - 29.88) * cth), (205 + (-14.138) * cth + (-km - 35.272) * sth, -(aby + 161.6), hz - ((-14.138) * sth) + (-km - 35.272) * cth), (205 + (-37.616) * cth + (-km - 5.392) * sth, -(aby + 161.6), hz - ((-37.616) * sth) + (-km - 5.392) * cth), (205 + (-23.477) * cth + (-km + 29.88) * sth, -(aby + 161.6), hz - ((-23.477) * sth) + (-km + 29.88) * cth), (205 + 14.138 * cth + (-km + 35.272) * sth, -(aby + 161.6), hz - (14.138 * sth) + (-km + 35.272) * cth)], axis: Y, group: "Leg front right", label: "M3 x 8 socket screw: front right knee actuator's back face to its cup" }
+component fr_mpul = lib.pulley("htd8m_22t_20_flanged") { at: (205 + (-km) * sth, -(aby + 113.6), hz + (-km) * cth), axis: Y, rotate: 141.843 - (-th), group: "Leg front right", label: "Knee motor pulley, front right: HTD 8M 22-tooth on the knee actuator's output" }
+component fr_mpul_screws = lib.screw(M3, 40) { at: [(205 + 17.332 * cth + (-km + 4.858) * sth, -(aby + 79.1), hz - (17.332 * sth) + (-km + 4.858) * cth), (205 + 15.691 * cth + (-km - 8.821) * sth, -(aby + 79.1), hz - (15.691 * sth) + (-km - 8.821) * cth), (205 + 4.858 * cth + (-km - 17.332) * sth, -(aby + 79.1), hz - (4.858 * sth) + (-km - 17.332) * cth), (205 + (-8.821) * cth + (-km - 15.691) * sth, -(aby + 79.1), hz - ((-8.821) * sth) + (-km - 15.691) * cth), (205 + (-17.332) * cth + (-km - 4.858) * sth, -(aby + 79.1), hz - ((-17.332) * sth) + (-km - 4.858) * cth), (205 + (-15.691) * cth + (-km + 8.821) * sth, -(aby + 79.1), hz - ((-15.691) * sth) + (-km + 8.821) * cth), (205 + (-4.858) * cth + (-km + 17.332) * sth, -(aby + 79.1), hz - ((-4.858) * sth) + (-km + 17.332) * cth), (205 + 8.821 * cth + (-km + 15.691) * sth, -(aby + 79.1), hz - (8.821 * sth) + (-km + 15.691) * cth)], axis: -Y, group: "Leg front right", label: "M3 x 40 socket screw: motor pulley to the knee actuator's output, front right" }
+component fr_kpul = lib.pulley("htd8m_22t_20_flanged_tapped") { at: (205 + (-thigh_l) * sth, -(aby + 116.1), hz + (-thigh_l) * cth), axis: Y, rotate: qs, group: "Leg front right", label: "Knee pulley, front right: HTD 8M 22-tooth with the long hub, in the 6808 bearing" }
+component fr_belt = lib.belt("htd8m_20_loop", path: [fr_mpul, fr_kpul], tension: 560N, torque: 24800) { group: "Leg front right", label: "Knee belt, front right: HTD 8M, 20 mm wide, closed loop" }
+component fr_b6808 = lib.bearing("6808") { at: (205 + (-thigh_l) * sth, -(aby + 106.6), hz + (-thigh_l) * cth), axis: -Y, group: "Leg front right", label: "Knee pulley bearing, front right: 6808-2RS, 40 x 52 x 7" }
+component fr_b6801 = lib.bearing("6801") { at: (205 + (-thigh_l) * sth, -(aby + 73), hz + (-thigh_l) * cth), axis: -Y, group: "Leg front right", label: "Knee pin bearing, front right: 6801-2RS, 12 x 21 x 5" }
+part fr_crank {
+  label: "Knee crank, front right: 7075-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 7075"
+  group: "Leg front right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z])
+  at: (205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body extrude(polygon([(13, -24.799), (17.998, -21.449), (24.249, -14), (27.575, -4.862), (27.575, 4.862), (24.249, 14), (17.998, 21.449), (9.577, 26.311), (0, 28), (-9.577, 26.311), (-17.998, 21.449), (-24.249, 14), (-27.575, 4.862), (-27.575, -4.862), (-24.249, -14), (-17.998, -21.449), (-13, -24.799), (-13, -64), (13, -64)], r: 4), 27, at: (0, -116.1, 0), dir: -Y) as blank
+  cut box(64, 18, 64, at: (0, -135.1, -30)) as disc_face
+  cut cylinder(d: 12, h: 12, at: (0, -127.1, 0), dir: Y) as pin_bore
+  cut cylinder(d: 20.1, h: 45, at: (0, -129.6, -34), dir: -Z) as tube_bore
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, -127.1, 6.888), dir: Y) as m_1
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, -126.11, 6.888), dir: Y) as cb_1
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, -127.1, 16.63), dir: Y) as m_2
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, -126.11, 16.63), dir: Y) as cb_2
+  cut cylinder(d: 3.4, h: 12, at: (6.888, -127.1, 16.63), dir: Y) as m_3
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, -126.11, 16.63), dir: Y) as cb_3
+  cut cylinder(d: 3.4, h: 12, at: (16.63, -127.1, 6.888), dir: Y) as m_4
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, -126.11, 6.888), dir: Y) as cb_4
+  cut cylinder(d: 3.4, h: 12, at: (16.63, -127.1, -6.888), dir: Y) as m_5
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, -126.11, -6.888), dir: Y) as cb_5
+  cut cylinder(d: 3.4, h: 12, at: (6.888, -127.1, -16.63), dir: Y) as m_6
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, -126.11, -16.63), dir: Y) as cb_6
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, -127.1, -16.63), dir: Y) as m_7
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, -126.11, -16.63), dir: Y) as cb_7
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, -127.1, -6.888), dir: Y) as m_8
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, -126.11, -6.888), dir: Y) as cb_8
+}
+component fr_crank_screws = lib.screw(M3, 12) { at: [(205 - (thigh_l * sth) + (-16.63) * cqs + 6.888 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-16.63) * sqs) + 6.888 * cqs), (205 - (thigh_l * sth) + (-6.888) * cqs + 16.63 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-6.888) * sqs) + 16.63 * cqs), (205 - (thigh_l * sth) + 6.888 * cqs + 16.63 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (6.888 * sqs) + 16.63 * cqs), (205 - (thigh_l * sth) + 16.63 * cqs + 6.888 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (16.63 * sqs) + 6.888 * cqs), (205 - (thigh_l * sth) + 16.63 * cqs + (-6.888) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (16.63 * sqs) + (-6.888) * cqs), (205 - (thigh_l * sth) + 6.888 * cqs + (-16.63) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (6.888 * sqs) + (-16.63) * cqs), (205 - (thigh_l * sth) + (-6.888) * cqs + (-16.63) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-6.888) * sqs) + (-16.63) * cqs), (205 - (thigh_l * sth) + (-16.63) * cqs + (-6.888) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-16.63) * sqs) + (-6.888) * cqs)], axis: Y, group: "Leg front right", label: "M3 x 12 socket screw: knee crank to the knee pulley's hub, front right" }
+part fr_pin {
+  label: "Knee pin, front right: 12 mm Ti-6Al-4V, gun-drilled, with a collar and head"
+  color: #8a8d91
+  material: "Titanium"
+  group: "Leg front right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body cylinder(d: 12, h: 53.1, at: (0, -126.1, 0), dir: Y) as shaft
+  add cylinder(d: 16, h: 1, at: (0, -79.05, 0), dir: Y) as collar
+  add cylinder(d: 18, h: 3, at: (0, -129.1, 0), dir: Y) as head
+  cut cylinder(d: 4.2, h: 10, at: (0, -82.99, 0), dir: Y) as tap
+  cut cylinder(d: 6, h: 43.1, at: (0, -129.11, 0), dir: Y) as bore
+}
+component fr_pin_screw = lib.screw(M5, 10, head: "button") { at: (205 - (thigh_l * sth), -(aby + 73), hz - (thigh_l * cth)), axis: -Y, group: "Leg front right", label: "M5 x 10 button screw: holds the knee pin in its bearing, front right" }
+part fr_tube {
+  label: "Shank tube, front right: 20 x 17 mm roll-wrapped carbon fibre"
+  color: #1b1c1f
+  material: "Carbon fiber"
+  group: "Leg front right"
+  process: false
+  held: "bonded into the knee crank and the foot hub with 3M DP420 epoxy"
+  at: (205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body tube(od: 20, id: 17, h: shank_l - 52, at: (0, -129.6, -34), dir: -Z) as tube_body
+}
+part fr_foot_hub {
+  label: "Foot hub, front right: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg front right"
+  process: mfg.cnc_lathe()
+  at: (205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body cylinder(d: 24, h: 40, at: (0, -129.6, -shank_l + 40), dir: -Z) as socket
+  add sphere(d: 30, at: (0, -129.6, -shank_l)) as ball
+  cut cylinder(d: 20.1, h: 22, at: (0, -129.6, -shank_l + 40.01), dir: -Z) as tube_bore
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, -129.6, -shank_l + 3), dir: Z) as barb_1
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, -129.6, -shank_l + 3 + 3), dir: Z) as barb_2
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, -129.6, -shank_l + 3 + 6), dir: Z) as barb_3
+}
+part fr_foot {
+  label: "Foot, front right: 42 mm ball, TPU 95A"
+  color: #1d1e20
+  material: "TPU"
+  group: "Leg front right"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  held: "stretched over the foot hub's barbed ball and bonded with cyanoacrylate"
+  at: (205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "matte"
+  body sphere(d: 42, at: (0, -129.6, -shank_l)) as ball
+  cut cylinder(d: 26.2, h: 30, at: (0, -129.6, -shank_l + 4), dir: Z) as neck
+  cut sphere(d: 30.1, at: (0, -129.6, -shank_l)) as core
+}
+part rl_carrier {
+  label: "Hip carrier, rear left: 6061-T6, orange anodised"
+  color: #e8641e
+  material: "Aluminum 6061"
+  group: "Leg rear left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y])
+  at: (0, aby, hz)
+  finish: "anodized"
+  body extrude(polygon([(29, -38), (-17, -38), (-22, -36.66), (-25.66, -33), (-27, -28), (-27, 28), (-25.66, 33), (-22, 36.66), (-17, 38), (29, 38)]), 6, at: (-155.5, 0, 0), dir: X) as abad_plate
+  add extrude(polygon([(-153.5, 38), (-180.896, 38), (-182.5, 38.971), (-189.609, 42.286), (-197.186, 44.316), (-205, 45), (-212.814, 44.316), (-220.391, 42.286), (-227.5, 38.971), (-233.925, 34.472), (-239.472, 28.925), (-243.971, 22.5), (-247.286, 15.391), (-249.316, 7.814), (-250, 0), (-249.316, -7.814), (-247.286, -15.391), (-243.971, -22.5), (-239.472, -28.925), (-233.925, -34.472), (-227.5, -38.971), (-220.391, -42.286), (-212.814, -44.316), (-205, -45), (-197.186, -44.316), (-189.609, -42.286), (-182.5, -38.971), (-180.896, -38), (-153.5, -38)], r: 4), 8, at: (0, 29, 0), dir: -Y) as hip_plate
+  cut cylinder(d: 66, h: 10, at: (-205, 20, 0), dir: Y) as cover_hole
+  cut cylinder(d: 3.4, h: 10, at: (-171.672, 20, -18.256), dir: Y) as hip_m_1
+  cut cylinder(d: 6.5, h: 3.21, at: (-171.672, 20.99, -18.256), dir: Y) as hip_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (-204.146, 20, -37.99), dir: Y) as hip_m_2
+  cut cylinder(d: 6.5, h: 3.21, at: (-204.146, 20.99, -37.99), dir: Y) as hip_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (-237.474, 20, -19.735), dir: Y) as hip_m_3
+  cut cylinder(d: 6.5, h: 3.21, at: (-237.474, 20.99, -19.735), dir: Y) as hip_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (-238.328, 20, 18.256), dir: Y) as hip_m_4
+  cut cylinder(d: 6.5, h: 3.21, at: (-238.328, 20.99, 18.256), dir: Y) as hip_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (-205.854, 20, 37.99), dir: Y) as hip_m_5
+  cut cylinder(d: 6.5, h: 3.21, at: (-205.854, 20.99, 37.99), dir: Y) as hip_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (-172.526, 20, 19.735), dir: Y) as hip_m_6
+  cut cylinder(d: 6.5, h: 3.21, at: (-172.526, 20.99, 19.735), dir: Y) as hip_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 17.332, 4.858), dir: X) as abad_m_1
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 17.332, 4.858), dir: X) as abad_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 15.691, -8.821), dir: X) as abad_m_2
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 15.691, -8.821), dir: X) as abad_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 4.858, -17.332), dir: X) as abad_m_3
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 4.858, -17.332), dir: X) as abad_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -8.821, -15.691), dir: X) as abad_m_4
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -8.821, -15.691), dir: X) as abad_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -17.332, -4.858), dir: X) as abad_m_5
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -17.332, -4.858), dir: X) as abad_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -15.691, 8.821), dir: X) as abad_m_6
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -15.691, 8.821), dir: X) as abad_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -4.858, 17.332), dir: X) as abad_m_7
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -4.858, 17.332), dir: X) as abad_cb_7
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 8.821, 15.691), dir: X) as abad_m_8
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 8.821, 15.691), dir: X) as abad_cb_8
+  add cylinder(d: 13.8, h: 1.11, at: (-149.5, 0, 0), dir: X) as spigot
+}
+component rl_carrier_screws = lib.screw(M3, 8) { at: [(-152.2, aby + 17.332, hz + 4.858), (-152.2, aby + 15.691, hz - 8.821), (-152.2, aby + 4.858, hz - 17.332), (-152.2, aby - 8.821, hz - 15.691), (-152.2, aby - 17.332, hz - 4.858), (-152.2, aby - 15.691, hz + 8.821), (-152.2, aby - 4.858, hz + 17.332), (-152.2, aby + 8.821, hz + 15.691)], axis: X, group: "Leg rear left", label: "M3 x 8 socket screw: hip carrier to the rear left ab/ad actuator's output" }
+component rl_hip_screws = lib.screw(M3, 10) { at: [(-171.672, aby + 21 + 3.2, hz - 18.256), (-204.146, aby + 21 + 3.2, hz - 37.99), (-237.474, aby + 21 + 3.2, hz - 19.735), (-238.328, aby + 21 + 3.2, hz + 18.256), (-205.854, aby + 21 + 3.2, hz + 37.99), (-172.526, aby + 21 + 3.2, hz + 19.735)], axis: Y, group: "Leg rear left", label: "M3 x 10 socket screw: rear left hip actuator's back face to its carrier, in a counterbore" }
+part rl_thigh_in {
+  label: "Thigh inner plate, rear left: 5 mm 7075-T6, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg rear left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (-205, aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-30.07, 10.945), (-24.513, 20.569), (-16, 27.713), (-5.557, 31.514), (5.557, 31.514), (16, 27.713), (24.513, 20.569), (30.07, 10.945), (52, -30), (55.5, -45), (55, -60), (40, -km - 6), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0), (-40, -km - 6), (-55, -60), (-55.5, -45), (-52, -30)], r: 3), 5, at: (0, 78, 0), dir: -Y) as plate
+  cut cylinder(d: 3.4, h: 8, at: (16.78 * cth - ((-6.513) * sth), 72, 16.78 * sth + (-6.513) * cth), dir: Y) as hip_m_1
+  cut cylinder(d: 3.4, h: 8, at: (7.26 * cth - ((-16.471) * sth), 72, 7.26 * sth + (-16.471) * cth), dir: Y) as hip_m_2
+  cut cylinder(d: 3.4, h: 8, at: ((-6.513) * cth - ((-16.78) * sth), 72, (-6.513) * sth + (-16.78) * cth), dir: Y) as hip_m_3
+  cut cylinder(d: 3.4, h: 8, at: ((-16.471) * cth - ((-7.26) * sth), 72, (-16.471) * sth + (-7.26) * cth), dir: Y) as hip_m_4
+  cut cylinder(d: 3.4, h: 8, at: ((-16.78) * cth - (6.513 * sth), 72, (-16.78) * sth + 6.513 * cth), dir: Y) as hip_m_5
+  cut cylinder(d: 3.4, h: 8, at: ((-7.26) * cth - (16.471 * sth), 72, (-7.26) * sth + 16.471 * cth), dir: Y) as hip_m_6
+  cut cylinder(d: 3.4, h: 8, at: (6.513 * cth - (16.78 * sth), 72, 6.513 * sth + 16.78 * cth), dir: Y) as hip_m_7
+  cut cylinder(d: 3.4, h: 8, at: (16.471 * cth - (7.26 * sth), 72, 16.471 * sth + 7.26 * cth), dir: Y) as hip_m_8
+  cut cylinder(d: 20, h: 8, at: (0, 72, 0), dir: Y) as hip_bore
+  cut cylinder(d: 50, h: 8, at: (0, 72, -km), dir: Y) as pulley_access
+  cut cylinder(d: 21, h: 5.01, at: (0, 73, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 16.05, h: 8, at: (0, 72, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 8, at: (45.899, 72, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 8.5, h: 2.51, at: (45.899, 72.99, -km + 26.5), dir: Y) as post_cb_1
+  cut cylinder(d: 4.5, h: 8, at: (-26.5, 72, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 8.5, h: 2.51, at: (-26.5, 72.99, -km + 45.899), dir: Y) as post_cb_2
+  cut cylinder(d: 4.5, h: 8, at: (0, 72, -(thigh_l - 40)), dir: Y) as post_3
+  cut cylinder(d: 8.5, h: 2.51, at: (0, 72.99, -(thigh_l - 40)), dir: Y) as post_cb_3
+  cut extrude(polygon([(-27, -km - 34), (27, -km - 34), (24, -thigh_l + 52), (-24, -thigh_l + 52)], r: 6), 8, at: (0, 79, 0), dir: -Y) as window
+  cut extrude(polygon([(14, -30), (30, -22), (36, -34), (28, -km + 27.7), (16, -km + 27.7)], r: 4), 8, at: (0, 79, 0), dir: -Y) as window_hip
+}
+part rl_thigh_out {
+  label: "Thigh outer plate, rear left: 6.5 mm 7075-T6 with the knee bearing boss, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg rear left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (-205, aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-56.5, -km + 0), (-56.017, -km + 7.375), (-54.575, -km + 14.623), (-52.199, -km + 21.622), (-48.93, -km + 28.25), (-44.824, -km + 34.395), (-39.952, -km + 39.952), (-36.83, -km + 47.998), (-30.25, -km + 52.395), (-23.152, -km + 55.895), (-14.623, -km + 54.575), (-7.375, -km + 56.017), (0, -km + 56.5), (7.375, -km + 56.017), (14.623, -km + 54.575), (21.622, -km + 52.199), (28.25, -km + 48.93), (34.395, -km + 44.824), (39.952, -km + 39.952), (47.998, -km + 36.83), (52.395, -km + 30.25), (55.895, -km + 23.152), (54.575, -km + 14.623), (56.017, -km + 7.375), (56.5, -km), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0)], r: 4), 6.5, at: (0, 111.6, 0), dir: -Y) as plate
+  add cylinder(d: 60, h: 9.5, at: (0, 105.1, -thigh_l), dir: Y) as knee_boss
+  cut cylinder(d: 49, h: 9, at: (0, 104.1, -km), dir: Y) as pulley_hole
+  cut cylinder(d: 3.3, h: 9, at: (-45.899, 104.1, -km - 26.5), dir: Y) as cup_tap_1
+  cut cylinder(d: 3.3, h: 9, at: (45.899, 104.1, -km - 26.5), dir: Y) as cup_tap_2
+  cut cylinder(d: 52, h: 8.01, at: (0, 106.6, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 46, h: 11.5, at: (0, 104.1, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 9, at: (45.899, 104.1, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 4.5, h: 9, at: (-26.5, 104.1, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 4.5, h: 9, at: (0, 104.1, -(thigh_l - 40)), dir: Y) as post_3
+  cut extrude(polygon([(-30, -km - 34), (30, -km - 34), (22, -thigh_l + 52), (-22, -thigh_l + 52)], r: 6), 9, at: (0, 112.6, 0), dir: -Y) as window
+  cut extrude(polygon([(31.449, -km + 34.928), (24.347, -km + 40.202), (16.383, -km + 44.052), (7.838, -km + 46.342), (-0.984, -km + 46.99), (-9.772, -km + 45.973), (-6.237, -km + 29.344), (-0.628, -km + 29.993), (5.003, -km + 29.58), (10.457, -km + 28.118), (15.541, -km + 25.661), (20.074, -km + 22.294)], r: 4), 9, at: (0, 112.6, 0), dir: -Y) as window_ring_1
+  cut extrude(polygon([(-34.928, -km + 31.449), (-40.427, -km + 23.972), (-44.35, -km + 15.56), (-46.543, -km + 6.541), (-29.708, -km + 4.175), (-28.308, -km + 9.932), (-25.804, -km + 15.301), (-22.294, -km + 20.074)], r: 4), 9, at: (0, 112.6, 0), dir: -Y) as window_ring_2
+}
+part rl_post_1 {
+  label: "Thigh spacer post 1, rear left: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg rear left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 + 45.899 * cth + (-km + 26.5) * sth, aby, hz - (45.899 * sth) + (-km + 26.5) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, 78, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, 77.99, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, 95.11, 0), dir: Y) as tap_b
+}
+part rl_post_2 {
+  label: "Thigh spacer post 2, rear left: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg rear left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 + (-26.5) * cth + (-km + 45.899) * sth, aby, hz - ((-26.5) * sth) + (-km + 45.899) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, 78, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, 77.99, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, 95.11, 0), dir: Y) as tap_b
+}
+part rl_post_3 {
+  label: "Thigh spacer post 3, rear left: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg rear left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 + (-(thigh_l - 40)) * sth, aby, hz + (-(thigh_l - 40)) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, 78, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, 77.99, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, 95.11, 0), dir: Y) as tap_b
+}
+component rl_post_screws_in = lib.screw(M4, 12, head: "button") { at: [(-205 + 45.899 * cth + (-km + 26.5) * sth, aby + 75.5, hz - (45.899 * sth) + (-km + 26.5) * cth), (-205 + (-26.5) * cth + (-km + 45.899) * sth, aby + 75.5, hz - ((-26.5) * sth) + (-km + 45.899) * cth), (-205 + (-(thigh_l - 40)) * sth, aby + 75.5, hz + (-(thigh_l - 40)) * cth)], axis: Y, group: "Leg rear left", label: "M4 x 12 button screw: inner thigh plate to the spacer posts, rear left" }
+component rl_post_screws_out = lib.screw(M4, 12, head: "button") { at: (-205 + (-(thigh_l - 40)) * sth, aby + 111.6, hz + (-(thigh_l - 40)) * cth), axis: -Y, group: "Leg rear left", label: "M4 x 12 button screw: outer thigh plate to the lower spacer post, rear left" }
+component rl_thigh_screws = lib.screw(M3, 10) { at: [(-188.22, aby + 78, hz - 6.513), (-197.74, aby + 78, hz - 16.471), (-211.513, aby + 78, hz - 16.78), (-221.471, aby + 78, hz - 7.26), (-221.78, aby + 78, hz + 6.513), (-212.26, aby + 78, hz + 16.471), (-198.487, aby + 78, hz + 16.78), (-188.529, aby + 78, hz + 7.26)], axis: -Y, group: "Leg rear left", label: "M3 x 10 socket screw: inner thigh plate to the rear left hip actuator's output" }
+part rl_cup {
+  label: "Knee actuator cup, rear left: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg rear left"
+  process: mfg.cnc_mill(tool_d: 3, setups: [Y, -Y, X, -X, Z, -Z])
+  at: (-205, aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(50, -km), (49.572, -km + 6.526), (48.296, -km + 12.941), (54.047, -km + 22.387), (50.662, -km + 29.25), (46.411, -km + 35.613), (35.355, -km + 35.355), (30.438, -km + 39.668), (25, -km + 43.301), (19.134, -km + 46.194), (12.941, -km + 48.296), (6.526, -km + 49.572), (0, -km + 50), (-6.526, -km + 49.572), (-12.941, -km + 48.296), (-22.387, -km + 54.047), (-29.25, -km + 50.662), (-35.613, -km + 46.411), (-35.355, -km + 35.355), (-39.668, -km + 30.438), (-43.301, -km + 25), (-46.194, -km + 19.134), (-48.296, -km + 12.941), (-49.572, -km + 6.526), (-50, -km + 0), (-49.572, -km - 6.526), (-48.296, -km - 12.941), (-54.047, -km - 22.387), (-50.662, -km - 29.25), (-46.411, -km - 35.613), (-35.355, -km - 35.355), (-30.438, -km - 39.668), (-25, -km - 43.301), (-19.134, -km - 46.194), (-12.941, -km - 48.296), (-6.526, -km - 49.572), (0, -km - 50), (6.526, -km - 49.572), (12.941, -km - 48.296), (19.134, -km - 46.194), (25, -km - 43.301), (30.438, -km - 39.668), (35.355, -km - 35.355), (46.411, -km - 35.613), (50.662, -km - 29.25), (54.047, -km - 22.387), (48.296, -km - 12.941), (49.572, -km - 6.526)], r: 2), 4, at: (0, 115.6, 0), dir: -Y) as rim
+  add cylinder(d: 97, h: 42.01, at: (0, 115.59, -km), dir: Y) as wall
+  add cylinder(d: 97, h: 4.01, at: (0, 157.59, -km), dir: Y) as back
+  cut cylinder(d: 91, h: 46.02, at: (0, 111.59, -km), dir: Y) as bore
+  cut cylinder(d: 66, h: 6, at: (0, 156.6, -km), dir: Y) as back_hole
+  cut cylinder(d: 3.4, h: 6, at: (-37.616, 156.6, -km + 5.392), dir: Y) as m_1
+  cut cylinder(d: 3.4, h: 6, at: (-23.477, 156.6, -km - 29.88), dir: Y) as m_2
+  cut cylinder(d: 3.4, h: 6, at: (14.138, 156.6, -km - 35.272), dir: Y) as m_3
+  cut cylinder(d: 3.4, h: 6, at: (37.616, 156.6, -km - 5.392), dir: Y) as m_4
+  cut cylinder(d: 3.4, h: 6, at: (23.477, 156.6, -km + 29.88), dir: Y) as m_5
+  cut cylinder(d: 3.4, h: 6, at: (-14.138, 156.6, -km + 35.272), dir: Y) as m_6
+  cut cylinder(d: 4.5, h: 6, at: (45.899, 110.6, -km + 26.5), dir: Y) as rim_hole_1
+  cut cylinder(d: 4.5, h: 6, at: (-26.5, 110.6, -km + 45.899), dir: Y) as rim_hole_2
+  cut cylinder(d: 4.5, h: 6, at: (-45.899, 110.6, -km - 26.5), dir: Y) as rim_hole_3
+  cut cylinder(d: 4.5, h: 6, at: (45.899, 110.6, -km - 26.5), dir: Y) as rim_hole_4
+  cut extrude(polygon([(120.6, -km - 15), (152.6, -km - 15), (152.6, -km + 15), (120.6, -km + 15)], r: 8), 100, at: (-50, 0, 0), dir: X) as window_across
+  cut extrude(polygon([(-15, 120.6), (15, 120.6), (15, 152.6), (-15, 152.6)], r: 8), 100, at: (0, 0, -km - 50), dir: Z) as window_along
+  cut extrude(polygon([(-44.766, -km - 4.581), (-44.338, -km - 7.693), (-43.693, -km - 10.767), (-42.836, -km - 13.788), (-41.769, -km - 16.743), (-40.5, -km - 19.616), (-39.033, -km - 22.393), (-37.376, -km - 25.061), (-35.536, -km - 27.607), (-27.639, -km - 21.472), (-29.07, -km - 19.492), (-30.359, -km - 17.417), (-31.5, -km - 15.257), (-32.487, -km - 13.022), (-33.317, -km - 10.724), (-33.983, -km - 8.374), (-34.485, -km - 5.983), (-34.818, -km - 3.563)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_1
+  cut extrude(polygon([(-18.416, -km - 41.059), (-15.507, -km - 42.244), (-12.522, -km - 43.223), (-9.477, -km - 43.991), (-6.385, -km - 44.545), (-3.262, -km - 44.882), (-0.123, -km - 45), (3.016, -km - 44.899), (6.14, -km - 44.579), (4.776, -km - 34.673), (2.346, -km - 34.921), (-0.096, -km - 35), (-2.537, -km - 34.908), (-4.966, -km - 34.646), (-7.371, -km - 34.215), (-9.74, -km - 33.618), (-12.061, -km - 32.856), (-14.323, -km - 31.935)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_2
+  cut extrude(polygon([(26.35, -km - 36.478), (28.831, -km - 34.551), (31.171, -km - 32.456), (33.359, -km - 30.203), (35.384, -km - 27.802), (37.237, -km - 25.266), (38.909, -km - 22.607), (40.391, -km - 19.838), (41.677, -km - 16.972), (32.415, -km - 13.2), (31.416, -km - 15.429), (30.263, -km - 17.583), (28.962, -km - 19.651), (27.521, -km - 21.624), (25.946, -km - 23.491), (24.244, -km - 25.244), (22.424, -km - 26.873), (20.495, -km - 28.372)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_3
+  cut extrude(polygon([(44.766, -km + 4.581), (44.338, -km + 7.693), (43.693, -km + 10.767), (42.836, -km + 13.788), (41.769, -km + 16.743), (40.5, -km + 19.616), (39.033, -km + 22.393), (37.376, -km + 25.061), (35.536, -km + 27.607), (27.639, -km + 21.472), (29.07, -km + 19.492), (30.359, -km + 17.417), (31.5, -km + 15.257), (32.487, -km + 13.022), (33.317, -km + 10.724), (33.983, -km + 8.374), (34.485, -km + 5.983), (34.818, -km + 3.563)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_4
+  cut extrude(polygon([(18.416, -km + 41.059), (15.507, -km + 42.244), (12.522, -km + 43.223), (9.477, -km + 43.991), (6.385, -km + 44.545), (3.262, -km + 44.882), (0.123, -km + 45), (-3.016, -km + 44.899), (-6.14, -km + 44.579), (-4.776, -km + 34.673), (-2.346, -km + 34.921), (0.096, -km + 35), (2.537, -km + 34.908), (4.966, -km + 34.646), (7.371, -km + 34.215), (9.74, -km + 33.618), (12.061, -km + 32.856), (14.323, -km + 31.935)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_5
+  cut extrude(polygon([(-26.35, -km + 36.478), (-28.831, -km + 34.551), (-31.171, -km + 32.456), (-33.359, -km + 30.203), (-35.384, -km + 27.802), (-37.237, -km + 25.266), (-38.909, -km + 22.607), (-40.391, -km + 19.838), (-41.677, -km + 16.972), (-32.415, -km + 13.2), (-31.416, -km + 15.429), (-30.263, -km + 17.583), (-28.962, -km + 19.651), (-27.521, -km + 21.624), (-25.946, -km + 23.491), (-24.244, -km + 25.244), (-22.424, -km + 26.873), (-20.495, -km + 28.372)], r: 2), 6, at: (0, 162.6, 0), dir: -Y) as window_back_6
+}
+component rl_cup_post_screws = lib.screw(M4, 20, head: "button") { at: [(-205 + 45.899 * cth + (-km + 26.5) * sth, aby + 115.6, hz - (45.899 * sth) + (-km + 26.5) * cth), (-205 + (-26.5) * cth + (-km + 45.899) * sth, aby + 115.6, hz - ((-26.5) * sth) + (-km + 45.899) * cth)], axis: -Y, group: "Leg rear left", label: "M4 x 20 button screw: knee cup through the outer thigh plate into the upper spacer posts, rear left" }
+component rl_cup_screws = lib.screw(M4, 10, head: "button") { at: [(-205 + (-45.899) * cth + (-km - 26.5) * sth, aby + 115.6, hz - ((-45.899) * sth) + (-km - 26.5) * cth), (-205 + 45.899 * cth + (-km - 26.5) * sth, aby + 115.6, hz - (45.899 * sth) + (-km - 26.5) * cth)], axis: -Y, group: "Leg rear left", label: "M4 x 10 button screw: knee cup to the outer thigh plate, rear left" }
+component rl_knee_m_screws = lib.screw(M3, 8) { at: [(-205 + (-37.616) * cth + (-km + 5.392) * sth, aby + 161.6, hz - ((-37.616) * sth) + (-km + 5.392) * cth), (-205 + (-23.477) * cth + (-km - 29.88) * sth, aby + 161.6, hz - ((-23.477) * sth) + (-km - 29.88) * cth), (-205 + 14.138 * cth + (-km - 35.272) * sth, aby + 161.6, hz - (14.138 * sth) + (-km - 35.272) * cth), (-205 + 37.616 * cth + (-km - 5.392) * sth, aby + 161.6, hz - (37.616 * sth) + (-km - 5.392) * cth), (-205 + 23.477 * cth + (-km + 29.88) * sth, aby + 161.6, hz - (23.477 * sth) + (-km + 29.88) * cth), (-205 + (-14.138) * cth + (-km + 35.272) * sth, aby + 161.6, hz - ((-14.138) * sth) + (-km + 35.272) * cth)], axis: -Y, group: "Leg rear left", label: "M3 x 8 socket screw: rear left knee actuator's back face to its cup" }
+component rl_mpul = lib.pulley("htd8m_22t_20_flanged") { at: (-205 + (-km) * sth, aby + 113.6, hz + (-km) * cth), axis: -Y, rotate: 141.843 - th, group: "Leg rear left", label: "Knee motor pulley, rear left: HTD 8M 22-tooth on the knee actuator's output" }
+component rl_mpul_screws = lib.screw(M3, 40) { at: [(-205 + (-17.332) * cth + (-km + 4.858) * sth, aby + 79.1, hz - ((-17.332) * sth) + (-km + 4.858) * cth), (-205 + (-15.691) * cth + (-km - 8.821) * sth, aby + 79.1, hz - ((-15.691) * sth) + (-km - 8.821) * cth), (-205 + (-4.858) * cth + (-km - 17.332) * sth, aby + 79.1, hz - ((-4.858) * sth) + (-km - 17.332) * cth), (-205 + 8.821 * cth + (-km - 15.691) * sth, aby + 79.1, hz - (8.821 * sth) + (-km - 15.691) * cth), (-205 + 17.332 * cth + (-km - 4.858) * sth, aby + 79.1, hz - (17.332 * sth) + (-km - 4.858) * cth), (-205 + 15.691 * cth + (-km + 8.821) * sth, aby + 79.1, hz - (15.691 * sth) + (-km + 8.821) * cth), (-205 + 4.858 * cth + (-km + 17.332) * sth, aby + 79.1, hz - (4.858 * sth) + (-km + 17.332) * cth), (-205 + (-8.821) * cth + (-km + 15.691) * sth, aby + 79.1, hz - ((-8.821) * sth) + (-km + 15.691) * cth)], axis: Y, group: "Leg rear left", label: "M3 x 40 socket screw: motor pulley to the knee actuator's output, rear left" }
+component rl_kpul = lib.pulley("htd8m_22t_20_flanged_tapped") { at: (-205 + (-thigh_l) * sth, aby + 116.1, hz + (-thigh_l) * cth), axis: -Y, rotate: -qs, group: "Leg rear left", label: "Knee pulley, rear left: HTD 8M 22-tooth with the long hub, in the 6808 bearing" }
+component rl_belt = lib.belt("htd8m_20_loop", path: [rl_mpul, rl_kpul], tension: 560N, torque: 24800) { group: "Leg rear left", label: "Knee belt, rear left: HTD 8M, 20 mm wide, closed loop" }
+component rl_b6808 = lib.bearing("6808") { at: (-205 + (-thigh_l) * sth, aby + 106.6, hz + (-thigh_l) * cth), axis: Y, group: "Leg rear left", label: "Knee pulley bearing, rear left: 6808-2RS, 40 x 52 x 7" }
+component rl_b6801 = lib.bearing("6801") { at: (-205 + (-thigh_l) * sth, aby + 73, hz + (-thigh_l) * cth), axis: Y, group: "Leg rear left", label: "Knee pin bearing, rear left: 6801-2RS, 12 x 21 x 5" }
+part rl_crank {
+  label: "Knee crank, rear left: 7075-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 7075"
+  group: "Leg rear left"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z])
+  at: (-205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body extrude(polygon([(13, -24.799), (17.998, -21.449), (24.249, -14), (27.575, -4.862), (27.575, 4.862), (24.249, 14), (17.998, 21.449), (9.577, 26.311), (0, 28), (-9.577, 26.311), (-17.998, 21.449), (-24.249, 14), (-27.575, 4.862), (-27.575, -4.862), (-24.249, -14), (-17.998, -21.449), (-13, -24.799), (-13, -64), (13, -64)], r: 4), 27, at: (0, 143.1, 0), dir: -Y) as blank
+  cut box(64, 18, 64, at: (0, 135.1, -30)) as disc_face
+  cut cylinder(d: 12, h: 12, at: (0, 115.1, 0), dir: Y) as pin_bore
+  cut cylinder(d: 20.1, h: 45, at: (0, 129.6, -34), dir: -Z) as tube_bore
+  cut cylinder(d: 3.4, h: 12, at: (16.63, 115.1, 6.888), dir: Y) as m_1
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, 122.1, 6.888), dir: Y) as cb_1
+  cut cylinder(d: 3.4, h: 12, at: (6.888, 115.1, 16.63), dir: Y) as m_2
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, 122.1, 16.63), dir: Y) as cb_2
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, 115.1, 16.63), dir: Y) as m_3
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, 122.1, 16.63), dir: Y) as cb_3
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, 115.1, 6.888), dir: Y) as m_4
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, 122.1, 6.888), dir: Y) as cb_4
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, 115.1, -6.888), dir: Y) as m_5
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, 122.1, -6.888), dir: Y) as cb_5
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, 115.1, -16.63), dir: Y) as m_6
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, 122.1, -16.63), dir: Y) as cb_6
+  cut cylinder(d: 3.4, h: 12, at: (6.888, 115.1, -16.63), dir: Y) as m_7
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, 122.1, -16.63), dir: Y) as cb_7
+  cut cylinder(d: 3.4, h: 12, at: (16.63, 115.1, -6.888), dir: Y) as m_8
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, 122.1, -6.888), dir: Y) as cb_8
+}
+component rl_crank_screws = lib.screw(M3, 12) { at: [(-205 - (thigh_l * sth) + 16.63 * cqs + 6.888 * sqs, aby + 122.1, hz - (thigh_l * cth) - (16.63 * sqs) + 6.888 * cqs), (-205 - (thigh_l * sth) + 6.888 * cqs + 16.63 * sqs, aby + 122.1, hz - (thigh_l * cth) - (6.888 * sqs) + 16.63 * cqs), (-205 - (thigh_l * sth) + (-6.888) * cqs + 16.63 * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-6.888) * sqs) + 16.63 * cqs), (-205 - (thigh_l * sth) + (-16.63) * cqs + 6.888 * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-16.63) * sqs) + 6.888 * cqs), (-205 - (thigh_l * sth) + (-16.63) * cqs + (-6.888) * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-16.63) * sqs) + (-6.888) * cqs), (-205 - (thigh_l * sth) + (-6.888) * cqs + (-16.63) * sqs, aby + 122.1, hz - (thigh_l * cth) - ((-6.888) * sqs) + (-16.63) * cqs), (-205 - (thigh_l * sth) + 6.888 * cqs + (-16.63) * sqs, aby + 122.1, hz - (thigh_l * cth) - (6.888 * sqs) + (-16.63) * cqs), (-205 - (thigh_l * sth) + 16.63 * cqs + (-6.888) * sqs, aby + 122.1, hz - (thigh_l * cth) - (16.63 * sqs) + (-6.888) * cqs)], axis: -Y, group: "Leg rear left", label: "M3 x 12 socket screw: knee crank to the knee pulley's hub, rear left" }
+part rl_pin {
+  label: "Knee pin, rear left: 12 mm Ti-6Al-4V, gun-drilled, with a collar and head"
+  color: #8a8d91
+  material: "Titanium"
+  group: "Leg rear left"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body cylinder(d: 12, h: 53.1, at: (0, 73, 0), dir: Y) as shaft
+  add cylinder(d: 16, h: 1, at: (0, 78.05, 0), dir: Y) as collar
+  add cylinder(d: 18, h: 3, at: (0, 126.1, 0), dir: Y) as head
+  cut cylinder(d: 4.2, h: 10, at: (0, 72.99, 0), dir: Y) as tap
+  cut cylinder(d: 6, h: 43.1, at: (0, 129.11, 0), dir: -Y) as bore
+}
+component rl_pin_screw = lib.screw(M5, 10, head: "button") { at: (-205 - (thigh_l * sth), aby + 73, hz - (thigh_l * cth)), axis: Y, group: "Leg rear left", label: "M5 x 10 button screw: holds the knee pin in its bearing, rear left" }
+part rl_tube {
+  label: "Shank tube, rear left: 20 x 17 mm roll-wrapped carbon fibre"
+  color: #1b1c1f
+  material: "Carbon fiber"
+  group: "Leg rear left"
+  process: false
+  held: "bonded into the knee crank and the foot hub with 3M DP420 epoxy"
+  at: (-205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body tube(od: 20, id: 17, h: shank_l - 52, at: (0, 129.6, -34), dir: -Z) as tube_body
+}
+part rl_foot_hub {
+  label: "Foot hub, rear left: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg rear left"
+  process: mfg.cnc_lathe()
+  at: (-205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body cylinder(d: 24, h: 40, at: (0, 129.6, -shank_l + 40), dir: -Z) as socket
+  add sphere(d: 30, at: (0, 129.6, -shank_l)) as ball
+  cut cylinder(d: 20.1, h: 22, at: (0, 129.6, -shank_l + 40.01), dir: -Z) as tube_bore
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, 129.6, -shank_l + 3), dir: Z) as barb_1
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, 129.6, -shank_l + 3 + 3), dir: Z) as barb_2
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, 129.6, -shank_l + 3 + 6), dir: Z) as barb_3
+}
+part rl_foot {
+  label: "Foot, rear left: 42 mm ball, TPU 95A"
+  color: #1d1e20
+  material: "TPU"
+  group: "Leg rear left"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  held: "stretched over the foot hub's barbed ball and bonded with cyanoacrylate"
+  at: (-205 - (thigh_l * sth), aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "matte"
+  body sphere(d: 42, at: (0, 129.6, -shank_l)) as ball
+  cut cylinder(d: 26.2, h: 30, at: (0, 129.6, -shank_l + 4), dir: Z) as neck
+  cut sphere(d: 30.1, at: (0, 129.6, -shank_l)) as core
+}
+part rr_carrier {
+  label: "Hip carrier, rear right: 6061-T6, orange anodised"
+  color: #e8641e
+  material: "Aluminum 6061"
+  group: "Leg rear right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [X, -X, Y, -Y])
+  at: (0, -aby, hz)
+  finish: "anodized"
+  body extrude(polygon([(-29, -38), (17, -38), (22, -36.66), (25.66, -33), (27, -28), (27, 28), (25.66, 33), (22, 36.66), (17, 38), (-29, 38)]), 6, at: (-155.5, 0, 0), dir: X) as abad_plate
+  add extrude(polygon([(-153.5, 38), (-180.896, 38), (-182.5, 38.971), (-189.609, 42.286), (-197.186, 44.316), (-205, 45), (-212.814, 44.316), (-220.391, 42.286), (-227.5, 38.971), (-233.925, 34.472), (-239.472, 28.925), (-243.971, 22.5), (-247.286, 15.391), (-249.316, 7.814), (-250, 0), (-249.316, -7.814), (-247.286, -15.391), (-243.971, -22.5), (-239.472, -28.925), (-233.925, -34.472), (-227.5, -38.971), (-220.391, -42.286), (-212.814, -44.316), (-205, -45), (-197.186, -44.316), (-189.609, -42.286), (-182.5, -38.971), (-180.896, -38), (-153.5, -38)], r: 4), 8, at: (0, -21, 0), dir: -Y) as hip_plate
+  cut cylinder(d: 66, h: 10, at: (-205, -30, 0), dir: Y) as cover_hole
+  cut cylinder(d: 3.4, h: 10, at: (-231.857, -30, 26.883), dir: Y) as hip_m_1
+  cut cylinder(d: 6.5, h: 3.21, at: (-231.857, -24.2, 26.883), dir: Y) as hip_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (-241.71, -30, -9.818), dir: Y) as hip_m_2
+  cut cylinder(d: 6.5, h: 3.21, at: (-241.71, -24.2, -9.818), dir: Y) as hip_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (-214.852, -30, -36.701), dir: Y) as hip_m_3
+  cut cylinder(d: 6.5, h: 3.21, at: (-214.852, -24.2, -36.701), dir: Y) as hip_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (-178.143, -30, -26.883), dir: Y) as hip_m_4
+  cut cylinder(d: 6.5, h: 3.21, at: (-178.143, -24.2, -26.883), dir: Y) as hip_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (-168.29, -30, 9.818), dir: Y) as hip_m_5
+  cut cylinder(d: 6.5, h: 3.21, at: (-168.29, -24.2, 9.818), dir: Y) as hip_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (-195.148, -30, 36.701), dir: Y) as hip_m_6
+  cut cylinder(d: 6.5, h: 3.21, at: (-195.148, -24.2, 36.701), dir: Y) as hip_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 17.332, 4.858), dir: X) as abad_m_1
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 17.332, 4.858), dir: X) as abad_cb_1
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 15.691, -8.821), dir: X) as abad_m_2
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 15.691, -8.821), dir: X) as abad_cb_2
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 4.858, -17.332), dir: X) as abad_m_3
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 4.858, -17.332), dir: X) as abad_cb_3
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -8.821, -15.691), dir: X) as abad_m_4
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -8.821, -15.691), dir: X) as abad_cb_4
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -17.332, -4.858), dir: X) as abad_m_5
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -17.332, -4.858), dir: X) as abad_cb_5
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -15.691, 8.821), dir: X) as abad_m_6
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -15.691, 8.821), dir: X) as abad_cb_6
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, -4.858, 17.332), dir: X) as abad_m_7
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, -4.858, 17.332), dir: X) as abad_cb_7
+  cut cylinder(d: 3.4, h: 10, at: (-156.5, 8.821, 15.691), dir: X) as abad_m_8
+  cut cylinder(d: 6.5, h: 3.31, at: (-155.5, 8.821, 15.691), dir: X) as abad_cb_8
+  add cylinder(d: 13.8, h: 1.11, at: (-149.5, 0, 0), dir: X) as spigot
+}
+component rr_carrier_screws = lib.screw(M3, 8) { at: [(-152.2, -aby + 17.332, hz + 4.858), (-152.2, -aby + 15.691, hz - 8.821), (-152.2, -aby + 4.858, hz - 17.332), (-152.2, -aby - 8.821, hz - 15.691), (-152.2, -aby - 17.332, hz - 4.858), (-152.2, -aby - 15.691, hz + 8.821), (-152.2, -aby - 4.858, hz + 17.332), (-152.2, -aby + 8.821, hz + 15.691)], axis: X, group: "Leg rear right", label: "M3 x 8 socket screw: hip carrier to the rear right ab/ad actuator's output" }
+component rr_hip_screws = lib.screw(M3, 10) { at: [(-231.857, -(aby + 21 + 3.2), hz + 26.883), (-241.71, -(aby + 21 + 3.2), hz - 9.818), (-214.852, -(aby + 21 + 3.2), hz - 36.701), (-178.143, -(aby + 21 + 3.2), hz - 26.883), (-168.29, -(aby + 21 + 3.2), hz + 9.818), (-195.148, -(aby + 21 + 3.2), hz + 36.701)], axis: -Y, group: "Leg rear right", label: "M3 x 10 socket screw: rear right hip actuator's back face to its carrier, in a counterbore" }
+part rr_thigh_in {
+  label: "Thigh inner plate, rear right: 5 mm 7075-T6, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg rear right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (-205, -aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-30.07, 10.945), (-24.513, 20.569), (-16, 27.713), (-5.557, 31.514), (5.557, 31.514), (16, 27.713), (24.513, 20.569), (30.07, 10.945), (52, -30), (55.5, -45), (55, -60), (40, -km - 6), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0), (-40, -km - 6), (-55, -60), (-55.5, -45), (-52, -30)], r: 3), 5, at: (0, -73, 0), dir: -Y) as plate
+  cut cylinder(d: 3.4, h: 8, at: ((-10.951) * cth - (14.286 * sth), -79, (-10.951) * sth + 14.286 * cth), dir: Y) as hip_m_1
+  cut cylinder(d: 3.4, h: 8, at: ((-17.845) * cth - (2.358 * sth), -79, (-17.845) * sth + 2.358 * cth), dir: Y) as hip_m_2
+  cut cylinder(d: 3.4, h: 8, at: ((-14.286) * cth - ((-10.951) * sth), -79, (-14.286) * sth + (-10.951) * cth), dir: Y) as hip_m_3
+  cut cylinder(d: 3.4, h: 8, at: ((-2.358) * cth - ((-17.845) * sth), -79, (-2.358) * sth + (-17.845) * cth), dir: Y) as hip_m_4
+  cut cylinder(d: 3.4, h: 8, at: (10.951 * cth - ((-14.286) * sth), -79, 10.951 * sth + (-14.286) * cth), dir: Y) as hip_m_5
+  cut cylinder(d: 3.4, h: 8, at: (17.845 * cth - ((-2.358) * sth), -79, 17.845 * sth + (-2.358) * cth), dir: Y) as hip_m_6
+  cut cylinder(d: 3.4, h: 8, at: (14.286 * cth - (10.951 * sth), -79, 14.286 * sth + 10.951 * cth), dir: Y) as hip_m_7
+  cut cylinder(d: 3.4, h: 8, at: (2.358 * cth - (17.845 * sth), -79, 2.358 * sth + 17.845 * cth), dir: Y) as hip_m_8
+  cut cylinder(d: 20, h: 8, at: (0, -79, 0), dir: Y) as hip_bore
+  cut cylinder(d: 50, h: 8, at: (0, -79, -km), dir: Y) as pulley_access
+  cut cylinder(d: 21, h: 5.01, at: (0, -78.01, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 16.05, h: 8, at: (0, -79, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 8, at: (45.899, -79, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 8.5, h: 2.51, at: (45.899, -75.5, -km + 26.5), dir: Y) as post_cb_1
+  cut cylinder(d: 4.5, h: 8, at: (-26.5, -79, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 8.5, h: 2.51, at: (-26.5, -75.5, -km + 45.899), dir: Y) as post_cb_2
+  cut cylinder(d: 4.5, h: 8, at: (0, -79, -(thigh_l - 40)), dir: Y) as post_3
+  cut cylinder(d: 8.5, h: 2.51, at: (0, -75.5, -(thigh_l - 40)), dir: Y) as post_cb_3
+  cut extrude(polygon([(-27, -km - 34), (27, -km - 34), (24, -thigh_l + 52), (-24, -thigh_l + 52)], r: 6), 8, at: (0, -72, 0), dir: -Y) as window
+  cut extrude(polygon([(14, -30), (30, -22), (36, -34), (28, -km + 27.7), (16, -km + 27.7)], r: 4), 8, at: (0, -72, 0), dir: -Y) as window_hip
+}
+part rr_thigh_out {
+  label: "Thigh outer plate, rear right: 6.5 mm 7075-T6 with the knee bearing boss, clear anodised"
+  color: #c3c8ce
+  material: "Aluminum 7075"
+  group: "Leg rear right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y])
+  at: (-205, -aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(-56.5, -km + 0), (-56.017, -km + 7.375), (-54.575, -km + 14.623), (-52.199, -km + 21.622), (-48.93, -km + 28.25), (-44.824, -km + 34.395), (-39.952, -km + 39.952), (-36.83, -km + 47.998), (-30.25, -km + 52.395), (-23.152, -km + 55.895), (-14.623, -km + 54.575), (-7.375, -km + 56.017), (0, -km + 56.5), (7.375, -km + 56.017), (14.623, -km + 54.575), (21.622, -km + 52.199), (28.25, -km + 48.93), (34.395, -km + 44.824), (39.952, -km + 39.952), (47.998, -km + 36.83), (52.395, -km + 30.25), (55.895, -km + 23.152), (54.575, -km + 14.623), (56.017, -km + 7.375), (56.5, -km), (36, -thigh_l), (31.177, -thigh_l - 18), (18, -thigh_l - 31.177), (0, -thigh_l - 36), (-18, -thigh_l - 31.177), (-31.177, -thigh_l - 18), (-36, -thigh_l - 0)], r: 4), 6.5, at: (0, -105.1, 0), dir: -Y) as plate
+  add cylinder(d: 60, h: 9.5, at: (0, -114.6, -thigh_l), dir: Y) as knee_boss
+  cut cylinder(d: 49, h: 9, at: (0, -112.6, -km), dir: Y) as pulley_hole
+  cut cylinder(d: 3.3, h: 9, at: (-45.899, -112.6, -km - 26.5), dir: Y) as cup_tap_1
+  cut cylinder(d: 3.3, h: 9, at: (45.899, -112.6, -km - 26.5), dir: Y) as cup_tap_2
+  cut cylinder(d: 52, h: 8.01, at: (0, -114.61, -thigh_l), dir: Y) as bearing_seat
+  cut cylinder(d: 46, h: 11.5, at: (0, -115.6, -thigh_l), dir: Y) as knee_lip
+  cut cylinder(d: 4.5, h: 9, at: (45.899, -112.6, -km + 26.5), dir: Y) as post_1
+  cut cylinder(d: 4.5, h: 9, at: (-26.5, -112.6, -km + 45.899), dir: Y) as post_2
+  cut cylinder(d: 4.5, h: 9, at: (0, -112.6, -(thigh_l - 40)), dir: Y) as post_3
+  cut extrude(polygon([(-30, -km - 34), (30, -km - 34), (22, -thigh_l + 52), (-22, -thigh_l + 52)], r: 6), 9, at: (0, -104.1, 0), dir: -Y) as window
+  cut extrude(polygon([(31.449, -km + 34.928), (24.347, -km + 40.202), (16.383, -km + 44.052), (7.838, -km + 46.342), (-0.984, -km + 46.99), (-9.772, -km + 45.973), (-6.237, -km + 29.344), (-0.628, -km + 29.993), (5.003, -km + 29.58), (10.457, -km + 28.118), (15.541, -km + 25.661), (20.074, -km + 22.294)], r: 4), 9, at: (0, -104.1, 0), dir: -Y) as window_ring_1
+  cut extrude(polygon([(-34.928, -km + 31.449), (-40.427, -km + 23.972), (-44.35, -km + 15.56), (-46.543, -km + 6.541), (-29.708, -km + 4.175), (-28.308, -km + 9.932), (-25.804, -km + 15.301), (-22.294, -km + 20.074)], r: 4), 9, at: (0, -104.1, 0), dir: -Y) as window_ring_2
+}
+part rr_post_1 {
+  label: "Thigh spacer post 1, rear right: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg rear right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 + 45.899 * cth + (-km + 26.5) * sth, -aby, hz - (45.899 * sth) + (-km + 26.5) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, -105.1, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, -105.11, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, -87.99, 0), dir: Y) as tap_b
+}
+part rr_post_2 {
+  label: "Thigh spacer post 2, rear right: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg rear right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 + (-26.5) * cth + (-km + 45.899) * sth, -aby, hz - ((-26.5) * sth) + (-km + 45.899) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, -105.1, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, -105.11, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, -87.99, 0), dir: Y) as tap_b
+}
+part rr_post_3 {
+  label: "Thigh spacer post 3, rear right: 10 mm 6061 bar, M4 both ends"
+  color: #c3c8ce
+  material: "Aluminum 6061"
+  group: "Leg rear right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 + (-(thigh_l - 40)) * sth, -aby, hz + (-(thigh_l - 40)) * cth)
+  rotate: (0, th, 0)
+  body cylinder(d: 10, h: 27.1, at: (0, -105.1, 0), dir: Y) as post
+  cut cylinder(d: 3.3, h: 10, at: (0, -105.11, 0), dir: Y) as tap_a
+  cut cylinder(d: 3.3, h: 10, at: (0, -87.99, 0), dir: Y) as tap_b
+}
+component rr_post_screws_in = lib.screw(M4, 12, head: "button") { at: [(-205 + 45.899 * cth + (-km + 26.5) * sth, -(aby + 75.5), hz - (45.899 * sth) + (-km + 26.5) * cth), (-205 + (-26.5) * cth + (-km + 45.899) * sth, -(aby + 75.5), hz - ((-26.5) * sth) + (-km + 45.899) * cth), (-205 + (-(thigh_l - 40)) * sth, -(aby + 75.5), hz + (-(thigh_l - 40)) * cth)], axis: -Y, group: "Leg rear right", label: "M4 x 12 button screw: inner thigh plate to the spacer posts, rear right" }
+component rr_post_screws_out = lib.screw(M4, 12, head: "button") { at: (-205 + (-(thigh_l - 40)) * sth, -(aby + 111.6), hz + (-(thigh_l - 40)) * cth), axis: Y, group: "Leg rear right", label: "M4 x 12 button screw: outer thigh plate to the lower spacer post, rear right" }
+component rr_thigh_screws = lib.screw(M3, 10) { at: [(-215.951, -(aby + 78), hz + 14.286), (-222.845, -(aby + 78), hz + 2.358), (-219.286, -(aby + 78), hz - 10.951), (-207.358, -(aby + 78), hz - 17.845), (-194.049, -(aby + 78), hz - 14.286), (-187.155, -(aby + 78), hz - 2.358), (-190.714, -(aby + 78), hz + 10.951), (-202.642, -(aby + 78), hz + 17.845)], axis: Y, group: "Leg rear right", label: "M3 x 10 socket screw: inner thigh plate to the rear right hip actuator's output" }
+part rr_cup {
+  label: "Knee actuator cup, rear right: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg rear right"
+  process: mfg.cnc_mill(tool_d: 3, setups: [Y, -Y, X, -X, Z, -Z])
+  at: (-205, -aby, hz)
+  rotate: (0, th, 0)
+  finish: "anodized"
+  body extrude(polygon([(50, -km), (49.572, -km + 6.526), (48.296, -km + 12.941), (54.047, -km + 22.387), (50.662, -km + 29.25), (46.411, -km + 35.613), (35.355, -km + 35.355), (30.438, -km + 39.668), (25, -km + 43.301), (19.134, -km + 46.194), (12.941, -km + 48.296), (6.526, -km + 49.572), (0, -km + 50), (-6.526, -km + 49.572), (-12.941, -km + 48.296), (-22.387, -km + 54.047), (-29.25, -km + 50.662), (-35.613, -km + 46.411), (-35.355, -km + 35.355), (-39.668, -km + 30.438), (-43.301, -km + 25), (-46.194, -km + 19.134), (-48.296, -km + 12.941), (-49.572, -km + 6.526), (-50, -km + 0), (-49.572, -km - 6.526), (-48.296, -km - 12.941), (-54.047, -km - 22.387), (-50.662, -km - 29.25), (-46.411, -km - 35.613), (-35.355, -km - 35.355), (-30.438, -km - 39.668), (-25, -km - 43.301), (-19.134, -km - 46.194), (-12.941, -km - 48.296), (-6.526, -km - 49.572), (0, -km - 50), (6.526, -km - 49.572), (12.941, -km - 48.296), (19.134, -km - 46.194), (25, -km - 43.301), (30.438, -km - 39.668), (35.355, -km - 35.355), (46.411, -km - 35.613), (50.662, -km - 29.25), (54.047, -km - 22.387), (48.296, -km - 12.941), (49.572, -km - 6.526)], r: 2), 4, at: (0, -111.6, 0), dir: -Y) as rim
+  add cylinder(d: 97, h: 42.01, at: (0, -157.6, -km), dir: Y) as wall
+  add cylinder(d: 97, h: 4.01, at: (0, -161.6, -km), dir: Y) as back
+  cut cylinder(d: 91, h: 46.02, at: (0, -157.61, -km), dir: Y) as bore
+  cut cylinder(d: 66, h: 6, at: (0, -162.6, -km), dir: Y) as back_hole
+  cut cylinder(d: 3.4, h: 6, at: (37.616, -162.6, -km + 5.392), dir: Y) as m_1
+  cut cylinder(d: 3.4, h: 6, at: (23.477, -162.6, -km - 29.88), dir: Y) as m_2
+  cut cylinder(d: 3.4, h: 6, at: (-14.138, -162.6, -km - 35.272), dir: Y) as m_3
+  cut cylinder(d: 3.4, h: 6, at: (-37.616, -162.6, -km - 5.392), dir: Y) as m_4
+  cut cylinder(d: 3.4, h: 6, at: (-23.477, -162.6, -km + 29.88), dir: Y) as m_5
+  cut cylinder(d: 3.4, h: 6, at: (14.138, -162.6, -km + 35.272), dir: Y) as m_6
+  cut cylinder(d: 4.5, h: 6, at: (45.899, -116.6, -km + 26.5), dir: Y) as rim_hole_1
+  cut cylinder(d: 4.5, h: 6, at: (-26.5, -116.6, -km + 45.899), dir: Y) as rim_hole_2
+  cut cylinder(d: 4.5, h: 6, at: (-45.899, -116.6, -km - 26.5), dir: Y) as rim_hole_3
+  cut cylinder(d: 4.5, h: 6, at: (45.899, -116.6, -km - 26.5), dir: Y) as rim_hole_4
+  cut extrude(polygon([(-152.6, -km - 15), (-120.6, -km - 15), (-120.6, -km + 15), (-152.6, -km + 15)], r: 8), 100, at: (-50, 0, 0), dir: X) as window_across
+  cut extrude(polygon([(-15, -152.6), (15, -152.6), (15, -120.6), (-15, -120.6)], r: 8), 100, at: (0, 0, -km - 50), dir: Z) as window_along
+  cut extrude(polygon([(44.766, -km - 4.581), (44.338, -km - 7.693), (43.693, -km - 10.767), (42.836, -km - 13.788), (41.769, -km - 16.743), (40.5, -km - 19.616), (39.033, -km - 22.393), (37.376, -km - 25.061), (35.536, -km - 27.607), (27.639, -km - 21.472), (29.07, -km - 19.492), (30.359, -km - 17.417), (31.5, -km - 15.257), (32.487, -km - 13.022), (33.317, -km - 10.724), (33.983, -km - 8.374), (34.485, -km - 5.983), (34.818, -km - 3.563)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_1
+  cut extrude(polygon([(18.416, -km - 41.059), (15.507, -km - 42.244), (12.522, -km - 43.223), (9.477, -km - 43.991), (6.385, -km - 44.545), (3.262, -km - 44.882), (0.123, -km - 45), (-3.016, -km - 44.899), (-6.14, -km - 44.579), (-4.776, -km - 34.673), (-2.346, -km - 34.921), (0.096, -km - 35), (2.537, -km - 34.908), (4.966, -km - 34.646), (7.371, -km - 34.215), (9.74, -km - 33.618), (12.061, -km - 32.856), (14.323, -km - 31.935)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_2
+  cut extrude(polygon([(-26.35, -km - 36.478), (-28.831, -km - 34.551), (-31.171, -km - 32.456), (-33.359, -km - 30.203), (-35.384, -km - 27.802), (-37.237, -km - 25.266), (-38.909, -km - 22.607), (-40.391, -km - 19.838), (-41.677, -km - 16.972), (-32.415, -km - 13.2), (-31.416, -km - 15.429), (-30.263, -km - 17.583), (-28.962, -km - 19.651), (-27.521, -km - 21.624), (-25.946, -km - 23.491), (-24.244, -km - 25.244), (-22.424, -km - 26.873), (-20.495, -km - 28.372)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_3
+  cut extrude(polygon([(-44.766, -km + 4.581), (-44.338, -km + 7.693), (-43.693, -km + 10.767), (-42.836, -km + 13.788), (-41.769, -km + 16.743), (-40.5, -km + 19.616), (-39.033, -km + 22.393), (-37.376, -km + 25.061), (-35.536, -km + 27.607), (-27.639, -km + 21.472), (-29.07, -km + 19.492), (-30.359, -km + 17.417), (-31.5, -km + 15.257), (-32.487, -km + 13.022), (-33.317, -km + 10.724), (-33.983, -km + 8.374), (-34.485, -km + 5.983), (-34.818, -km + 3.563)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_4
+  cut extrude(polygon([(-18.416, -km + 41.059), (-15.507, -km + 42.244), (-12.522, -km + 43.223), (-9.477, -km + 43.991), (-6.385, -km + 44.545), (-3.262, -km + 44.882), (-0.123, -km + 45), (3.016, -km + 44.899), (6.14, -km + 44.579), (4.776, -km + 34.673), (2.346, -km + 34.921), (-0.096, -km + 35), (-2.537, -km + 34.908), (-4.966, -km + 34.646), (-7.371, -km + 34.215), (-9.74, -km + 33.618), (-12.061, -km + 32.856), (-14.323, -km + 31.935)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_5
+  cut extrude(polygon([(26.35, -km + 36.478), (28.831, -km + 34.551), (31.171, -km + 32.456), (33.359, -km + 30.203), (35.384, -km + 27.802), (37.237, -km + 25.266), (38.909, -km + 22.607), (40.391, -km + 19.838), (41.677, -km + 16.972), (32.415, -km + 13.2), (31.416, -km + 15.429), (30.263, -km + 17.583), (28.962, -km + 19.651), (27.521, -km + 21.624), (25.946, -km + 23.491), (24.244, -km + 25.244), (22.424, -km + 26.873), (20.495, -km + 28.372)], r: 2), 6, at: (0, -156.6, 0), dir: -Y) as window_back_6
+}
+component rr_cup_post_screws = lib.screw(M4, 20, head: "button") { at: [(-205 + 45.899 * cth + (-km + 26.5) * sth, -(aby + 115.6), hz - (45.899 * sth) + (-km + 26.5) * cth), (-205 + (-26.5) * cth + (-km + 45.899) * sth, -(aby + 115.6), hz - ((-26.5) * sth) + (-km + 45.899) * cth)], axis: Y, group: "Leg rear right", label: "M4 x 20 button screw: knee cup through the outer thigh plate into the upper spacer posts, rear right" }
+component rr_cup_screws = lib.screw(M4, 10, head: "button") { at: [(-205 + (-45.899) * cth + (-km - 26.5) * sth, -(aby + 115.6), hz - ((-45.899) * sth) + (-km - 26.5) * cth), (-205 + 45.899 * cth + (-km - 26.5) * sth, -(aby + 115.6), hz - (45.899 * sth) + (-km - 26.5) * cth)], axis: Y, group: "Leg rear right", label: "M4 x 10 button screw: knee cup to the outer thigh plate, rear right" }
+component rr_knee_m_screws = lib.screw(M3, 8) { at: [(-205 + 37.616 * cth + (-km + 5.392) * sth, -(aby + 161.6), hz - (37.616 * sth) + (-km + 5.392) * cth), (-205 + 23.477 * cth + (-km - 29.88) * sth, -(aby + 161.6), hz - (23.477 * sth) + (-km - 29.88) * cth), (-205 + (-14.138) * cth + (-km - 35.272) * sth, -(aby + 161.6), hz - ((-14.138) * sth) + (-km - 35.272) * cth), (-205 + (-37.616) * cth + (-km - 5.392) * sth, -(aby + 161.6), hz - ((-37.616) * sth) + (-km - 5.392) * cth), (-205 + (-23.477) * cth + (-km + 29.88) * sth, -(aby + 161.6), hz - ((-23.477) * sth) + (-km + 29.88) * cth), (-205 + 14.138 * cth + (-km + 35.272) * sth, -(aby + 161.6), hz - (14.138 * sth) + (-km + 35.272) * cth)], axis: Y, group: "Leg rear right", label: "M3 x 8 socket screw: rear right knee actuator's back face to its cup" }
+component rr_mpul = lib.pulley("htd8m_22t_20_flanged") { at: (-205 + (-km) * sth, -(aby + 113.6), hz + (-km) * cth), axis: Y, rotate: 141.843 - (-th), group: "Leg rear right", label: "Knee motor pulley, rear right: HTD 8M 22-tooth on the knee actuator's output" }
+component rr_mpul_screws = lib.screw(M3, 40) { at: [(-205 + 17.332 * cth + (-km + 4.858) * sth, -(aby + 79.1), hz - (17.332 * sth) + (-km + 4.858) * cth), (-205 + 15.691 * cth + (-km - 8.821) * sth, -(aby + 79.1), hz - (15.691 * sth) + (-km - 8.821) * cth), (-205 + 4.858 * cth + (-km - 17.332) * sth, -(aby + 79.1), hz - (4.858 * sth) + (-km - 17.332) * cth), (-205 + (-8.821) * cth + (-km - 15.691) * sth, -(aby + 79.1), hz - ((-8.821) * sth) + (-km - 15.691) * cth), (-205 + (-17.332) * cth + (-km - 4.858) * sth, -(aby + 79.1), hz - ((-17.332) * sth) + (-km - 4.858) * cth), (-205 + (-15.691) * cth + (-km + 8.821) * sth, -(aby + 79.1), hz - ((-15.691) * sth) + (-km + 8.821) * cth), (-205 + (-4.858) * cth + (-km + 17.332) * sth, -(aby + 79.1), hz - ((-4.858) * sth) + (-km + 17.332) * cth), (-205 + 8.821 * cth + (-km + 15.691) * sth, -(aby + 79.1), hz - (8.821 * sth) + (-km + 15.691) * cth)], axis: -Y, group: "Leg rear right", label: "M3 x 40 socket screw: motor pulley to the knee actuator's output, rear right" }
+component rr_kpul = lib.pulley("htd8m_22t_20_flanged_tapped") { at: (-205 + (-thigh_l) * sth, -(aby + 116.1), hz + (-thigh_l) * cth), axis: Y, rotate: qs, group: "Leg rear right", label: "Knee pulley, rear right: HTD 8M 22-tooth with the long hub, in the 6808 bearing" }
+component rr_belt = lib.belt("htd8m_20_loop", path: [rr_mpul, rr_kpul], tension: 560N, torque: 24800) { group: "Leg rear right", label: "Knee belt, rear right: HTD 8M, 20 mm wide, closed loop" }
+component rr_b6808 = lib.bearing("6808") { at: (-205 + (-thigh_l) * sth, -(aby + 106.6), hz + (-thigh_l) * cth), axis: -Y, group: "Leg rear right", label: "Knee pulley bearing, rear right: 6808-2RS, 40 x 52 x 7" }
+component rr_b6801 = lib.bearing("6801") { at: (-205 + (-thigh_l) * sth, -(aby + 73), hz + (-thigh_l) * cth), axis: -Y, group: "Leg rear right", label: "Knee pin bearing, rear right: 6801-2RS, 12 x 21 x 5" }
+part rr_crank {
+  label: "Knee crank, rear right: 7075-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 7075"
+  group: "Leg rear right"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z])
+  at: (-205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body extrude(polygon([(13, -24.799), (17.998, -21.449), (24.249, -14), (27.575, -4.862), (27.575, 4.862), (24.249, 14), (17.998, 21.449), (9.577, 26.311), (0, 28), (-9.577, 26.311), (-17.998, 21.449), (-24.249, 14), (-27.575, 4.862), (-27.575, -4.862), (-24.249, -14), (-17.998, -21.449), (-13, -24.799), (-13, -64), (13, -64)], r: 4), 27, at: (0, -116.1, 0), dir: -Y) as blank
+  cut box(64, 18, 64, at: (0, -135.1, -30)) as disc_face
+  cut cylinder(d: 12, h: 12, at: (0, -127.1, 0), dir: Y) as pin_bore
+  cut cylinder(d: 20.1, h: 45, at: (0, -129.6, -34), dir: -Z) as tube_bore
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, -127.1, 6.888), dir: Y) as m_1
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, -126.11, 6.888), dir: Y) as cb_1
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, -127.1, 16.63), dir: Y) as m_2
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, -126.11, 16.63), dir: Y) as cb_2
+  cut cylinder(d: 3.4, h: 12, at: (6.888, -127.1, 16.63), dir: Y) as m_3
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, -126.11, 16.63), dir: Y) as cb_3
+  cut cylinder(d: 3.4, h: 12, at: (16.63, -127.1, 6.888), dir: Y) as m_4
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, -126.11, 6.888), dir: Y) as cb_4
+  cut cylinder(d: 3.4, h: 12, at: (16.63, -127.1, -6.888), dir: Y) as m_5
+  cut cylinder(d: 6.5, h: 4.01, at: (16.63, -126.11, -6.888), dir: Y) as cb_5
+  cut cylinder(d: 3.4, h: 12, at: (6.888, -127.1, -16.63), dir: Y) as m_6
+  cut cylinder(d: 6.5, h: 4.01, at: (6.888, -126.11, -16.63), dir: Y) as cb_6
+  cut cylinder(d: 3.4, h: 12, at: (-6.888, -127.1, -16.63), dir: Y) as m_7
+  cut cylinder(d: 6.5, h: 4.01, at: (-6.888, -126.11, -16.63), dir: Y) as cb_7
+  cut cylinder(d: 3.4, h: 12, at: (-16.63, -127.1, -6.888), dir: Y) as m_8
+  cut cylinder(d: 6.5, h: 4.01, at: (-16.63, -126.11, -6.888), dir: Y) as cb_8
+}
+component rr_crank_screws = lib.screw(M3, 12) { at: [(-205 - (thigh_l * sth) + (-16.63) * cqs + 6.888 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-16.63) * sqs) + 6.888 * cqs), (-205 - (thigh_l * sth) + (-6.888) * cqs + 16.63 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-6.888) * sqs) + 16.63 * cqs), (-205 - (thigh_l * sth) + 6.888 * cqs + 16.63 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (6.888 * sqs) + 16.63 * cqs), (-205 - (thigh_l * sth) + 16.63 * cqs + 6.888 * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (16.63 * sqs) + 6.888 * cqs), (-205 - (thigh_l * sth) + 16.63 * cqs + (-6.888) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (16.63 * sqs) + (-6.888) * cqs), (-205 - (thigh_l * sth) + 6.888 * cqs + (-16.63) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - (6.888 * sqs) + (-16.63) * cqs), (-205 - (thigh_l * sth) + (-6.888) * cqs + (-16.63) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-6.888) * sqs) + (-16.63) * cqs), (-205 - (thigh_l * sth) + (-16.63) * cqs + (-6.888) * sqs, -(aby + 122.1), hz - (thigh_l * cth) - ((-16.63) * sqs) + (-6.888) * cqs)], axis: Y, group: "Leg rear right", label: "M3 x 12 socket screw: knee crank to the knee pulley's hub, rear right" }
+part rr_pin {
+  label: "Knee pin, rear right: 12 mm Ti-6Al-4V, gun-drilled, with a collar and head"
+  color: #8a8d91
+  material: "Titanium"
+  group: "Leg rear right"
+  process: mfg.cnc_lathe(axis: Y)
+  at: (-205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body cylinder(d: 12, h: 53.1, at: (0, -126.1, 0), dir: Y) as shaft
+  add cylinder(d: 16, h: 1, at: (0, -79.05, 0), dir: Y) as collar
+  add cylinder(d: 18, h: 3, at: (0, -129.1, 0), dir: Y) as head
+  cut cylinder(d: 4.2, h: 10, at: (0, -82.99, 0), dir: Y) as tap
+  cut cylinder(d: 6, h: 43.1, at: (0, -129.11, 0), dir: Y) as bore
+}
+component rr_pin_screw = lib.screw(M5, 10, head: "button") { at: (-205 - (thigh_l * sth), -(aby + 73), hz - (thigh_l * cth)), axis: -Y, group: "Leg rear right", label: "M5 x 10 button screw: holds the knee pin in its bearing, rear right" }
+part rr_tube {
+  label: "Shank tube, rear right: 20 x 17 mm roll-wrapped carbon fibre"
+  color: #1b1c1f
+  material: "Carbon fiber"
+  group: "Leg rear right"
+  process: false
+  held: "bonded into the knee crank and the foot hub with 3M DP420 epoxy"
+  at: (-205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  body tube(od: 20, id: 17, h: shank_l - 52, at: (0, -129.6, -34), dir: -Z) as tube_body
+}
+part rr_foot_hub {
+  label: "Foot hub, rear right: 6061-T6, black anodised"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Leg rear right"
+  process: mfg.cnc_lathe()
+  at: (-205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "anodized"
+  body cylinder(d: 24, h: 40, at: (0, -129.6, -shank_l + 40), dir: -Z) as socket
+  add sphere(d: 30, at: (0, -129.6, -shank_l)) as ball
+  cut cylinder(d: 20.1, h: 22, at: (0, -129.6, -shank_l + 40.01), dir: -Z) as tube_bore
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, -129.6, -shank_l + 3), dir: Z) as barb_1
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, -129.6, -shank_l + 3 + 3), dir: Z) as barb_2
+  cut tube(od: 31, id: 26.6, h: 1.2, at: (0, -129.6, -shank_l + 3 + 6), dir: Z) as barb_3
+}
+part rr_foot {
+  label: "Foot, rear right: 42 mm ball, TPU 95A"
+  color: #1d1e20
+  material: "TPU"
+  group: "Leg rear right"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  held: "stretched over the foot hub's barbed ball and bonded with cyanoacrylate"
+  at: (-205 - (thigh_l * sth), -aby, hz - (thigh_l * cth))
+  rotate: (0, qs, 0)
+  finish: "matte"
+  body sphere(d: 42, at: (0, -129.6, -shank_l)) as ball
+  cut cylinder(d: 26.2, h: 30, at: (0, -129.6, -shank_l + 4), dir: Z) as neck
+  cut sphere(d: 30.1, at: (0, -129.6, -shank_l)) as core
+}
+component fl_abad = lib.servo("cubemars_ak70_10") { at: (149.5, aby, hz), axis: X, rotate: 141.843, role: "ab/ad", group: "Leg front left", label: "Ab/ad actuator, front left: CubeMars AK70-10, CAN ID 1 on the front bus" }
+component fl_hip = lib.servo("cubemars_ak70_10") { at: (205, aby + 73, hz), axis: Y, rotate: 104.973, role: "hip", group: "Leg front left", label: "Hip actuator, front left: CubeMars AK70-10, CAN ID 2 on the front bus", removable }
+component fl_knee = lib.servo("cubemars_ak70_10") { at: (205 + (-km) * sth, aby + 113.6, hz + (-km) * cth), axis: -Y, rotate: 141.843 - th, role: "knee", group: "Leg front left", label: "Knee actuator, front left: CubeMars AK70-10 driving the knee through an HTD 8M belt, CAN ID 3 on the front bus" }
+component fr_abad = lib.servo("cubemars_ak70_10") { at: (149.5, -aby, hz), axis: X, rotate: 141.843, role: "ab/ad", group: "Leg front right", label: "Ab/ad actuator, front right: CubeMars AK70-10, CAN ID 4 on the front bus" }
+component fr_hip = lib.servo("cubemars_ak70_10") { at: (205, -(aby + 73), hz), axis: -Y, rotate: 178.713, role: "hip", group: "Leg front right", label: "Hip actuator, front right: CubeMars AK70-10, CAN ID 5 on the front bus", removable }
+component fr_knee = lib.servo("cubemars_ak70_10") { at: (205 + (-km) * sth, -(aby + 113.6), hz + (-km) * cth), axis: Y, rotate: 141.843 - (-th), role: "knee", group: "Leg front right", label: "Knee actuator, front right: CubeMars AK70-10 driving the knee through an HTD 8M belt, CAN ID 6 on the front bus" }
+component rl_abad = lib.servo("cubemars_ak70_10") { at: (-149.5, aby, hz), axis: -X, rotate: 141.843, role: "ab/ad", group: "Leg rear left", label: "Ab/ad actuator, rear left: CubeMars AK70-10, CAN ID 7 on the rear bus" }
+component rl_hip = lib.servo("cubemars_ak70_10") { at: (-205, aby + 73, hz), axis: Y, rotate: 178.713, role: "hip", group: "Leg rear left", label: "Hip actuator, rear left: CubeMars AK70-10, CAN ID 8 on the rear bus", removable }
+component rl_knee = lib.servo("cubemars_ak70_10") { at: (-205 + (-km) * sth, aby + 113.6, hz + (-km) * cth), axis: -Y, rotate: 141.843 - th, role: "knee", group: "Leg rear left", label: "Knee actuator, rear left: CubeMars AK70-10 driving the knee through an HTD 8M belt, CAN ID 9 on the rear bus" }
+component rr_abad = lib.servo("cubemars_ak70_10") { at: (-149.5, -aby, hz), axis: -X, rotate: 141.843, role: "ab/ad", group: "Leg rear right", label: "Ab/ad actuator, rear right: CubeMars AK70-10, CAN ID 10 on the rear bus" }
+component rr_hip = lib.servo("cubemars_ak70_10") { at: (-205, -(aby + 73), hz), axis: -Y, rotate: 104.973, role: "hip", group: "Leg rear right", label: "Hip actuator, rear right: CubeMars AK70-10, CAN ID 11 on the rear bus", removable }
+component rr_knee = lib.servo("cubemars_ak70_10") { at: (-205 + (-km) * sth, -(aby + 113.6), hz + (-km) * cth), axis: Y, rotate: 141.843 - (-th), role: "knee", group: "Leg rear right", label: "Knee actuator, rear right: CubeMars AK70-10 driving the knee through an HTD 8M belt, CAN ID 12 on the rear bus" }
+component jetson = lib.part("jetson_orin_nano_super") { at: (-6, 6, hz + 3), group: "Electronics", label: "NVIDIA Jetson Orin Nano Super developer kit: perception, mapping and gait planning; talks to the Teensy and the camera over USB", removable }
+component jetson_screws = lib.screw(M2_5, 8, head: "pan") { at: [(-49, -19, hz + 7.8), (37, -19, hz + 7.8), (-49, 39, hz + 7.8), (37, 39, hz + 7.8)], axis: -Z, group: "Electronics", label: "M2.5 x 8 pan screw: Jetson carrier board through its feet into the tray", removable }
+part carrier_ctrl {
+  label: "Controller carrier: PETG-CF, holds the Teensy, both CAN boards and the LED level translator"
+  color: #3a3e45
+  material: "PETG CF"
+  group: "Electronics"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  at: (0, 0, hz + 3)
+  removable
+  body box(118, 45, 4, at: (3, 70.5, 0), r: 3) as base
+  add box(62, 4, 7.5, at: (-30, 66.38, 3.99), r: 0.5) as socket_rail_1
+  cut box(60, 1.2, 7, at: (-30, 66.38, 5)) as socket_slot_1
+  add box(62, 4, 7.5, at: (-30, 81.62, 3.99), r: 0.5) as socket_rail_2
+  cut box(60, 1.2, 7, at: (-30, 81.62, 5)) as socket_slot_2
+  add cylinder(d: 6.5, h: 3, at: (17.5, 74.5, 3.99), dir: Z) as can_f_boss_1
+  cut cylinder(d: 2.5, h: 7.04, at: (17.5, 74.5, -0.02), dir: Z) as can_f_hole_1
+  add cylinder(d: 6.5, h: 3, at: (17.5, 89.5, 3.99), dir: Z) as can_f_boss_2
+  cut cylinder(d: 2.5, h: 7.04, at: (17.5, 89.5, -0.02), dir: Z) as can_f_hole_2
+  add box(4, 18, 3, at: (46.5, 82, 3.99)) as can_f_rest
+  add cylinder(d: 6.5, h: 3, at: (17.5, 52.5, 3.99), dir: Z) as can_r_boss_1
+  cut cylinder(d: 2.5, h: 7.04, at: (17.5, 52.5, -0.02), dir: Z) as can_r_hole_1
+  add cylinder(d: 6.5, h: 3, at: (17.5, 67.5, 3.99), dir: Z) as can_r_boss_2
+  cut cylinder(d: 2.5, h: 7.04, at: (17.5, 67.5, -0.02), dir: Z) as can_r_hole_2
+  add box(4, 18, 3, at: (46.5, 60, 3.99)) as can_r_rest
+  add box(3, 15, 3, at: (-19.3, 56, 3.99)) as txb_stop
+  cut cylinder(d: 3.5, h: 4.02, at: (-50, 53, -0.01), dir: Z) as fix_1
+  cut cylinder(d: 3.5, h: 4.02, at: (-50, 88, -0.01), dir: Z) as fix_2
+  cut cylinder(d: 3.5, h: 4.02, at: (56, 53, -0.01), dir: Z) as fix_3
+  cut cylinder(d: 3.5, h: 4.02, at: (56, 88, -0.01), dir: Z) as fix_4
+}
+component carrier_screws = lib.screw(M2_5, 6, head: "button") { at: [(-50, 53, hz + 7), (-50, 88, hz + 7), (56, 53, hz + 7), (56, 88, hz + 7)], axis: -Z, group: "Electronics", label: "M2.5 x 6 button screw: controller carrier to the tray", removable }
+component teensy = lib.controller("teensy_41") { at: (-30, 74, hz + 14.5), group: "Electronics", held: "its header pins pushed into the carrier's two socket strips", label: "PJRC Teensy 4.1: runs the legs at 500 Hz, two CAN buses to the actuators, the IMU on I2C, USB to the Jetson (VUSB-VIN pads cut: it runs from the 5 V supply)", removable }
+component can_f = lib.part("waveshare_sn65hvd230") { at: (32, 82, hz + 10), group: "Electronics", label: "Waveshare SN65HVD230 CAN board: the front legs' bus (its 120 ohm terminator is one end)", removable }
+component can_f_screws = lib.screw(M3, 8, head: "pan") { at: [(17.5, 74.5, hz + 11.6), (17.5, 89.5, hz + 11.6)], axis: -Z, group: "Electronics", label: "M3 x 8 pan screw: CAN board into the carrier's printed bosses", removable }
+component can_r = lib.part("waveshare_sn65hvd230") { at: (32, 60, hz + 10), group: "Electronics", label: "Waveshare SN65HVD230 CAN board: the rear legs' bus (its 120 ohm terminator is one end)", removable }
+component can_r_screws = lib.screw(M3, 8, head: "pan") { at: [(17.5, 52.5, hz + 11.6), (17.5, 67.5, hz + 11.6)], axis: -Z, group: "Electronics", label: "M3 x 8 pan screw: CAN board into the carrier's printed bosses", removable }
+component txb = lib.part("sparkfun_txb0104") { at: (-10, 56, hz + 7), group: "Electronics", held: "on a pad of 3M VHB foam tape", label: "SparkFun TXB0104 level translator: the Teensy's 3.3 V LED data up to 5 V", removable }
+component imu = lib.sensor("lsm6dsox_breakout") { at: (58, 6, hz + 9), group: "Electronics", label: "Adafruit LSM6DSOX 6-DoF IMU: the body's attitude and rates for the balance loop, at the middle of the body", removable }
+component imu_posts = lib.standoff(M2_5, 6, type: "MF", grade: "nylon") { at: [(47.74, 12.36, hz + 3), (68.26, 12.36, hz + 3)], axis: Z, group: "Electronics", label: "M2.5 x 6 nylon standoff, male-female: IMU off the tray", removable }
+component imu_screws = lib.screw(M2_5, 4, head: "pan", grade: "nylon") { at: [(47.74, 12.36, hz + 10.6), (68.26, 12.36, hz + 10.6)], axis: -Z, group: "Electronics", label: "M2.5 x 4 nylon pan screw: IMU to its standoffs", removable }
+component reg12 = lib.part("pololu_d36v50f12") { at: (-75, -72, hz + 8), group: "Electronics", label: "Pololu D36V50F12: 12 V 4.5 A for the Jetson", removable }
+component reg12_posts = lib.standoff(M2, 5, type: "MF", grade: "nylon") { at: [(-64.84, -82.16, hz + 3), (-85.16, -61.84, hz + 3)], axis: Z, group: "Electronics", label: "M2 x 5 nylon standoff, male-female: regulator off the tray", removable }
+component reg12_screws = lib.screw(M2, 4, head: "pan", grade: "nylon") { at: [(-64.84, -82.16, hz + 9.6), (-85.16, -61.84, hz + 9.6)], axis: -Z, group: "Electronics", label: "M2 x 4 nylon pan screw: regulator to its standoffs", removable }
+component reg5 = lib.part("d24v50f5") { at: (-40, -75, hz + 8), group: "Electronics", label: "Pololu D24V50F5: 5 V 5 A for the Teensy, the IMU and the status LEDs", removable }
+component reg5_posts = lib.standoff(M2, 5, type: "MF", grade: "nylon") { at: [(-46.73, -83, hz + 3), (-33.27, -67, hz + 3)], axis: Z, group: "Electronics", label: "M2 x 5 nylon standoff, male-female: regulator off the tray", removable }
+component reg5_screws = lib.screw(M2, 4, head: "pan", grade: "nylon") { at: [(-46.73, -83, hz + 9.6), (-33.27, -67, hz + 9.6)], axis: -Z, group: "Electronics", label: "M2 x 4 nylon pan screw: regulator to its standoffs", removable }
+component fuse_logic = lib.part("fuse_holder_blade_screw") { at: (18, -76, hz + 3), group: "Electronics", held: "on a pad of 3M VHB foam tape", rating: 5, label: "Logic fuse: Jaycar SZ2044 screw-terminal blade holder with a 5 A blade, before the power switch", removable }
+component batt = lib.part("tattu_6s_10000_xt90") { at: (0, 0, hz - 62), group: "Power", held: "between the two battery rails under two 25 mm hook-and-loop straps through the belly plate", label: "Battery: Tattu 6S 10000 mAh 30C LiPo, 22.2 V, 222 Wh, XT90-S lead", removable }
+part rail_l {
+  label: "Battery rail, left: PETG-CF"
+  color: #3a3e45
+  material: "PETG CF"
+  group: "Power"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  at: (0, 0, hz - 62)
+  body box(160, 6, 22, at: (0, 36.5, 0), r: 1.5) as rail
+  cut cylinder(d: 2.5, h: 8, at: (-66, 36.5, -0.01), dir: Z) as hole_1
+  cut cylinder(d: 2.5, h: 8, at: (0, 36.5, -0.01), dir: Z) as hole_2
+  cut cylinder(d: 2.5, h: 8, at: (66, 36.5, -0.01), dir: Z) as hole_3
+  cut box(28, 8, 6, at: (-45, 36.5, -0.01)) as strap_slot_1
+  cut box(28, 8, 6, at: (45, 36.5, -0.01)) as strap_slot_2
+}
+component rail_l_screws = lib.screw(M3, 10, head: "button") { at: [(-66, 36.5, hz - 64.5), (0, 36.5, hz - 64.5), (66, 36.5, hz - 64.5)], axis: Z, group: "Power", label: "M3 x 10 button screw: battery rail to the belly plate, from under it" }
+part rail_r {
+  label: "Battery rail, right: PETG-CF"
+  color: #3a3e45
+  material: "PETG CF"
+  group: "Power"
+  process: mfg.fdm(build: Z, bed: (256, 256, 256))
+  at: (0, 0, hz - 62)
+  body box(160, 6, 22, at: (0, -36.5, 0), r: 1.5) as rail
+  cut cylinder(d: 2.5, h: 8, at: (-66, -36.5, -0.01), dir: Z) as hole_1
+  cut cylinder(d: 2.5, h: 8, at: (0, -36.5, -0.01), dir: Z) as hole_2
+  cut cylinder(d: 2.5, h: 8, at: (66, -36.5, -0.01), dir: Z) as hole_3
+  cut box(28, 8, 6, at: (-45, -36.5, -0.01)) as strap_slot_1
+  cut box(28, 8, 6, at: (45, -36.5, -0.01)) as strap_slot_2
+}
+component rail_r_screws = lib.screw(M3, 10, head: "button") { at: [(-66, -36.5, hz - 64.5), (0, -36.5, hz - 64.5), (66, -36.5, hz - 64.5)], axis: Z, group: "Power", label: "M3 x 10 button screw: battery rail to the belly plate, from under it" }
+part strap_1 {
+  label: "Battery strap: 25 mm hook-and-loop"
+  color: #2b2f36
+  material: "Nylon"
+  group: "Power"
+  process: false
+  held: "threaded through the rails' slots and pulled tight round the battery"
+  at: (0, 0, hz - 62)
+  removable
+  body box(25, 82, 1.4, at: (-45, 0, 58.05)) as over
+  add box(25, 1.4, 58.1, at: (-45, 41.7, 0)) as drop_l
+  add box(25, 1.4, 58.1, at: (-45, -41.7, 0)) as drop_r
+}
+part strap_2 {
+  label: "Battery strap: 25 mm hook-and-loop"
+  color: #2b2f36
+  material: "Nylon"
+  group: "Power"
+  process: false
+  held: "threaded through the rails' slots and pulled tight round the battery"
+  at: (0, 0, hz - 62)
+  removable
+  body box(25, 82, 1.4, at: (45, 0, 58.05)) as over
+  add box(25, 1.4, 58.1, at: (45, 41.7, 0)) as drop_l
+  add box(25, 1.4, 58.1, at: (45, -41.7, 0)) as drop_r
+}
+component xt90 = lib.part("xt90s_pair") { at: (72, 48, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", label: "XT90-S anti-spark socket the battery plugs into" }
+component maxi = lib.part("fuse_holder_maxi") { at: (20, 62, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", rating: 40, label: "Main fuse: MAXI 40 A in an 8 AWG inline holder, right after the battery" }
+component relay = lib.part("narva_68040bl") { at: (-40, 57.5, hz - 28), rotate: (180, 0, 0), group: "Power", held: "clipped into a Narva relay base on VHB foam tape", label: "Actuator contactor: Narva 68040BL 24 V 30 A relay; its coil runs through the e-stop, so the e-stop cuts every actuator in hardware" }
+component w_bat = lib.part("wago_221_615") { at: (20, 83, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", label: "Wago 221-615 junction: battery side, after the main fuse" }
+component w_mot = lib.part("wago_221_615") { at: (-22, 83, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", label: "Wago 221-615 junction: actuator supply, after the relay" }
+component w_g1 = lib.part("wago_221_615") { at: (70, 83, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", label: "Wago 221-615 junction: ground" }
+component w_g2 = lib.part("wago_221_615") { at: (-70, 83, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", label: "Wago 221-615 junction: ground" }
+component fuse_fl = lib.part("fuse_holder_blade_screw") { at: (33, -53.5, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", rating: 20, label: "Leg fuse, front left: Jaycar SZ2044 screw-terminal blade holder with a 20 A blade" }
+component fuse_fr = lib.part("fuse_holder_blade_screw") { at: (33, -78, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", rating: 20, label: "Leg fuse, front right: Jaycar SZ2044 screw-terminal blade holder with a 20 A blade" }
+component fuse_rl = lib.part("fuse_holder_blade_screw") { at: (-33, -53.5, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", rating: 20, label: "Leg fuse, rear left: Jaycar SZ2044 screw-terminal blade holder with a 20 A blade" }
+component fuse_rr = lib.part("fuse_holder_blade_screw") { at: (-33, -78, hz - 62), group: "Power", held: "on a pad of 3M VHB foam tape", rating: 20, label: "Leg fuse, rear right: Jaycar SZ2044 screw-terminal blade holder with a 20 A blade" }
+component term_f = lib.part("resistor_mf") { at: (88, 0, hz + 30), group: "Electronics", held: "soldered into the bus harness at its last actuator, under heat-shrink", label: "120 ohm 1/4 W resistor: terminates the front CAN bus at its far end" }
+component term_r = lib.part("resistor_mf") { at: (-88, -30, hz + 30), group: "Electronics", held: "soldered into the bus harness at its last actuator, under heat-shrink", label: "120 ohm 1/4 W resistor: terminates the rear CAN bus at its far end" }
+part cover {
+  label: "Top cover: ASA, white, with the e-stop, switch, charge port and status light at the back"
+  color: #e9e9e6
+  material: "ASA"
+  group: "Body"
+  process: mfg.fdm(build: -Z, bed: (256, 256, 256))
+  at: (0, 0, hz)
+  removable
+  body box(235.5, body_w + 2, 18, at: (-22.25, 0, 58), r: 10) as shell
+  cut box(230.5, body_w - 3, 15.01, at: (-22.25, 0, 57.99), r: 8) as hollow
+  add cylinder(d: 9, h: 17.5, at: (-60, bw2 - 2.5, 58), dir: Z) as boss_1
+  cut cylinder(d: 4.7, h: 19, at: (-60, bw2 - 2.5, 57.5), dir: Z) as boss_hole_1
+  cut cylinder(d: 6.5, h: 3.2, at: (-60, bw2 - 2.5, 72.81), dir: Z) as boss_cb_1
+  add cylinder(d: 9, h: 17.5, at: (0, bw2 - 2.5, 58), dir: Z) as boss_2
+  cut cylinder(d: 4.7, h: 19, at: (0, bw2 - 2.5, 57.5), dir: Z) as boss_hole_2
+  cut cylinder(d: 6.5, h: 3.2, at: (0, bw2 - 2.5, 72.81), dir: Z) as boss_cb_2
+  add cylinder(d: 9, h: 17.5, at: (60, bw2 - 2.5, 58), dir: Z) as boss_3
+  cut cylinder(d: 4.7, h: 19, at: (60, bw2 - 2.5, 57.5), dir: Z) as boss_hole_3
+  cut cylinder(d: 6.5, h: 3.2, at: (60, bw2 - 2.5, 72.81), dir: Z) as boss_cb_3
+  add cylinder(d: 9, h: 17.5, at: (-60, -(bw2 - 2.5), 58), dir: Z) as boss_4
+  cut cylinder(d: 4.7, h: 19, at: (-60, -(bw2 - 2.5), 57.5), dir: Z) as boss_hole_4
+  cut cylinder(d: 6.5, h: 3.2, at: (-60, -(bw2 - 2.5), 72.81), dir: Z) as boss_cb_4
+  add cylinder(d: 9, h: 17.5, at: (0, -(bw2 - 2.5), 58), dir: Z) as boss_5
+  cut cylinder(d: 4.7, h: 19, at: (0, -(bw2 - 2.5), 57.5), dir: Z) as boss_hole_5
+  cut cylinder(d: 6.5, h: 3.2, at: (0, -(bw2 - 2.5), 72.81), dir: Z) as boss_cb_5
+  add cylinder(d: 9, h: 17.5, at: (60, -(bw2 - 2.5), 58), dir: Z) as boss_6
+  cut cylinder(d: 4.7, h: 19, at: (60, -(bw2 - 2.5), 57.5), dir: Z) as boss_hole_6
+  cut cylinder(d: 6.5, h: 3.2, at: (60, -(bw2 - 2.5), 72.81), dir: Z) as boss_cb_6
+  add cylinder(d: 9, h: 17.5, at: (-102.25, -66, 58), dir: Z) as boss_7
+  cut cylinder(d: 4.7, h: 19, at: (-102.25, -66, 57.5), dir: Z) as boss_hole_7
+  cut cylinder(d: 6.5, h: 3.2, at: (-102.25, -66, 72.81), dir: Z) as boss_cb_7
+  add cylinder(d: 9, h: 17.5, at: (-102.25, 0, 58), dir: Z) as boss_8
+  cut cylinder(d: 4.7, h: 19, at: (-102.25, 0, 57.5), dir: Z) as boss_hole_8
+  cut cylinder(d: 6.5, h: 3.2, at: (-102.25, 0, 72.81), dir: Z) as boss_cb_8
+  add cylinder(d: 9, h: 17.5, at: (-102.25, 66, 58), dir: Z) as boss_9
+  cut cylinder(d: 4.7, h: 19, at: (-102.25, 66, 57.5), dir: Z) as boss_hole_9
+  cut cylinder(d: 6.5, h: 3.2, at: (-102.25, 66, 72.81), dir: Z) as boss_cb_9
+  cut box(4, 44, 4, at: (-24, 14, 72.5), r: 1.9) as vent_1
+  cut box(4, 44, 4, at: (-18, 14, 72.5), r: 1.9) as vent_2
+  cut box(4, 44, 4, at: (-12, 14, 72.5), r: 1.9) as vent_3
+  cut box(4, 44, 4, at: (-6, 14, 72.5), r: 1.9) as vent_4
+  cut box(4, 44, 4, at: (0, 14, 72.5), r: 1.9) as vent_5
+  cut box(4, 44, 4, at: (6, 14, 72.5), r: 1.9) as vent_6
+  cut box(4, 44, 4, at: (12, 14, 72.5), r: 1.9) as vent_7
+  cut cylinder(d: 22.5, h: 5, at: (-80, 0, 72), dir: Z) as estop_hole
+  cut cylinder(d: 6.4, h: 5, at: (-122, 40, 72), dir: Z) as switch_hole
+  cut box(16.6, 8.6, 5, at: (-122, -40, 72), r: 1) as charge_hole
+  cut box(5, 56, 7, at: (-139, 0, 64), r: 2) as light_window
+}
+component cover_screws = lib.screw(M3, 20, head: "button") { at: [(-60, bw2 - 2.5, hz + 72.8), (0, bw2 - 2.5, hz + 72.8), (60, bw2 - 2.5, hz + 72.8), (-60, -(bw2 - 2.5), hz + 72.8), (0, -(bw2 - 2.5), hz + 72.8), (60, -(bw2 - 2.5), hz + 72.8), (-102.25, -66, hz + 72.8), (-102.25, 0, hz + 72.8), (-102.25, 66, hz + 72.8)], axis: -Z, group: "Body", label: "M3 x 20 button screw: top cover to the side plates and the rear bulkhead", removable }
+component estop = lib.part("estop_jaycar_sp0786") { at: (-80, 0, hz + 76), axis: Z, group: "Body", label: "E-stop: Jaycar SP0786 latching mushroom, 1 NC + 1 NO; NC in the relay's coil, NO tells the Teensy", removable }
+component power_sw = lib.part("toggle_spst") { at: (-122, 40, hz + 76), axis: Z, group: "Body", label: "Power switch: MTS-101 toggle; turns on the computers and lets the relay close", removable }
+component charge = lib.part("xt60_pair") { at: (-122, -40, hz + 60), group: "Body", held: "pressed into the cover's charge-port socket from inside and bonded", label: "Charge port: XT60 socket in the cover, on the battery side of the main fuse", removable }
+component leds = lib.part("neopixel_stick_8") { at: (-134, 0, hz + 67.5), rotate: (-90, 0, 90), group: "Body", held: "on VHB foam tape behind the cover's light window", label: "Status light: Adafruit NeoPixel Stick 8 behind the rear window", removable }
+part head_bracket {
+  label: "Head bracket: 6061-T6, black anodised; carries the RealSense camera"
+  color: #24272c
+  material: "Aluminum 6061"
+  group: "Head"
+  process: mfg.cnc_mill(tool_d: 6, setups: [Y, -Y, Z, -Z, X, -X])
+  at: (0, 0, hz)
+  finish: "anodized"
+  body extrude(polygon([(99, 59), (99.009, 58.869), (99.034, 58.741), (99.076, 58.617), (99.134, 58.5), (99.207, 58.391), (99.293, 58.293), (99.391, 58.207), (99.5, 58.134), (99.617, 58.076), (99.741, 58.034), (99.869, 58.009), (100, 58), (138.792, 58), (139.139, 58.02), (139.481, 58.08), (139.814, 58.18), (140.133, 58.317), (146.655, 61.578), (147.081, 61.761), (147.525, 61.893), (147.982, 61.973), (148.444, 62), (181, 62), (181.392, 62.026), (181.776, 62.102), (182.148, 62.228), (182.5, 62.402), (182.826, 62.62), (183.121, 62.879), (183.38, 63.174), (183.598, 63.5), (183.772, 63.852), (183.898, 64.224), (183.974, 64.608), (184, 65), (184, 105), (183.974, 105.392), (183.898, 105.776), (183.772, 106.148), (183.598, 106.5), (183.38, 106.826), (183.121, 107.121), (182.826, 107.38), (182.5, 107.598), (182.148, 107.772), (181.776, 107.898), (181.392, 107.974), (181, 108), (180, 108), (179.608, 107.974), (179.224, 107.898), (178.852, 107.772), (178.5, 107.598), (178.174, 107.38), (177.879, 107.121), (177.62, 106.826), (177.402, 106.5), (177.228, 106.148), (177.102, 105.776), (177.026, 105.392), (177, 105), (177, 74), (176.966, 73.478), (176.864, 72.965), (176.696, 72.469), (176.464, 72), (176.173, 71.565), (175.828, 71.172), (175.435, 70.827), (175, 70.536), (174.531, 70.304), (174.035, 70.136), (173.522, 70.034), (173, 70), (121, 70), (120.608, 69.974), (120.224, 69.898), (119.852, 69.772), (119.5, 69.598), (119.174, 69.38), (118.879, 69.121), (118.62, 68.826), (118.402, 68.5), (118.228, 68.148), (118.102, 67.776), (118.026, 67.392), (118, 67), (118, 66), (117.966, 65.478), (117.864, 64.965), (117.696, 64.469), (117.464, 64), (117.173, 63.565), (116.828, 63.172), (116.435, 62.827), (116, 62.536), (115.531, 62.304), (115.035, 62.136), (114.522, 62.034), (114, 62), (100, 62), (99.869, 61.991), (99.741, 61.966), (99.617, 61.924), (99.5, 61.866), (99.391, 61.793), (99.293, 61.707), (99.207, 61.609), (99.134, 61.5), (99.076, 61.383), (99.034, 61.259), (99.009, 61.131), (99, 61)]), 56, at: (0, 28, 0), dir: -Y) as bracket
+  cut box(20, 30, 10, at: (160, 0, 61), r: 6) as arm_window
+  cut cylinder(d: 3.4, h: 6, at: (102.25, -18, 57), dir: Z) as base_hole_1
+  cut cylinder(d: 3.4, h: 6, at: (102.25, 0, 57), dir: Z) as base_hole_2
+  cut cylinder(d: 3.4, h: 6, at: (102.25, 18, 57), dir: Z) as base_hole_3
+  cut cylinder(d: 3.4, h: 7.2, at: (176.9, -22.5, 88), dir: X) as cam_hole_1
+  cut cylinder(d: 3.4, h: 7.2, at: (176.9, 22.5, 88), dir: X) as cam_hole_2
+}
+component head_screws = lib.screw(M3, 10, head: "button") { at: [(102.25, -18, hz + 62), (102.25, 0, hz + 62), (102.25, 18, hz + 62)], axis: -Z, group: "Head", label: "M3 x 10 button screw: head bracket to the front bulkhead" }
+component camera = lib.sensor("realsense_d435i") { at: (184, 0, hz + 88), axis: X, group: "Head", label: "Intel RealSense D435i depth camera: stereo depth and its own IMU, USB-C to the Jetson" }
+component camera_screws = lib.screw(M3, 10, head: "pan") { at: [(177, -22.5, hz + 88), (177, 22.5, hz + 88)], axis: X, group: "Head", label: "M3 x 10 pan screw: through the head bracket's face plate into the camera's back" }
+part head_shell {
+  label: "Head shell: ASA, white, with the camera window"
+  color: #e9e9e6
+  material: "ASA"
+  group: "Head"
+  process: mfg.fdm(build: -Z, bed: (256, 256, 256))
+  held: "slid down over the head bracket's arm and clipped under the base's front edge"
+  at: (0, 0, hz)
+  removable
+  body box(120, 112, 52, at: (156, 0, 62), r: 14) as shell
+  add box(69, 34.5, 24, at: (174.5, 67.25, 75), r: 6) as usb_pod
+  cut box(115, 107, 50, at: (156, 0, 61.99), r: 12) as hollow
+  cut box(64, 33, 19, at: (174.5, 66.5, 77.5), r: 4) as usb_pod_hollow
+  cut box(12, 82, 27, at: (212, 0, 75), r: 4) as window
+  cut box(30, 3, 4, at: (150, -18, 111), r: 1.4) as vent_1
+  cut box(30, 3, 4, at: (150, -6, 111), r: 1.4) as vent_2
+  cut box(30, 3, 4, at: (150, 6, 111), r: 1.4) as vent_3
+  cut box(30, 3, 4, at: (150, 18, 111), r: 1.4) as vent_4
+}
+wire batt.POS -> xt90.POS_A { insulation: "silicone", gauge: 10, color: "red" }
+wire batt.NEG -> xt90.NEG_A { insulation: "silicone", gauge: 10, color: "black" }
+wire xt90.POS_B -> maxi.IN { insulation: "silicone", gauge: 10, color: "red" }
+wire maxi.OUT -> w_bat.A { insulation: "silicone", gauge: 10, color: "red" }
+wire w_bat.B -> relay.COM_30 { insulation: "silicone", gauge: 10, color: "red" }
+wire relay.NO_87 -> w_mot.A { insulation: "silicone", gauge: 10, color: "red" }
+wire xt90.NEG_B -> w_g1.A { insulation: "silicone", gauge: 10, color: "black" }
+wire w_g1.B -> w_g2.A { insulation: "silicone", gauge: 10, color: "black" }
+wire w_bat.C -> charge.POS_B { insulation: "silicone", gauge: 12, color: "red", label: "charge port +" }
+wire charge.NEG_B -> w_g2.B { insulation: "silicone", gauge: 12, color: "black", label: "charge port -" }
+wire w_mot.B -> fuse_fl.IN { insulation: "silicone", gauge: 12, color: "red" }
+wire fuse_fl.OUT -> fl_abad.V_PLUS -> fl_hip.V_PLUS -> fl_knee.V_PLUS { gauge: 14, insulation: "silicone", color: "red", label: "front left leg supply" }
+wire w_g1.C -> fl_abad.GND -> fl_hip.GND -> fl_knee.GND { gauge: 14, insulation: "silicone", color: "black", label: "front left leg ground" }
+wire w_mot.C -> fuse_fr.IN { insulation: "silicone", gauge: 12, color: "red" }
+wire fuse_fr.OUT -> fr_abad.V_PLUS -> fr_hip.V_PLUS -> fr_knee.V_PLUS { gauge: 14, insulation: "silicone", color: "red", label: "front right leg supply" }
+wire w_g1.D -> fr_abad.GND -> fr_hip.GND -> fr_knee.GND { gauge: 14, insulation: "silicone", color: "black", label: "front right leg ground" }
+wire w_mot.D -> fuse_rl.IN { insulation: "silicone", gauge: 12, color: "red" }
+wire fuse_rl.OUT -> rl_abad.V_PLUS -> rl_hip.V_PLUS -> rl_knee.V_PLUS { gauge: 14, insulation: "silicone", color: "red", label: "rear left leg supply" }
+wire w_g1.E -> rl_abad.GND -> rl_hip.GND -> rl_knee.GND { gauge: 14, insulation: "silicone", color: "black", label: "rear left leg ground" }
+wire w_mot.E -> fuse_rr.IN { insulation: "silicone", gauge: 12, color: "red" }
+wire fuse_rr.OUT -> rr_abad.V_PLUS -> rr_hip.V_PLUS -> rr_knee.V_PLUS { gauge: 14, insulation: "silicone", color: "red", label: "rear right leg supply" }
+wire w_g2.C -> rr_abad.GND -> rr_hip.GND -> rr_knee.GND { gauge: 14, insulation: "silicone", color: "black", label: "rear right leg ground" }
+wire w_bat.D -> fuse_logic.IN { insulation: "silicone", gauge: 12, color: "red" }
+wire fuse_logic.OUT -> power_sw.A { insulation: "silicone", gauge: 18, color: "red" }
+net V_LOGIC: power_sw.B, reg12.VIN, reg5.VIN, estop.NC_1 { insulation: "silicone", gauge: 18, color: "red" }
+wire estop.NC_2 -> relay.COIL_86 { gauge: 20, color: "orange", label: "relay coil, through the e-stop" }
+net GND_LOGIC: w_g2.D, reg12.GND, reg5.GND, relay.COIL_85, jetson.GND { insulation: "silicone", gauge: 18, color: "black" }
+wire reg12.VOUT -> jetson.DC_IN { gauge: 18, color: "red", label: "12 V to the Jetson's barrel jack" }
+net V5: reg5.VOUT, teensy.VIN, leds.V5, txb.VB { gauge: 20, color: "red" }
+net GND_5: reg5.GND, teensy.GND, leds.GND, txb.GND, can_f.GND, can_r.GND, imu.GND, estop.NO_4 { gauge: 22, color: "black" }
+net V3: teensy.V3V3, txb.VA, can_f.V3V3, can_r.V3V3, imu.VIN { gauge: 24, color: "orange" }
+wire teensy.D22 -> can_f.CAN_TX { gauge: 26, color: "white", label: "CAN1 TX: front bus" }
+wire can_f.CAN_RX -> teensy.D23 { gauge: 26, color: "blue", label: "CAN1 RX: front bus" }
+wire teensy.D1 -> can_r.CAN_TX { gauge: 26, color: "white", label: "CAN2 TX: rear bus" }
+wire can_r.CAN_RX -> teensy.D0 { gauge: 26, color: "blue", label: "CAN2 RX: rear bus" }
+wire teensy.D18 -> imu.SDA { gauge: 26, color: "blue", label: "I2C SDA" }
+wire teensy.D19 -> imu.SCL { gauge: 26, color: "yellow", label: "I2C SCL" }
+wire teensy.D2 -> txb.A1 { gauge: 26, color: "green", label: "LED data, 3.3 V" }
+wire txb.B1 -> leds.DIN { gauge: 26, color: "green", label: "LED data, 5 V" }
+wire teensy.D3 -> estop.NO_3 { gauge: 24, color: "white", label: "e-stop sense" }
+wire teensy.USB -> jetson.USB1 { cable: "USB micro-B to A cable, 300 mm", length: 300 }
+wire camera.USB -> jetson.USB3 { cable: "USB-C to USB-A 3.1 cable, 500 mm", length: 500, via: [(190, 77, hz + 88), (152, 74, hz + 84), (147, 50, hz + 80), (120, 48, hz + 66), (102.25, aby, hz + 51.5)] }
+net CANF_H: can_f.CAN_H, fl_abad.CAN_H, fl_hip.CAN_H, fl_knee.CAN_H, fr_knee.CAN_H, fr_hip.CAN_H, fr_abad.CAN_H, term_f.A { gauge: 26, color: "yellow", chain: true }
+net CANF_L: can_f.CAN_L, fl_abad.CAN_L, fl_hip.CAN_L, fl_knee.CAN_L, fr_knee.CAN_L, fr_hip.CAN_L, fr_abad.CAN_L, term_f.B { gauge: 26, color: "green", chain: true }
+net CANR_H: can_r.CAN_H, rl_abad.CAN_H, rl_hip.CAN_H, rl_knee.CAN_H, rr_knee.CAN_H, rr_hip.CAN_H, rr_abad.CAN_H, term_r.A { gauge: 26, color: "yellow", chain: true }
+net CANR_L: can_r.CAN_L, rl_abad.CAN_L, rl_hip.CAN_L, rl_knee.CAN_L, rr_knee.CAN_L, rr_hip.CAN_L, rr_abad.CAN_L, term_r.B { gauge: 26, color: "green", chain: true }
+// ── Firmware: the Teensy 4.1 runs the legs at 500 Hz over both CAN buses; the Jetson sends it lines on USB ──
+firmware gait {
+  board: teensy
+  behaviour: "quadruped robot dog: stands up from lying folded and trots, on twelve CAN actuators"
+  legs: "fl, fr, rl, rr"
+  thigh: thigh_l
+  shank: shank_l
+  stand: stand_h
+  foot_r: 21
+  leg_y: 129.6
+  period: 0.36
+  swing: 60
+  max_speed: 0.6
+  kp: 180
+  kd: 3
+  mass: 15.6
+}
+
+// ── Simulation: each leg's three bodies on its three actuators' axes; every angle counts from the standing pose ──
+// lying folded: thigh 140 deg from straight down, knee folded 140 deg; the knee folds at most 144 deg
+// (its shank tube meets the knee actuator's cup) and at least 20 deg
+let fl_carrier_body = [fl_carrier, fl_carrier_screws, fl_hip, fl_hip_screws]
+let fl_thigh_body = [fl_thigh_in, fl_thigh_out, fl_post_1, fl_post_2, fl_post_3, fl_post_screws_in, fl_post_screws_out, fl_thigh_screws, fl_cup, fl_cup_screws, fl_cup_post_screws, fl_knee, fl_knee_m_screws, fl_mpul, fl_mpul_screws, fl_belt, fl_b6808, fl_b6801]
+let fl_shank_body = [fl_kpul, fl_crank, fl_crank_screws, fl_pin, fl_pin_screw, fl_tube, fl_foot_hub, fl_foot]
+let fl_abad_j = sim.pivot(fl_carrier_body, at: (149.5, aby, hz), axis: (1, 0, 0), limits: (-26, 26), drive: fl_abad, friction: 300, name: "fl_abad_joint")
+let fl_hip_j = sim.pivot(fl_thigh_body, on: fl_carrier, at: (205, aby + 73, hz), axis: (0, 1, 0), limits: (-34.4 - th, 149 - th), start: 140 - th, drive: fl_hip, friction: 300, name: "fl_hip_joint")
+let fl_knee_j = sim.pivot(fl_shank_body, on: fl_thigh_in, at: (205 - (thigh_l * sth), aby + 129.6, hz - (thigh_l * cth)), axis: (0, -1, 0), limits: (-(th - qs - 20), -(th - qs - 144)), start: -(th - qs - 140), drive: fl_knee, friction: 300, name: "fl_knee_joint")
+let fr_carrier_body = [fr_carrier, fr_carrier_screws, fr_hip, fr_hip_screws]
+let fr_thigh_body = [fr_thigh_in, fr_thigh_out, fr_post_1, fr_post_2, fr_post_3, fr_post_screws_in, fr_post_screws_out, fr_thigh_screws, fr_cup, fr_cup_screws, fr_cup_post_screws, fr_knee, fr_knee_m_screws, fr_mpul, fr_mpul_screws, fr_belt, fr_b6808, fr_b6801]
+let fr_shank_body = [fr_kpul, fr_crank, fr_crank_screws, fr_pin, fr_pin_screw, fr_tube, fr_foot_hub, fr_foot]
+let fr_abad_j = sim.pivot(fr_carrier_body, at: (149.5, -aby, hz), axis: (1, 0, 0), limits: (-26, 26), drive: fr_abad, friction: 300, name: "fr_abad_joint")
+let fr_hip_j = sim.pivot(fr_thigh_body, on: fr_carrier, at: (205, -(aby + 73), hz), axis: (0, -1, 0), limits: (-(149 - th), -(-34.4 - th)), start: -(140 - th), drive: fr_hip, friction: 300, name: "fr_hip_joint")
+let fr_knee_j = sim.pivot(fr_shank_body, on: fr_thigh_in, at: (205 - (thigh_l * sth), -(aby + 129.6), hz - (thigh_l * cth)), axis: (0, 1, 0), limits: (th - qs - 144, th - qs - 20), start: th - qs - 140, drive: fr_knee, friction: 300, name: "fr_knee_joint")
+let rl_carrier_body = [rl_carrier, rl_carrier_screws, rl_hip, rl_hip_screws]
+let rl_thigh_body = [rl_thigh_in, rl_thigh_out, rl_post_1, rl_post_2, rl_post_3, rl_post_screws_in, rl_post_screws_out, rl_thigh_screws, rl_cup, rl_cup_screws, rl_cup_post_screws, rl_knee, rl_knee_m_screws, rl_mpul, rl_mpul_screws, rl_belt, rl_b6808, rl_b6801]
+let rl_shank_body = [rl_kpul, rl_crank, rl_crank_screws, rl_pin, rl_pin_screw, rl_tube, rl_foot_hub, rl_foot]
+let rl_abad_j = sim.pivot(rl_carrier_body, at: (-149.5, aby, hz), axis: (-1, 0, 0), limits: (-26, 26), drive: rl_abad, friction: 300, name: "rl_abad_joint")
+let rl_hip_j = sim.pivot(rl_thigh_body, on: rl_carrier, at: (-205, aby + 73, hz), axis: (0, 1, 0), limits: (-34.4 - th, 149 - th), start: 140 - th, drive: rl_hip, friction: 300, name: "rl_hip_joint")
+let rl_knee_j = sim.pivot(rl_shank_body, on: rl_thigh_in, at: (-205 - (thigh_l * sth), aby + 129.6, hz - (thigh_l * cth)), axis: (0, -1, 0), limits: (-(th - qs - 20), -(th - qs - 144)), start: -(th - qs - 140), drive: rl_knee, friction: 300, name: "rl_knee_joint")
+let rr_carrier_body = [rr_carrier, rr_carrier_screws, rr_hip, rr_hip_screws]
+let rr_thigh_body = [rr_thigh_in, rr_thigh_out, rr_post_1, rr_post_2, rr_post_3, rr_post_screws_in, rr_post_screws_out, rr_thigh_screws, rr_cup, rr_cup_screws, rr_cup_post_screws, rr_knee, rr_knee_m_screws, rr_mpul, rr_mpul_screws, rr_belt, rr_b6808, rr_b6801]
+let rr_shank_body = [rr_kpul, rr_crank, rr_crank_screws, rr_pin, rr_pin_screw, rr_tube, rr_foot_hub, rr_foot]
+let rr_abad_j = sim.pivot(rr_carrier_body, at: (-149.5, -aby, hz), axis: (-1, 0, 0), limits: (-26, 26), drive: rr_abad, friction: 300, name: "rr_abad_joint")
+let rr_hip_j = sim.pivot(rr_thigh_body, on: rr_carrier, at: (-205, -(aby + 73), hz), axis: (0, -1, 0), limits: (-(149 - th), -(-34.4 - th)), start: -(140 - th), drive: rr_hip, friction: 300, name: "rr_hip_joint")
+let rr_knee_j = sim.pivot(rr_shank_body, on: rr_thigh_in, at: (-205 - (thigh_l * sth), -(aby + 129.6), hz - (thigh_l * cth)), axis: (0, 1, 0), limits: (th - qs - 144, th - qs - 20), start: th - qs - 140, drive: rr_knee, friction: 300, name: "rr_knee_joint")
+let legs = sim.mechanism(fl_abad_j, fl_hip_j, fl_knee_j, fr_abad_j, fr_hip_j, fr_knee_j, rl_abad_j, rl_hip_j, rl_knee_j, rr_abad_j, rr_hip_j, rr_knee_j, base: "free", auto: false, follow: belly)
+
+scenario "Stands up and trots across the floor" for walk {
+  world: sim.floor(surface: "concrete")
+  mechanism: legs
+  firmware: gait
+  duration: 12s
+  console: [sim.type("on", at: 0.5s), sim.type("stand", at: 1s), sim.type("trot 0.25", at: 5s), sim.type("trot 0.5", at: 6.5s), sim.type("stop", at: 10s), sim.type("st", at: 11.6s)]
+  expect "It stood up and walked off on its own firmware, every command taken": fw.refused == 0 && fw.faults == 0 && state == "standing"
+  expect "It trotted at least 1.5 m": distance > 1500
+  expect "It never tipped": !tipped && tilt_max < 20
+  expect "Every actuator answered every frame": can_unanswered == 0 && fw.lostReplies == 0 && can_lost == 0
+  expect "The CAN buses kept a fifth of their time free": can_load < 0.8
+  expect "The battery fuse and the legs' fuses held": !fuse_blown && maxi.peak_draw < 40
+}
+
+scenario "E-stop while standing" for safe {
+  like: "Stands up and trots across the floor"
+  duration: 9s
+  console: [sim.type("on", at: 0.5s), sim.type("stand", at: 1s), sim.type("trot 0.3", at: 9s)]
+  faults: [sim.press(estop, at: 5.5s, until: 7.5s)]
+  expect "It saw the e-stop and the relay cut the legs' power": fw.faults == 1 && state == "limp"
+  expect "It settled down on its belly, not over": !tipped
+}
+
+// landing on one foot: 3 x body weight up through the foot (body_mass is in grams, t_peak in N.mm)
+let land_f = 3 * 9.81 * body_mass / 1000
+let land_m = land_f * abs(sin(qs)) * (shank_l - 64)      // N.mm, bending the shank tube where it leaves the crank
+let tube_z = 3.14159 * (20 * 20 * 20 * 20 - 17 * 17 * 17 * 17) / (32 * 20)   // mm³, the 20 x 17 tube's section modulus
+let knee_hold = land_f * abs(sin(qs)) * shank_l           // N.mm the knee would need to hold it in the standing pose
+require "Landing on one foot: the shank tube bends to under half its strength (450 MPa) at 3 x body weight" for land: land_m / tube_z <= 450 / 2
+require "Landing on one foot: the knee actuator gives way at its peak torque before the knee belt is overloaded (1060 N on its 22-tooth pulley)" for land: t_peak / (22 * 8 / 3.14159 / 2) <= 1060
+require "Landing on one foot: more than the knee holds in the standing pose, so it backdrives and the leg folds to soak up the drop" for land: knee_hold > t_peak
+analysis "Landing on one foot: 3 x body weight up the front left shank" {
+  parts: [fl_crank, fl_tube, fl_foot_hub]
+  fix: zone(at: (205 - (thigh_l * sth), aby + 116.1, hz - (thigh_l * cth)), r: 24)     // the crank's disc, screwed to the knee pulley's hub and on the knee pin
+  load: force(zone(at: (205 - (thigh_l * sth) + (-shank_l) * sqs, aby + 129.6, hz - (thigh_l * cth) + (-shank_l) * cqs), r: 16), (0, 0, land_f))
+  safety: 2
+  resolution: "draft"
+}
