@@ -368,7 +368,38 @@ function disposeScene(scene: THREE.Scene) {
 export class StudioEnvironments {
   private cache = new Map<string, THREE.WebGLRenderTarget>();
   private cubes = new Map<LightingId, THREE.WebGLCubeRenderTarget>();
+  /** one baker for every map: the shader it blurs with is built by the graphics card once */
+  private pmrem: THREE.PMREMGenerator | null = null;
   constructor(private renderer: THREE.WebGLRenderer) {}
+
+  /** Whether the maps of `p` are baked: get() and fill() draw nothing. */
+  has(p: LightingPreset): boolean {
+    return this.cache.has(p.id) && (!p.panels.some((pn) => pn.cast) || this.cache.has(`${p.id}:fill`));
+  }
+
+  /**
+   * Goes through baking the maps of `p` and keeps none of it: for the graphics card to be handed the shaders a bake
+   * is drawn with, by a renderer that draws nothing meanwhile (see ShaderGate.rehearse). The set's materials are
+   * left as they are, so that the card keeps what it built for them: the bake itself, and every set after, use the
+   * same shaders.
+   */
+  rehearse(p: LightingPreset) {
+    for (const fill of p.panels.some((pn) => pn.cast) ? [false, true] : [false]) {
+      if (this.cache.has(fill ? `${p.id}:fill` : p.id)) continue;
+      const scene = studioScene(p, fill);
+      try {
+        this.baker().fromScene(scene, 0, 0.1, 100).dispose();
+      } finally {
+        scene.traverse((o) => {
+          if (o instanceof THREE.Mesh) o.geometry.dispose();
+        });
+      }
+    }
+  }
+
+  private baker(): THREE.PMREMGenerator {
+    return (this.pmrem ??= new THREE.PMREMGenerator(this.renderer));
+  }
 
   /** Prefiltered for the interactive view. */
   get(p: LightingPreset): THREE.Texture {
@@ -388,10 +419,11 @@ export class StudioEnvironments {
     let rt = this.cache.get(key);
     if (!rt) {
       const scene = studioScene(p, fill);
-      const pmrem = new THREE.PMREMGenerator(this.renderer);
-      rt = pmrem.fromScene(scene, 0, 0.1, 100);
-      pmrem.dispose();
-      disposeScene(scene);
+      try {
+        rt = this.baker().fromScene(scene, 0, 0.1, 100);
+      } finally {
+        disposeScene(scene);
+      }
       this.cache.set(key, rt);
     }
     return rt.texture;
@@ -427,6 +459,7 @@ export class StudioEnvironments {
   forget() {
     this.cache.clear();
     this.cubes.clear();
+    this.pmrem = null;
   }
 
   dispose() {
@@ -434,6 +467,8 @@ export class StudioEnvironments {
     for (const rt of this.cubes.values()) rt.dispose();
     this.cache.clear();
     this.cubes.clear();
+    this.pmrem?.dispose();
+    this.pmrem = null;
   }
 }
 

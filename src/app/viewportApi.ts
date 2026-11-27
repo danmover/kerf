@@ -87,6 +87,12 @@ export interface FilmView {
 
 export interface ViewportApi {
   capture(opts: CaptureOptions): Promise<string>;
+  /**
+   * A small picture of the whole model from the standard corner, for a list of designs. Unlike capture() the page is
+   * not held for it: it is drawn a sample at a time between frames, once the view is at rest. Null when another was
+   * asked for meanwhile or the view went.
+   */
+  thumbnail(opts: { width: number; height: number; mime?: string; quality?: number; samples?: number }): Promise<string | null>;
   /** a rendered ball of a material under the current lighting (data URL, transparent background), when the graphics card has drawn it */
   swatch(material: string, finish: string | undefined, color: string, size?: number): Promise<string>;
   /** show a material on parts without changing the design; null restores them */

@@ -15,6 +15,7 @@
 import * as THREE from "three";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 import { concentricDisc, halton } from "./studio";
+import { ShaderGate, handing } from "./shaderGate";
 
 export type Quality = "draft" | "balanced" | "high";
 
@@ -472,6 +473,8 @@ export class RenderPipeline {
   private black: THREE.DataTexture;
   /** one pixel to draw a pass into when only the pass matters (compile) */
   private scratchRT: THREE.WebGLRenderTarget | null = null;
+  private gate: ShaderGate | null = null;
+  private passes: [THREE.Group, THREE.Group] | null = null;
   private savedProj = new THREE.Matrix4();
   private savedProjInv = new THREE.Matrix4();
   private lastView = new THREE.Matrix4();
@@ -635,6 +638,83 @@ export class RenderPipeline {
   }
 
   /**
+   * Whether the graphics card has built everything a frame is drawn with: `scene` as renderSample() draws it, this
+   * pipeline's own passes, and `over` as it is drawn onto the canvas after composite(). What is new is handed to the
+   * card first. While this is false, show nothing drawn: a draw with a shader the card has not finished stops the
+   * page until it has (see ShaderGate).
+   */
+  ready(scene: THREE.Scene, camera: THREE.Camera, over?: THREE.Object3D): boolean {
+    const gate = this.shaderGate();
+    if (!gate.works) return true;
+    const passes = (this.passes ??= this.passScenes());
+    // every one is asked, so that all of them are with the card at once
+    const built = [gate.ready(passes[0], camera, this.scratch()), gate.ready(passes[1], camera, null), gate.ready(scene, camera, this.sampleRT, true), !over || gate.ready(over, camera, null)];
+    // a picture for a file draws `over` into a buffer: built for that as well, with nothing waiting on it
+    if (over) gate.too(over, camera, this.scratch());
+    return built.every(Boolean);
+  }
+
+  /**
+   * Goes through `work`, something drawn with shaders of its own outside a frame, without drawing any of it, so that
+   * the card builds those first with the page live (see ShaderGate.rehearse). Null: nothing to build, do the work
+   * now. Otherwise do it once what is returned says true.
+   */
+  rehearse(work: () => void): (() => boolean) | null {
+    return this.shaderGate().rehearse(work);
+  }
+
+  /**
+   * A frame of the live view is about to be drawn. Until frameDrawn(), a draw the card has not built the shader for
+   * is left out of the frame instead of being waited for, and built on the side.
+   */
+  frameBegins() {
+    this.shaderGate().begin();
+  }
+
+  /** True when the frame being drawn has had a draw left out: it is not a whole picture, and is not to be shown. */
+  get framePartial(): boolean {
+    return !!this.gate?.partial;
+  }
+
+  /** Go through `show`, the part of a frame that puts the picture on screen, without drawing any of it: what it draws with is built alongside the rest (see ShaderGate.unshown). */
+  frameUnshown(show: () => void) {
+    this.gate?.unshown(show);
+  }
+
+  /** The frame is drawn. True when a draw was left out of it: wait for ready(), then draw everything again. */
+  frameDrawn(): boolean {
+    return !!this.gate?.end();
+  }
+
+  /** Whether one frame should be drawn through although ready() is false: see ShaderGate.scout. */
+  scoutFrame(): boolean {
+    return !!this.gate?.scout();
+  }
+
+  private shaderGate(): ShaderGate {
+    return (this.gate ??= new ShaderGate(this.r, this.scratch()));
+  }
+
+  /** The card was reset: every shader is built again. */
+  forgetShaders() {
+    this.gate?.reset();
+  }
+
+  /** This pipeline's passes as two scenes to build shaders for: those drawn into buffers, and those drawn onto the canvas. */
+  private passScenes(): [THREE.Group, THREE.Group] {
+    const quad = (this.quad as unknown as { _mesh: THREE.Mesh })._mesh.geometry;
+    const of = (mats: THREE.Material[]) => new THREE.Group().add(...mats.map((m) => Object.assign(new THREE.Mesh(quad, m), { frustumCulled: false })));
+    return [
+      of([this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.depthPackMat, this.depthWriteMat, this.compMat, this.denoiseMat, this.photoMixMat]),
+      of([this.compMat, this.depthWriteMat]),
+    ];
+  }
+
+  private scratch(): THREE.WebGLRenderTarget {
+    return (this.scratchRT ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false }));
+  }
+
+  /**
    * Has the graphics card build the shaders `scene` is drawn with by renderSample(), and resolves when they are
    * ready. The page is not held for it: drawing a material whose shader is not built yet waits for the card there
    * and then, which is seconds for a large shader with Direct3D.
@@ -645,11 +725,11 @@ export class RenderPipeline {
     // The renderer takes how many clipping planes a shader is built for from whatever it drew last: a pass of our
     // own, which has none, goes first, or a section in the view would have the card build a shader nothing uses.
     this.copyMat.uniforms.tSrc.value = this.black;
-    this.pass(this.copyMat, (this.scratchRT ??= new THREE.WebGLRenderTarget(1, 1, { type: THREE.UnsignedByteType, depthBuffer: false })));
+    this.pass(this.copyMat, this.scratch());
     // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
     r.setRenderTarget(this.sampleRT);
     try {
-      return r.compileAsync(scene, camera).then(() => undefined);
+      return handing(() => r.compileAsync(scene, camera)).then(() => undefined);
     } finally {
       r.setRenderTarget(prev);
     }
@@ -800,6 +880,7 @@ export class RenderPipeline {
     for (const m of [this.aoMat, this.blurMat, this.accumMat, this.preMat, this.downMat, this.upMat, this.copyMat, this.depthPackMat, this.depthWriteMat, this.compMat, this.denoiseMat, this.photoMixMat]) m.dispose();
     this.quad.dispose();
     this.scratchRT?.dispose();
+    this.gate?.dispose();
     this.black.dispose();
   }
 }

@@ -219,7 +219,10 @@ function useThumbnails() {
       if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
-        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12, overlays: false });
+        // drawn between frames once the view is at rest: the page is not held for it
+        const url = await vp.thumbnail({ width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12 });
+        // none: the design moved on meanwhile, and its next settled rebuild asks again
+        if (!url || useDesign.getState().rev !== rev || useProject.getState().preview) return;
         last.current = rev;
         await saveThumbnail(url);
       } catch {

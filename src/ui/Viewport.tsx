@@ -122,6 +122,8 @@ export function Viewport() {
   const lastCamera = useRef<{ pos: [number, number, number]; target: [number, number, number] } | null>(null);
   // the graphics card reset and the view is waiting for its drawing context
   const [glLost, setGlLost] = useState(false);
+  // the graphics card is building shaders the view needs: the picture waits for them, and says so
+  const [shaders, setShaders] = useState(false);
   const [scene, setScene] = useState<SceneController | null>(null);
   // a ring that fills while a finger is held on the model, to open the spot chat
   const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
@@ -177,6 +179,7 @@ export function Viewport() {
       if (c.framed) lastCamera.current = c.cameraState();
       setGlGen((g) => g + 1);
     };
+    c.onShaders = setShaders;
     let lostTimer = 0;
     c.onContextChange = (lost) => {
       window.clearTimeout(lostTimer);
@@ -244,6 +247,7 @@ export function Viewport() {
     };
     registerViewport({
       capture: (o) => c.capture(o),
+      thumbnail: (o) => c.thumbnail(o),
       swatch: (m, f, col, size) => c.swatch(m, f, col, size),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),
@@ -265,9 +269,11 @@ export function Viewport() {
     return () => {
       // a view closed on purpose gives its context back: that is not a reset
       c.onContextChange = () => undefined;
+      c.onShaders = () => undefined;
       c.onBroken = () => undefined;
       window.clearTimeout(lostTimer);
       setGlLost(false);
+      setShaders(false);
       setScene(null);
       registerViewport(null);
       mfgOverlay.current?.destroy();
@@ -598,7 +604,7 @@ export function Viewport() {
         {scene && !inSketch && <DragLayer host={pickHost} scene={scene} />}
       </LayerBoundary>
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
-      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} note={glNote} />
+      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} shaders={shaders} note={glNote} />
 
       <LayerBoundary label="Analysis results" retry={model}>
         {scene && !inSketch && <ResultsLayer scene={scene} />}
@@ -758,14 +764,21 @@ function Range({ value, onChange, label }: { value: number; onChange: (v: number
 
 /**
  * What the 3D view is waiting on, while the model stays on screen: the graphics card reset and the view is getting
- * its drawing context back, or the geometry kernel is restarting and building the parts again.
+ * its drawing context back, the geometry kernel is restarting and building the parts again, or the graphics card is
+ * building the shaders for something it has not drawn since the last update.
  */
-function ViewNotice({ glLost, kernelRestarting, note }: { glLost: boolean; kernelRestarting: boolean; note: string }) {
-  const text = glLost ? "The graphics card reset. Bringing the 3D view back…" : kernelRestarting ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…" : note;
+function ViewNotice({ glLost, kernelRestarting, shaders, note }: { glLost: boolean; kernelRestarting: boolean; shaders: boolean; note: string }) {
+  const text = glLost
+    ? "The graphics card reset. Bringing the 3D view back…"
+    : kernelRestarting
+      ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…"
+      : shaders
+        ? "The graphics card is getting this view ready. It does this once after an update…"
+        : note;
   return (
     <AnimatePresence>
       {text && (
-        <motion.div key={text} className="vp-notice" role="status" style={{ x: "-50%" }} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+        <motion.div key={text} className="vp-notice" role="status" data-shaders-building={shaders && !glLost && !kernelRestarting ? "" : undefined} style={{ x: "-50%" }} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
           {text === note ? <Icon.Alert size={13} /> : <span className="spinner sm" />}
           {text}
         </motion.div>
