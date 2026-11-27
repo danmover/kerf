@@ -191,22 +191,32 @@ export function updateHarness(model: Model) {
     useHarness.setState({ harness });
     return;
   }
-  // keep showing the old routes for cables that still exist until the new ones arrive
-  useHarness.setState({ harness, key, status: "routing" });
-  if (typeof Worker === "undefined") return;
-  const { geos, placed } = solidsInput({ ...model, parts }, mesh, mounts);
-  pendingId = nextId++;
-  const req: HarnessRouteRequest = {
-    id: pendingId,
-    // the worker takes the mesh buffers, so it gets its own copies
-    input: { geos: geos.map((g) => ({ positions: g.positions.slice(), indices: g.indices.slice() })), placed, wires },
-    travel: travel?.input,
-    wiring: { harness, mounts: specs, screws, pivots, flow },
+  // Keep showing the old routes for cables that still exist until the new ones arrive, with the splices where the
+  // router last put them: left at their first places, every cable of the 3D view was built again at each edit (its
+  // input had changed), and again when the routes came and moved them back.
+  const routing = () => {
+    placeSplices(harness, st.splices);
+    useHarness.setState({ harness, key, status: "routing" });
   };
-  ensureWorker().postMessage(
-    req,
-    req.input.geos.flatMap((g) => [g.positions.buffer, g.indices.buffer]),
-  );
+  if (typeof Worker === "undefined") return routing();
+  try {
+    const { geos, placed } = solidsInput({ ...model, parts }, mesh, mounts);
+    pendingId = nextId++;
+    const req: HarnessRouteRequest = {
+      id: pendingId,
+      // the worker takes the mesh buffers, so it gets its own copies
+      input: { geos: geos.map((g) => ({ positions: g.positions.slice(), indices: g.indices.slice() })), placed, wires },
+      travel: travel?.input,
+      wiring: { harness, mounts: specs, screws, pivots, flow },
+    };
+    ensureWorker().postMessage(
+      req,
+      req.input.geos.flatMap((g) => [g.positions.buffer, g.indices.buffer]),
+    );
+  } finally {
+    // (after the request, which the router gets with the splices at their first places, as it always has)
+    routing();
+  }
 }
 
 /** The wiring and mounting checks for a model, once they are in: resolves when they are (or after `ms`). */
