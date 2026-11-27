@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { inSlices, pacer, sliceAfter, workWaiting } from "../src/core/slices";
+import { awaiting, inSlices, pacer, sliceAfter, workWaiting } from "../src/core/slices";
 
 // Work done a few milliseconds at a time, so the page can draw and answer in between.
 
@@ -97,5 +97,34 @@ describe("a few larger steps, paced", () => {
     setTimeout(() => (turned = true), 0);
     await pace.pause();
     expect(turned).toBe(false);
+  });
+});
+
+describe("an answer from a worker the page waits for", () => {
+  it("counts as work waiting until it comes", async () => {
+    let answer!: (v: number) => void;
+    const got = awaiting(new Promise<number>((ok) => (answer = ok)), 5000);
+    expect(workWaiting()).toBe(true);
+    answer(3);
+    expect(await got).toBe(3);
+    expect(workWaiting()).toBe(false);
+  });
+
+  it("counts no longer than said, though the answer has not come", async () => {
+    let answer!: () => void;
+    const got = awaiting(new Promise<void>((ok) => (answer = ok)), 20);
+    expect(workWaiting()).toBe(true);
+    await new Promise((ok) => setTimeout(ok, 60));
+    expect(workWaiting()).toBe(false);
+    answer();
+    await got;
+  });
+
+  it("passes a failure on, and stops counting", async () => {
+    let fail!: (e: Error) => void;
+    const got = awaiting(new Promise<void>((_, no) => (fail = no)), 5000);
+    fail(new Error("no"));
+    await expect(got).rejects.toThrow("no");
+    expect(workWaiting()).toBe(false);
   });
 });

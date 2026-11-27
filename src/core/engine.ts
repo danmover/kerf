@@ -11,12 +11,12 @@ import { keepMesh, keptKey, keptMeshes, type KeptMesh, type KeptQuality } from "
 import type { Interference, ChecksResult } from "../kernel/protocol";
 import { hasDetail, stableStringify, type V3 } from "../kernel/recipe";
 import { displayBuilt, hasThreads } from "../kernel/threadMarks";
-import { assembleReport, buildChecksRequest, type CheckItem, type CheckReport } from "./checks";
+import { assembleReport, buildChecksRequest, reportAhead, type CheckItem, type CheckReport } from "./checks";
 import { composeReport, registerReportPass, type ReportContext } from "./reportPasses";
 import { during } from "../app/stalls";
 import { prepareFits } from "../analysis/fits/report";
 import { prepareHolds } from "./holds";
-import { pacer } from "./slices";
+import { awaiting, breathe, inSlices, pacer } from "./slices";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
@@ -59,9 +59,10 @@ export interface DesignState {
    * `checkSteps`: what the checks' time went on, each from the end of the one before, ms: the kernel's answer, the
    * making checks still to come, the fit study, how the design holds together, and putting the report together.
    * They wait one after another while the work behind them runs side by side, so a step that reads 0 was done by
-   * the time the one before it was.
+   * the time the one before it was. `kernelOwn` is how long the kernel itself worked on its answer: the rest of
+   * `kernel` is the answer waiting for the page to take it.
    */
-  timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number; checkSteps?: { kernel: number; process: number; fits: number; holds: number; report: number } };
+  timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number; checkSteps?: { kernel: number; kernelOwn: number; kernelSteps?: Record<string, number>; process: number; fits: number; holds: number; report: number } };
   meshVersion: number;
   buildErrors: Map<string, string>;
   /** problems in the detailed (full-quality) build, by geometry hash */
@@ -543,6 +544,20 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   processAhead(model, byHash, machines);
 
   const tBuild = performance.now();
+  // The fit check and a good part of the report read the design, not its geometry: where there is a build to wait
+  // for, they start with it and are done, at a small edit, by the time the kernel has checked the geometry. (With
+  // nothing to build the kernel answers in a moment, and work begun early only gets in the way of what the report
+  // waits for. Nor where the design is about to be read again for its mates' faces: that makes a new model, and the
+  // work would be thrown away.) They begin once the page has had its turn: an edit has just been read and shown in
+  // this one.
+  if (todo.length && !(model.mateQueries ?? []).some((h) => !faceCats.has(h))) {
+    const wanted = () => get().rev === rev;
+    void breathe().then(() => {
+      if (!wanted()) return;
+      void prepareFits(model, wanted);
+      void inSlices(reportAhead(model), wanted);
+    });
+  }
   if (todo.length) {
     const job = kernel.build(
       todo.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
@@ -571,7 +586,8 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
       },
     );
     activeJobs.push(job);
-    const r = await job.done;
+    // (the page goes on from the build's answer: while that is a moment away, it leaves what can wait)
+    const r = await awaiting(job.done);
     if (r.cancelled || get().rev !== rev) return;
   }
   const buildMs = performance.now() - tBuild;
@@ -640,7 +656,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   const early = missing();
   let fromKernel = early.size && early.size <= EARLY_PROBES ? askKernel(early) : null;
   try {
-    result = await checking;
+    result = await awaiting(checking);
   } catch (e) {
     checksError = e instanceof Error ? e.message : String(e);
   }
@@ -690,7 +706,7 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     timings: {
       ...get().timings,
       checksMs: performance.now() - tChecks,
-      checkSteps: { kernel: tKernel - tChecks, process: tProcess - tKernel, fits: tFits - tProcess, holds: tHolds - tFits, report: performance.now() - tHolds },
+      checkSteps: { kernel: tKernel - tChecks, kernelOwn: result?.ms ?? 0, kernelSteps: result?.steps, process: tProcess - tKernel, fits: tFits - tProcess, holds: tHolds - tFits, report: performance.now() - tHolds },
     },
   });
 

@@ -59,7 +59,9 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   const kept = process.env.PROFILE;
   const browser = kept ? null : await chromium.launch(launch);
   const ctx = kept ? await chromium.launchPersistentContext(kept, { ...launch, viewport: { width: 1600, height: 900 } }) : await browser.newContext({ viewport: { width: 1600, height: 900 } });
-  await ctx.addInitScript((everyCall) => {
+  await ctx.addInitScript(([everyCall, atOnce]) => {
+    // ATONCE=<n>|all: how many shader builds the card is given at once (the app's own choice when not set)
+    try { if (atOnce) localStorage.setItem('kerf.debug.shadersAtOnce', atOnce); else localStorage.removeItem('kerf.debug.shadersAtOnce'); } catch {}
     try { if (!localStorage.getItem('kerf.settings.v1')) localStorage.setItem('kerf.settings.v1', JSON.stringify({ onboarded: true, termsAccepted: '2026-10-draft-2' })); } catch {}
     // every stop of the page, and every call into the graphics card that waited, with the phase it happened in
     const M = (window.__m = { phase: 'load', longs: [], waits: [], links: 0, lost: 0, frames: [] });
@@ -87,7 +89,7 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
     const every = Object.getOwnPropertyNames(P).filter((n) => n !== 'constructor' && n !== 'linkProgram' && typeof Object.getOwnPropertyDescriptor(P, n).value === 'function');
     for (const n of everyCall ? every : listed)
       wrap(n, (ms, a) => { if (ms >= 8) M.waits.push([M.phase, n === 'readPixels' ? (typeof a[6] === 'number' ? 'readPixels to a buffer' : 'readPixels to memory') : n, Math.round(ms)]); });
-  }, !!process.env.GLALL);
+  }, [!!process.env.GLALL, process.env.ATONCE || '']);
   const page = kept ? (ctx.pages()[0] ?? (await ctx.newPage())) : await ctx.newPage();
   const errs = [];
   page.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 300)));
@@ -171,6 +173,9 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   await page.waitForTimeout(4000);
   if (process.env.SHOT) await page.screenshot({ path: process.env.SHOT });
 
+  // ONLY=open: no more than the open (to compare first opens with an empty profile, which take minutes each)
+  const more = process.env.ONLY !== 'open';
+  if (more) {
   // 2. nothing happening
   await phase('idle');
   await page.waitForTimeout(5000);
@@ -212,6 +217,12 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
     out.phases.section = {};
   }
 
+  // CODE=1: with the design's text on show (the editor is hidden otherwise, and left alone while it is)
+  if (process.env.CODE && (await page.evaluate(() => !!window.__kerfDbg.View))) {
+    await page.evaluate(() => window.__kerfDbg.View.useView.setState({ dockTab: 'code', dockOpen: true }));
+    await page.waitForTimeout(2500);
+  }
+
   // 5. edits: one part, the same edit undone (everything was worked out before), and one that rebuilds 14 parts
   if (src.includes(ONE[0])) {
     await edit('edit one part', ONE[0], ONE[1]);
@@ -233,6 +244,7 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
     await settle();
     await page.waitForTimeout(2000);
   }
+  }
 
   await phase('end');
   const m = await page.evaluate(() => ({ m: window.__m, builds: window.__kerfDbg.Gate ? window.__kerfDbg.Gate.shaderBuilds : null, record: window.__kerfDbg.St && window.__kerfDbg.St.stallReport ? window.__kerfDbg.St.stallReport([]) : null }));
@@ -246,13 +258,13 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   fs.writeFileSync(outFile, JSON.stringify(out, null, 1));
   // a short account to read
   const p = out.phases;
-  const line = (k) => p[k] && p[k].timings ? `${k}: checks ${Math.round(p[k].timings.checksMs)} ms, build ${Math.round(p[k].timings.buildMs)} ms, read ${Math.round(p[k].timings.evalMs)} ms; checked ${p[k].checkedAfterMs} ms after, all settled ${p[k].refinedAfterMs} ms after; counts ${JSON.stringify(p[k].counts)}${p[k].timings.checkSteps ? `; the checks' time by step (kernel, making checks, fits, holds, report): ${['kernel', 'process', 'fits', 'holds', 'report'].map((x) => Math.round(p[k].timings.checkSteps[x])).join(', ')} ms` : ''}` : `${k}: ${JSON.stringify(p[k])}`;
+  const line = (k) => p[k] && p[k].timings ? `${k}: checks ${Math.round(p[k].timings.checksMs)} ms, build ${Math.round(p[k].timings.buildMs)} ms, read ${Math.round(p[k].timings.evalMs)} ms; checked ${p[k].checkedAfterMs} ms after, all settled ${p[k].refinedAfterMs} ms after; counts ${JSON.stringify(p[k].counts)}${p[k].timings.checkSteps ? `; the checks' time by step (kernel, of it the kernel's own work, making checks, fits, holds, report): ${['kernel', 'kernelOwn', 'process', 'fits', 'holds', 'report'].map((x) => Math.round(p[k].timings.checkSteps[x] ?? 0)).join(', ')} ms` : ''}` : `${k}: ${JSON.stringify(p[k])}`;
   console.log(`== ${label} ${out.design} on ${out.gpu} (${out.cores} threads, ${out.cpu}), ${out.browser}${kept ? ', kept profile' : ', fresh profile'}`);
   for (const k of ['open', 'edit one part', 'edit it back', 'edit 14 parts']) if (p[k]) console.log(line(k));
   for (const k of ['orbit', 'section orbit', 'orbit during checks']) if (p[k]) console.log(`${k}: ${JSON.stringify(p[k])}`);
   console.log('stops of 100 ms or more, by phase: ' + JSON.stringify(stops));
   console.log('graphics card waits of 8 ms or more, by phase: ' + JSON.stringify(waits));
-  console.log(`shader links ${out.shaderLinks}${m.builds ? ` (${m.builds.ahead} handed to the card ahead, ${m.builds.late} met at a draw: ${JSON.stringify(m.builds.lateFor)})` : ''}, context lost ${out.contextLost}, errors ${JSON.stringify(out.errors)}`);
+  console.log(`shader links ${out.shaderLinks}${m.builds ? ` (${m.builds.ahead} handed to the card ahead, ${m.builds.late} met at a draw: ${JSON.stringify(m.builds.lateFor)}${m.builds.atOnce ? `; ${Number.isFinite(m.builds.atOnce) ? m.builds.atOnce : 'all'} at once, ${m.builds.heldBack} held back for their turn, ${m.builds.mostHeld} at most at one time` : ''})` : ''}, context lost ${out.contextLost}, errors ${JSON.stringify(out.errors)}`);
   if (m.builds && m.builds.waits) console.log(`waits for a shader build at a draw: ${Math.round(m.builds.waitedMs)} ms in all; the last of them: ${JSON.stringify(m.builds.waits)}`);
   if (out.notice) console.log(`the view said it was waiting for the graphics card: ${JSON.stringify(out.notice)} (phase, ms)`);
   if (m.record) console.log(m.record.split('\n').slice(0, 45).join('\n'));

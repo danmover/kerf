@@ -87,6 +87,8 @@ export interface ChecksResult {
   access: { id: string; blockedBy: string[] }[];
   envelopes: { id: string; hits: string[] }[];
   ms: number;
+  /** what `ms` went on, ms each: placing the solids, overlaps, contacts, the requirements' queries, tool access, swept envelopes, loose pieces */
+  steps?: Record<string, number>;
   pairsTested: number;
   /** parts (by geometry hash) made of more than one solid, with the smaller pieces in the part's own coordinates */
   pieces?: Record<string, { count: number; others: { volume: number; at: V3 }[] }>;

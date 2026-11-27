@@ -48,4 +48,12 @@ run with `npx vite build --minify false`, so the functions keep their names; its
 the shipped build's, so use it to find what a stop is, not how long it is. The engine's own account of a check
 run is in the timings as `checkSteps`: what its time went on, step by step.
 
+The view hands the graphics card a few shader builds at a time (`src/ui/viewport/render/shaderQueue.ts`), so the
+card's driver does not take every processor thread while a design opens. `ATONCE=<n>` tries another number, and
+`ATONCE=all` hands over everything at once, as before there was a queue. `ONLY=open` stops after the open: first
+opens with an empty profile take minutes each, and are what this is compared on.
+
+The code editor is hidden unless its tab is open, and does nothing while it is. `CODE=1` opens the tab before the
+edits, to time them with the design's text on show.
+
 To compare two versions, build each in its own worktree on its own port and run them turn about.

@@ -313,6 +313,14 @@ export class KernelCore {
 
   checks(req: ChecksRequest): ChecksResult {
     const t0 = performance.now();
+    // what the time went on, step by step
+    const steps: Record<string, number> = {};
+    let tStep = t0;
+    const step = (name: string) => {
+      const now = performance.now();
+      steps[name] = now - tStep;
+      tStep = now;
+    };
     const placed = req.placed.filter((p) => this.cache.has(p.hash));
     const world = new Map<string, World>();
     // the solids are moved into place in the kernel only when a test needs one there: most are settled without
@@ -331,6 +339,7 @@ export class KernelCore {
         mat: xformMatrix(p.xf),
       });
     }
+    step("placing");
     const core = this.geomCore();
     const stats = { proved: 0, film: 0, reused: 0, exact: 0 };
     const ignore = new Set(req.ignorePairs.map(([a, b]) => pairKey(a, b)));
@@ -377,6 +386,7 @@ export class KernelCore {
       this.pairs.delete(key);
     }
 
+    step("overlaps");
     // which parts touch, and which holds which up: for the check that every part is held in place
     const contacts: NonNullable<ChecksResult["contacts"]> = [];
     for (let i = 0; i < list.length; i++) {
@@ -426,6 +436,7 @@ export class KernelCore {
     }
     const boxes: Record<string, [V3, V3]> = {};
     for (const w of list) boxes[w.item.id] = w.bbox;
+    step("contacts");
 
     // geometric queries for requirements
     const geo: Record<string, number> = {};
@@ -441,6 +452,7 @@ export class KernelCore {
       }
     }
 
+    step("queries");
     // fastener tool access
     const access: ChecksResult["access"] = [];
     for (const a of req.access) {
@@ -456,6 +468,7 @@ export class KernelCore {
       access.push({ id: a.id, blockedBy });
     }
 
+    step("access");
     // swept envelopes of rotating parts against static geometry
     const envelopes: ChecksResult["envelopes"] = [];
     for (const env of req.envelopes) {
@@ -475,6 +488,7 @@ export class KernelCore {
       this.sweeps.delete(key);
     }
 
+    step("envelopes");
     // parts made of solids that do not touch: usually a feature added where it misses the body
     const pieces: NonNullable<ChecksResult["pieces"]> = {};
     for (const p of placed) {
@@ -489,7 +503,8 @@ export class KernelCore {
       if (e.pieces && e.pieces.count > 1) pieces[p.hash] = e.pieces;
     }
 
-    return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, pairsTested, pieces, contacts, boxes, settled: stats };
+    step("pieces");
+    return { interferences, geo, geoErrors, access, envelopes, ms: performance.now() - t0, steps, pairsTested, pieces, contacts, boxes, settled: stats };
   }
 
   /**

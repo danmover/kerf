@@ -35,13 +35,33 @@ export function breathe(): Promise<void> {
   return new Promise((ok) => setTimeout(back(ok), 0));
 }
 
+/** answers from a worker that work on the page is waiting for, each with until when it counts as work waiting */
+const awaited = new Set<{ until: number }>();
+
 /**
- * True while work done a piece at a time is waiting for the page to have had its turn. What the page chooses to do
- * with that turn holds the work up for as long: something that can as well be done a moment later (making a still
- * picture finer) is better left until this says false.
+ * The page is waiting for `answer` from a worker to carry on with (an edit's checks from the kernel): for the next
+ * `forMs` at most, that counts as work waiting for the page's turn. Whatever the page does at the moment the answer
+ * comes holds it up for as long, and one more sample of a still picture is 50 ms and more on a large design.
+ */
+export function awaiting<T>(answer: Promise<T>, forMs = 400): Promise<T> {
+  const mine = { until: performance.now() + forMs };
+  awaited.add(mine);
+  return answer.finally(() => {
+    awaited.delete(mine);
+  });
+}
+
+/**
+ * True while work done a piece at a time is waiting for the page to have had its turn, or for a worker's answer it
+ * goes on from (see awaiting). What the page chooses to do with that turn holds the work up for as long: something
+ * that can as well be done a moment later (making a still picture finer) is better left until this says false.
  */
 export function workWaiting(): boolean {
-  return paused > 0;
+  if (paused > 0) return true;
+  if (!awaited.size) return false;
+  const now = performance.now();
+  for (const a of awaited) if (now < a.until) return true;
+  return false;
 }
 
 /** How long the page took over its last turn, if that was in the last couple of seconds (else 0: not known to be slow). */
