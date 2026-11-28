@@ -56,7 +56,8 @@ opens with an empty profile take minutes each, and are what this is compared on.
 in the results (`shaderBuilds.built`: what it was of, when it went to the card, how long it took), and the account
 adds them up by kind of shader. With one or two at once a build's time is close to what it costs the processor;
 side by side they slow each other. Each "waiting for the graphics card" notice is listed with when it went up, so
-the end of the first is when the first whole picture was shown.
+the end of the first is when the first whole picture was shown. `ONESHADER=1` turns on the trial of one shader
+for parts of every finish (`kerf.debug.oneShader`), where each finish has its own.
 
 The code editor is hidden unless its tab is open, and does nothing while it is. `CODE=1` opens the tab before the
 edits, to time them with the design's text on show.

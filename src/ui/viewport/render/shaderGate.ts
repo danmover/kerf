@@ -793,27 +793,10 @@ export class ShaderGate {
    */
   private hand(objects: Drawn[], planes: number, cross: boolean, stage: THREE.Object3D, root: THREE.Object3D, camera: THREE.Camera, target: THREE.WebGLRenderTarget | null, wait: boolean, shadow = false): Program[] {
     const r = this.r;
-    // The renderer builds for as many clipping planes as the last thing it drew had, whatever the material being
-    // built has: a draw of nothing, cut by that many, comes first.
-    const m = this.probe.material;
-    // (the renderer's own planes cut the probe as they are: it brings the rest)
-    const own = Math.max(0, planes - (r.clippingPlanes?.length ?? 0));
-    m.clippingPlanes = own ? PLANES.slice(0, Math.min(own, PLANES.length)) : null;
-    m.clipIntersection = cross;
-    const watching = this.watching;
-    this.watching = false;
-    try {
-      r.setRenderTarget(this.scratch);
-      r.render(this.probe, this.probeCam);
-    } finally {
-      this.watching = watching;
-    }
+    this.cutNext(planes, cross);
     // and which shader a material gets depends on what it is drawn into
     r.setRenderTarget(target);
-    const list = {
-      traverse: (visit: (o: THREE.Object3D) => void) => objects.forEach(visit),
-      traverseVisible: (visit: (o: THREE.Object3D) => void) => objects.forEach(visit),
-    } as unknown as THREE.Object3D;
+    const list = listOf(objects);
     // the builds each material has already: one that is new after this is this kind of draw's
     const had = new Map<THREE.Material, Set<Program>>();
     for (const o of objects) for (const mat of materialsOf(o)) if (!had.has(mat)) had.set(mat, new Set((r.properties.get(mat) as Programs).programs?.values()));
@@ -854,6 +837,28 @@ export class ShaderGate {
     return building;
   }
 
+  /**
+   * Draws nothing, cut by `planes` planes in all (the renderer's own among them). The renderer builds the shaders it
+   * is next asked to build for as many clipping planes as the last thing it drew had, whatever the materials being
+   * built have. Leaves the renderer drawing into a buffer of this gate's own: set the one to build for after.
+   */
+  cutNext(planes: number, cross = false) {
+    const r = this.r;
+    const m = this.probe.material;
+    // (the renderer's own planes cut the probe as they are: it brings the rest)
+    const own = Math.max(0, planes - (r.clippingPlanes?.length ?? 0));
+    m.clippingPlanes = own ? PLANES.slice(0, Math.min(own, PLANES.length)) : null;
+    m.clipIntersection = cross;
+    const watching = this.watching;
+    this.watching = false;
+    try {
+      r.setRenderTarget(this.scratch);
+      r.render(this.probe, this.probeCam);
+    } finally {
+      this.watching = watching;
+    }
+  }
+
   dispose() {
     this.undo?.();
     this.probe.geometry.dispose();
@@ -862,6 +867,14 @@ export class ShaderGate {
     this.waiting.clear();
     this.met = [];
   }
+}
+
+/** These objects as something the renderer can be told to build the shaders of, as if they were all a scene holds. */
+export function listOf(objects: THREE.Object3D[]): THREE.Object3D {
+  return {
+    traverse: (visit: (o: THREE.Object3D) => void) => objects.forEach(visit),
+    traverseVisible: (visit: (o: THREE.Object3D) => void) => objects.forEach(visit),
+  } as unknown as THREE.Object3D;
 }
 
 /** to the renderer a light of no kind it counts, that casts a shadow: with it, shadows are being drawn */

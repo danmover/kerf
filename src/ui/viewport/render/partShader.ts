@@ -519,6 +519,94 @@ const LIGHTS_MAPS = (() => {
   return out;
 })();
 
+/** Less grain than this in a finish is none: its highlights are a plain finish's (see `allInOne`). */
+const NO_GRAIN = "1e-5";
+
+/**
+ * three's lights_physical_pars_fragment, with the highlight of a finish that has a grain in its shader but none to show
+ * worked out as a plain finish's is. For a grained finish three.js keeps one term of the highlight (how much of the
+ * surface is seen and lit) to 1 at most, which it does not for a plain one: a highlight seen at a low angle would be
+ * dimmer for the grain being in the shader.
+ */
+const LIGHTS_PARS = (() => {
+  const src = THREE.ShaderChunk.lights_physical_pars_fragment;
+  const visible = /float V = (V_GGX_SmithCorrelated_Anisotropic\([^;]*\));/;
+  const spread = /float D = (D_GGX_Anisotropic\([^;]*\));/;
+  if (!visible.test(src) || !spread.test(src)) throw new Error("three's lights_physical_pars_fragment changed: update partShader's LIGHTS_PARS");
+  return src
+    .replace(visible, `float V = material.anisotropy > ${NO_GRAIN} ? $1 : V_GGX_SmithCorrelated( alpha, dotNL, dotNV );`)
+    .replace(spread, `float D = material.anisotropy > ${NO_GRAIN} ? $1 : D_GGX( alpha, dotNH );`);
+})();
+
+// One shader for a part however it is drawn.
+//
+// The renderer builds a material another shader for each way it is drawn: see-through or not, cut by no plane, one
+// or two, with a clear coat or not, and so on. The parts' shader is large, and with Direct3D the graphics card takes
+// seconds over each: a design opened for the first time had it built some sixty times over, and the first x-ray, the
+// first section and the first ghosted part each waited for more. So a part's material is kept to one way of being
+// drawn wherever that draws the same picture.
+
+/** A plane that cuts nothing: where a part is not cut, so that its shader is the one for a part that is. */
+export const NO_CUT = new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e9);
+
+/**
+ * The planes a part's material is given, always two: the section's and the one it draws itself in by, each standing
+ * for nothing (`NO_CUT`) when there is none. `into` is used again when given.
+ */
+export function cutsOf(section: THREE.Plane | null, reveal: THREE.Plane | null, into?: THREE.Plane[] | null): THREE.Plane[] {
+  const planes = into && into.length === 2 ? into : [NO_CUT, NO_CUT];
+  planes[0] = section ?? NO_CUT;
+  planes[1] = reveal ?? NO_CUT;
+  return planes;
+}
+
+/**
+ * Makes a part's material see-through or solid. The renderer's shader for a solid material differs from the one for
+ * a see-through material in one line: it writes an alpha of 1 where the other writes the material's opacity. So a
+ * solid material is told not to blend, which the renderer draws with the see-through shader, its opacity 1 and
+ * nothing blended: the same picture, and one build for both. Not for a material with a picture on it (a map may
+ * have see-through places of its own, which a solid material covers) or one that blends some other way: those keep
+ * a shader for each, as before.
+ */
+export function setSeeThrough(mat: THREE.Material & { map?: THREE.Texture | null; alphaMap?: THREE.Texture | null }, seeThrough: boolean) {
+  const solidShader = () => !mat.transparent && mat.blending === THREE.NormalBlending && !mat.alphaToCoverage;
+  const was = solidShader();
+  mat.transparent = seeThrough;
+  const plain = !mat.map && !mat.alphaMap && (mat.blending === THREE.NormalBlending || mat.blending === THREE.NoBlending);
+  if (plain) mat.blending = seeThrough ? THREE.NormalBlending : THREE.NoBlending;
+  if (!seeThrough) mat.opacity = 1;
+  // (only the first time, for a material drawn before it came here, and for one with a picture on it)
+  if (solidShader() !== was) mat.needsUpdate = true;
+}
+
+/**
+ * A trial, on with `localStorage kerf.debug.oneShader = 1`: every part's shader has a clear coat, a sheen and a grain
+ * in it, used or not, so that parts of every finish share one build where they now have one for each mix of the
+ * three. A layer a finish does not have is given the least there is of it, as rough as it goes, which adds under a
+ * millionth to the picture, and a finish with no grain keeps a plain finish's highlights (`LIGHTS_PARS`).
+ */
+const ALL_IN_ONE = (() => {
+  try {
+    return typeof localStorage !== "undefined" && localStorage.getItem("kerf.debug.oneShader") === "1";
+  } catch {
+    return false; // storage blocked
+  }
+})();
+const LEAST = 1e-6;
+
+function allInOne(mat: THREE.MeshPhysicalMaterial) {
+  if (!ALL_IN_ONE) return;
+  if (!(mat.clearcoat > 0)) {
+    mat.clearcoat = LEAST;
+    mat.clearcoatRoughness = 1;
+  }
+  if (!(mat.sheen > 0)) {
+    mat.sheen = LEAST;
+    mat.sheenRoughness = 1;
+  }
+  if (!(mat.anisotropy > 0)) mat.anisotropy = LEAST;
+}
+
 /** Patch a part material once; its uniforms come from `u` so animations can drive them. */
 export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUniforms) {
   mat.onBeforeCompile = (shader) => {
@@ -602,6 +690,7 @@ vThread = aThread.yzw;`,
       .replace("#include <normal_fragment_begin>", NORMAL_BEGIN)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(roughnessFactor + kd.z, 0.03, 1.0);")
       .replace("#include <envmap_physical_pars_fragment>", "#include <envmap_physical_pars_fragment>\n" + FILL_PARS)
+      .replace("#include <lights_physical_pars_fragment>", LIGHTS_PARS)
       .replace("#include <lights_fragment_maps>", LIGHTS_MAPS + "\n  radiance *= uEnvBoost;")
       .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(-vViewPosition, normal, (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x, faceDirection);")
       .replace(
@@ -632,7 +721,7 @@ vThread = aThread.yzw;`,
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
   (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0], aBevel: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-11";
+  mat.customProgramCacheKey = () => "kerf-part-12";
 }
 
 /**
@@ -693,6 +782,7 @@ export function applyAppearance(mat: THREE.MeshPhysicalMaterial, u: PartUniforms
   u.uEnvBoost.value = a.envBoost;
   u.uBevelR.value = a.bevel;
   mat.anisotropy = a.aniso;
+  allInOne(mat);
 }
 
 /**
@@ -706,6 +796,7 @@ export function applyMake(mat: THREE.MeshPhysicalMaterial, u: PartUniforms, a: A
     u.uKBox1.value.copy(box.max);
   }
   mat.anisotropy = make === Make.Turned ? Math.max(a.aniso, 0.55) : a.aniso;
+  allInOne(mat);
 }
 
 /** Section caps: the part colour with a fine hatch, glowing while a part is being revealed. */

@@ -26,7 +26,7 @@ import type { ViewPreset } from "../../app/view";
 import type { FilmLayout, FilmShot, FilmView } from "../../app/viewportApi";
 import { buildShare } from "../../film/timeline";
 import { appearanceFor, Detail, makeFor, processFinish, type Appearance } from "./render/appearance";
-import { applyAppearance, applyMake, capMaterial, FILL_ENV, FILL_ON, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, setBevelPixel, type PartUniforms } from "./render/partShader";
+import { applyAppearance, applyMake, capMaterial, cutsOf, FILL_ENV, FILL_ON, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, setBevelPixel, setSeeThrough, type PartUniforms } from "./render/partShader";
 import { BevelBuilder, bevelGeometry, type BevelBands } from "./render/bevel";
 import { ARRIVE_MS, DROP_LAND, arrivalKind, dropHeight, fillAt, fillAxis, screwLeft, screwTravel, traceAt, traceOrder } from "./arrival";
 import { edgeSweep, editSweep, type Sweep } from "./editSweep";
@@ -111,6 +111,8 @@ interface PartObj {
   cap: THREE.Mesh;
   edges: THREE.LineSegments;
   mat: THREE.MeshPhysicalMaterial;
+  /** the planes that cut it now (the section, the one it draws itself in by), null when none: its material always has two (see cutsOf) */
+  cuts: THREE.Plane[] | null;
   u: PartUniforms;
   cap$: ReturnType<typeof capMaterial>;
   edgeMat: THREE.LineBasicMaterial;
@@ -496,6 +498,8 @@ export class SceneController {
   private edgesCame = false;
   /** the camera the bevels' width and the floor's mirror were last set for (see beforeSample) */
   private viewOf: THREE.Camera | null = null;
+  /** the floor's mirror image was drawn with shadows of the model as it was before: drawn again at the next sample */
+  private mirrorOld = false;
   /** selection fill, faded out while materials are being chosen so parts show their true colour */
   private selFill = 1;
   private materialMode = false;
@@ -510,7 +514,7 @@ export class SceneController {
   private swatchJobs = new Map<string, Promise<string>>();
   private swatchLine: Promise<unknown> = Promise.resolve();
   /** the material ball's scene, built once */
-  private swatchStage: { scene: THREE.Scene; ball: THREE.Mesh; key: THREE.DirectionalLight; backdrop: THREE.Group; cam: THREE.PerspectiveCamera } | null = null;
+  private swatchStage: { scene: THREE.Scene; ball: THREE.Mesh; key: THREE.DirectionalLight; others: THREE.DirectionalLight[]; backdrop: THREE.Group; cam: THREE.PerspectiveCamera } | null = null;
   /** one ball material per look, kept so each look's shader compiles once */
   private swatchMats = new Map<string, THREE.MeshPhysicalMaterial>();
   /** materials of removed parts, kept unused so their compiled shaders stay ready */
@@ -825,6 +829,7 @@ export class SceneController {
     this.shotPipe?.dispose();
     for (const m of [...this.retired, ...this.swatchMats.values()]) m.dispose();
     this.swatchStage?.ball.geometry.dispose();
+    for (const l of this.swatchStage ? [this.swatchStage.key, ...this.swatchStage.others] : []) l.dispose();
     this.swatchStage?.backdrop.traverse((o) => {
       if (o instanceof THREE.Mesh) {
         o.geometry.dispose();
@@ -959,12 +964,23 @@ export class SceneController {
     this.placeKey(i);
     this.prepareShadows();
     if (i === 0 && (fresh || this.contact.dirty)) this.contact.render(this.scene, L_OPAQUE, this.sectionAnim.on ? [this.sectionPlane] : []);
-    if (anew) this.drawMirror(cam, heightPx);
+    // The mirror image is lit as the parts are, shadows and all, and is drawn before the sample that draws the
+    // shadows. After the model changed those are still of the model before: the image is then drawn once more at
+    // the next sample, with the shadows this one leaves.
+    if (anew || this.mirrorOld) {
+      this.mirrorOld = [this.key, ...this.casters].some((l) => l.visible && (!l.shadow.map || l.userData.shadowStamp !== this.shadowStamp));
+      this.drawMirror(cam, heightPx);
+    }
   }
 
   /** A light that casts shadows, its map `size` square, redrawn only when told (prepareShadows). */
   private shadowLight(size: number): THREE.DirectionalLight {
     const l = new THREE.DirectionalLight(0xffffff, 1);
+    // Seen by every camera, also the ones that draw only some of the scene (the floor's mirror image, the contact
+    // shadow, the selection's mask). A camera that does not see the lights has the renderer take another shader
+    // for every lit material, the parts' large one among them, and work out again which shader each material gets
+    // every time the lights it draws under change, which is twice a frame for every part.
+    l.layers.enableAll();
     l.castShadow = true;
     l.shadow.mapSize.set(size, size);
     l.shadow.bias = -0.0002;
@@ -1452,6 +1468,9 @@ export class SceneController {
     const u = partUniforms();
     patchPartMaterial(mat, u);
     applyAppearance(mat, u, look);
+    // one shader whether it is solid or see-through, cut or not (see partShader.ts)
+    setSeeThrough(mat, false);
+    mat.clippingPlanes = cutsOf(null, null);
     return { mat, u };
   }
 
@@ -1486,6 +1505,7 @@ export class SceneController {
       cap,
       edges,
       mat,
+      cuts: null,
       u,
       cap$,
       edgeMat,
@@ -2043,11 +2063,9 @@ export class SceneController {
   private applyOpacity(obj: PartObj) {
     const o = obj.opacity;
     const transparent = o < 0.999;
-    if (obj.mat.transparent !== transparent) {
-      obj.mat.transparent = transparent;
-      obj.mat.needsUpdate = true;
-    }
+    // (its shader is the same either way: nothing for the card to build)
     obj.mat.opacity = o;
+    setSeeThrough(obj.mat, transparent);
     obj.mat.depthWrite = !transparent;
     obj.mesh.castShadow = !transparent && !obj.removing && !obj.arrive;
     // a see-through part's bands would show as lines over its faces
@@ -2055,11 +2073,8 @@ export class SceneController {
     if (obj.decor) {
       for (const mat of obj.decor.mats) {
         const t = transparent || !!mat.userData.decal;
-        if (mat.transparent !== t) {
-          mat.transparent = t;
-          mat.needsUpdate = true;
-        }
         mat.opacity = o;
+        setSeeThrough(mat, t);
         mat.depthWrite = !t;
       }
       for (const m of obj.decor.meshes) m.castShadow = !transparent && !obj.removing && m.userData.shadow !== false;
@@ -2071,25 +2086,28 @@ export class SceneController {
     const planes: THREE.Plane[] = [];
     if (this.sectionAnim.on) planes.push(this.sectionPlane);
     if (obj.reveal) planes.push(obj.reveal.plane);
+    obj.cuts = planes.length ? planes : null;
     // the shadow of a part filling in fills in with it
     const clipShadows = !!obj.reveal;
-    const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length || obj.mat.clipShadows !== clipShadows;
-    obj.mat.clippingPlanes = planes.length ? planes : null;
+    // The part itself always has two planes, one standing for nothing where it is not cut: its shader is then the
+    // same cut or whole, and the card has nothing to build at the first section (see partShader.ts).
+    const two = cutsOf(this.sectionAnim.on ? this.sectionPlane : null, obj.reveal?.plane ?? null, obj.mat.clippingPlanes);
+    const changed = obj.mat.clippingPlanes !== two || obj.mat.clipShadows !== clipShadows;
+    const capChanged = (obj.cap$.mat.clippingPlanes?.length ?? 0) !== planes.length;
+    obj.mat.clippingPlanes = two;
     obj.mat.clipShadows = clipShadows;
     // the outline shows above the fill: only the section cuts it
     const edgePlanes = this.sectionAnim.on ? [this.sectionPlane] : null;
     const edgesChanged = (obj.edgeMat.clippingPlanes?.length ?? 0) !== (edgePlanes?.length ?? 0);
     obj.edgeMat.clippingPlanes = edgePlanes;
-    if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = planes.length ? planes : null;
+    if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = cutsOf(two[0], two[1], mat.clippingPlanes);
     obj.cap$.mat.clippingPlanes = planes.length ? planes : null;
     obj.cap.visible = (this.sectionAnim.on || !!obj.reveal) && obj.opacity >= 0.999;
     obj.cap$.uGlowAmt.value = obj.reveal ? 1 : 0;
     obj.cap$.mat.color.set(obj.look.color).multiplyScalar(0.85);
-    if (changed) {
-      obj.mat.needsUpdate = true;
-      obj.cap$.mat.needsUpdate = true;
-    }
-    if (changed || edgesChanged) obj.edgeMat.needsUpdate = true;
+    if (changed) obj.mat.needsUpdate = true;
+    if (capChanged) obj.cap$.mat.needsUpdate = true;
+    if (edgesChanged) obj.edgeMat.needsUpdate = true;
   }
 
   setDisplay(d: DisplayState) {
@@ -2239,6 +2257,9 @@ export class SceneController {
     });
     obj.group.add(d.object);
     obj.decor = { d, key, meshes, mats: [...mats] };
+    // drawn as the part is from the first: see-through or solid, and cut as it is (one shader for each, see partShader.ts)
+    this.applyOpacity(obj);
+    this.updateClipping(obj);
     for (const id of d.hides ?? []) this.decorHidden.add(id);
     this.decorHiddenDirty ||= !!d.hides?.length;
   }
@@ -2459,7 +2480,7 @@ export class SceneController {
   /** A part's clipping planes and opacity, so overlays cut and ghost with it. */
   partLook(id: string): { planes: THREE.Plane[] | null; opacity: number } | undefined {
     const obj = this.parts.get(id);
-    return obj ? { planes: obj.mat.clippingPlanes, opacity: obj.mat.opacity } : undefined;
+    return obj ? { planes: obj.cuts, opacity: obj.mat.opacity } : undefined;
   }
 
   /** Redraw on the next frame (after an overlay changes). */
@@ -4270,7 +4291,7 @@ export class SceneController {
     const ball = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48));
     // turn the ball so printed layers and brushing run across the view
     ball.rotation.set(0.35, 0, 0.6);
-    const key = new THREE.DirectionalLight();
+    const key = stageLight(1);
     // something behind a clear material to see through it
     const backdrop = new THREE.Group();
     const back = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshBasicMaterial({ color: 0x8a93a6 }));
@@ -4286,7 +4307,7 @@ export class SceneController {
     cam.position.set(0, -52, 14);
     cam.lookAt(0, 0, 0);
     cam.updateMatrixWorld();
-    return (this.swatchStage = { scene, ball, key, backdrop, cam });
+    return (this.swatchStage = { scene, ball, key, others: [], backdrop, cam });
   }
 
   /** The ball's material for a look. Kept, newest last, so a look seen before doesn't compile its shader again. */
@@ -4337,6 +4358,19 @@ export class SceneController {
     scene.environmentIntensity = this.scene.environmentIntensity;
     scene.environmentRotation.copy(this.scene.environmentRotation);
     ball.material = this.swatchMaterial(look);
+    // The stage has as many lights as the view, each casting a shadow as there, so the renderer draws the ball with
+    // the shader a part of that material has in the view, which the card has built already more often than not.
+    // Only the key lights the ball, as it always did, and nothing on the stage casts or takes a shadow.
+    while (st.others.length > this.casters.length) {
+      const l = st.others.pop()!;
+      scene.remove(l);
+      l.dispose();
+    }
+    while (st.others.length < this.casters.length) {
+      const l = stageLight(0);
+      st.others.push(l);
+      scene.add(l);
+    }
     st.key.color.copy(this.key.color);
     st.key.intensity = this.key.intensity;
     // same angle to the camera as the key light has to the default view
@@ -4419,6 +4453,14 @@ export class SceneController {
       built.then(end, end);
     });
   }
+}
+
+/** A light for the material ball's stage: it counts as one that casts a shadow, with the smallest shadow there is. */
+function stageLight(intensity: number): THREE.DirectionalLight {
+  const l = new THREE.DirectionalLight(0xffffff, intensity);
+  l.castShadow = true;
+  l.shadow.mapSize.set(1, 1);
+  return l;
 }
 
 function slerpDir(a: THREE.Vector3, b: THREE.Vector3, t: number): THREE.Vector3 {

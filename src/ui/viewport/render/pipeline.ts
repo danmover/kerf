@@ -15,7 +15,7 @@
 import * as THREE from "three";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 import { concentricDisc, halton } from "./studio";
-import { ShaderGate, handing } from "./shaderGate";
+import { ShaderGate, handing, listOf } from "./shaderGate";
 
 export type Quality = "draft" | "balanced" | "high";
 
@@ -405,9 +405,6 @@ export function shiftLens(camera: THREE.PerspectiveCamera, ox: number, oy: numbe
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
 }
 
-/** a scene with nothing in it (see RenderPipeline.compile) */
-const NOTHING = new THREE.Scene();
-
 export class RenderPipeline {
   /** device pixels */
   width = 1;
@@ -725,22 +722,42 @@ export class RenderPipeline {
   compile(scene: THREE.Scene, camera: THREE.Camera): Promise<void> {
     const r = this.r;
     const prev = r.getRenderTarget();
-    // The renderer takes how many clipping planes a shader is built for from whatever it drew last, or a section in
-    // the view would have the card build a shader nothing uses. Drawing nothing at all sets that to none, where
-    // parts are cut by planes of their own (as here); a pass of our own does otherwise, which waits for its shader
-    // the first time.
-    if (r.localClippingEnabled) {
-      r.setRenderTarget(this.scratch());
-      r.render(NOTHING, camera);
-    } else {
+    // The renderer takes how many clipping planes a shader is built for from whatever it drew last, not from the
+    // material it builds for: a section in the view would have the card build a shader nothing uses, and a material
+    // with planes of its own (a part's always has two, see partShader.ts) one for none. So what the scene holds is
+    // built in turns, by how many planes cut each thing, every turn after a draw of nothing cut by that many.
+    const byCuts = new Map<number, THREE.Object3D[]>();
+    if (r.localClippingEnabled)
+      scene.traverseVisible((o) => {
+        const m = (o as THREE.Mesh).material as THREE.Material | THREE.Material[] | undefined;
+        if (!m) return;
+        const cuts = (Array.isArray(m) ? m[0] : m)?.clippingPlanes?.length ?? 0;
+        const list = byCuts.get(cuts);
+        if (list) list.push(o);
+        else byCuts.set(cuts, [o]);
+      });
+    else {
+      // (no planes of their own count: a pass of our own leaves the renderer at none)
       this.copyMat.uniforms.tSrc.value = this.black;
       this.pass(this.copyMat, this.scratch());
     }
-    // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
-    r.setRenderTarget(this.sampleRT);
+    const gate = this.shaderGate();
     try {
       // (nothing in the view waits for these: they go to the card after what it does wait for)
-      return handing(() => r.compileAsync(scene, camera), false).then(() => undefined);
+      return handing(() => {
+        if (!r.localClippingEnabled) {
+          // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
+          r.setRenderTarget(this.sampleRT);
+          return r.compileAsync(scene, camera).then(() => undefined);
+        }
+        return Promise.all(
+          [...byCuts].map(([cuts, objects]) => {
+            gate.cutNext(cuts);
+            r.setRenderTarget(this.sampleRT);
+            return r.compileAsync(listOf(objects), camera, scene);
+          }),
+        ).then(() => undefined);
+      }, false);
     } finally {
       r.setRenderTarget(prev);
     }
