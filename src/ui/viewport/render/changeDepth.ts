@@ -30,10 +30,16 @@ export class ChangeDepth {
       // the true surface, so no polygon offset; cut where the part is cut
       this.mat.side = own.side;
       this.mat.clippingPlanes = own.clippingPlanes;
+      // The mesh alone. What hangs on it (its rounded edges) is drawn with the part's own material, and drawn here,
+      // as a scene of one mesh with no lights in it, that material needs a shader of its own: the card would build
+      // the parts' large shader once more for it, seconds on Direct3D, with the picture waiting.
+      const shown = m.children.filter((c) => c.visible);
+      for (const c of shown) c.visible = false;
       m.material = this.mat;
       m.updateWorldMatrix(true, false);
       this.r.render(m, camera);
       m.material = own;
+      for (const c of shown) c.visible = true;
     }
   }
 
