@@ -236,6 +236,49 @@ export interface ReportInputs {
 }
 
 /**
+ * The checks that read the design alone: no geometry, and nothing the kernel answers. A report waits for the kernel
+ * either way, so whoever is about to ask for one can have these worked out meanwhile (reportAhead), and the report
+ * takes them from here. Each answer is handed out once, so no two reports share an item, and a report with none
+ * waiting for it works them out as it always has.
+ */
+const ALONE = {
+  gears: gearChecks,
+  fasteners: fastenerChecks,
+  links: linkChecks,
+  sheets: sheetChecks,
+  chains: chainChecks,
+  machine: (model: Model) => (model.machine ? machineChecks(model.machine) : []),
+};
+type Alone = keyof typeof ALONE;
+const ahead = new WeakMap<Model, Partial<Record<Alone, CheckItem[]>>>();
+
+function alone(model: Model, family: Alone): CheckItem[] {
+  const kept = ahead.get(model);
+  const items = kept?.[family];
+  if (!kept || !items) return ALONE[family](model);
+  delete kept[family];
+  return items;
+}
+
+/**
+ * Works out the checks of `model` that read the design alone, one family a step, for the report that is asked for
+ * once the kernel has answered. Stops when that report has been put together meanwhile.
+ */
+export function* reportAhead(model: Model): Generator<void, void> {
+  const kept: Partial<Record<Alone, CheckItem[]>> = {};
+  ahead.set(model, kept);
+  for (const family of Object.keys(ALONE) as Alone[]) {
+    if (ahead.get(model) !== kept) return;
+    try {
+      kept[family] = ALONE[family](model);
+    } catch {
+      // the report meets the same failure where it always did
+    }
+    yield;
+  }
+}
+
+/**
  * The core checks. Checks from other modules (manufacturing processes,
  * analyses) are added afterwards by the passes in reportPasses.
  */
@@ -438,13 +481,13 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
       });
     }
   }
-  items.push(...gearChecks(model));
-  items.push(...fastenerChecks(model));
+  items.push(...alone(model, "gears"));
+  items.push(...alone(model, "fasteners"));
   // a part given its real mass (a hollow frame modelled solid) weighs that, wherever weight matters
   const volumeOf = (p: EvalPart) => massVolume(p, geom(p.hash)?.volume, materialDensity(p.material));
   items.push(...holdChecks(model, holds, kernel, volumeOf));
   items.push(...completeChecks(model, holds, kernel, inputs.mesh));
-  items.push(...linkChecks(model));
+  items.push(...alone(model, "links"));
   if (kernel && inputs.mesh) {
     const sweep = { model, holds, kernel, mesh: inputs.mesh, ignore: contactPairs(model) };
     if (inputs.sweepLater) stashSweep(sweep);
@@ -455,10 +498,12 @@ export function assembleReport(model: Model, inputs: ReportInputs = {}): CheckRe
   }
   if (inputs.mesh && model.parts.some((p) => p.oring)) items.push(...oringChecks(model, holds, inputs.mesh));
   if (model.machine?.roundBelts?.length) items.push(...roundBeltChecks(model, holds, kernel && inputs.mesh ? gravityHolds(model, holds, kernel, inputs.mesh, volumeOf).pulls : []));
-  items.push(...sheetChecks(model));
-  items.push(...chainChecks(model));
+  items.push(...alone(model, "sheets"));
+  items.push(...alone(model, "chains"));
   items.push(...uciChecks(model, inputs.mesh, (p) => partMass(p, geom(p.hash)?.volume, materialDensity(p.material))));
-  if (model.machine) items.push(...machineChecks(model.machine));
+  items.push(...alone(model, "machine"));
+  // (what was worked out ahead and not asked for is not kept for a second report)
+  ahead.delete(model);
 
   // things geometry cannot prove
   if (model.parts.some((p) => p.motion)) {

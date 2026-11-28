@@ -46,8 +46,13 @@ export function latestDfa(): DfaReport | null {
  * the live one, or before the checks have run.
  */
 export function dfaFor(model: Model, buildErrors?: Map<string, string>): DfaReport {
+  // the report is composed again whenever any analysis finishes: the same model with the same solids and the same
+  // contacts measured gives the report it gave before
+  const seen = builtOf(model, buildErrors);
+  const had = kept.get(model);
+  if (had && had.measured === measured && had.seen.length === seen.length && had.seen.every((x, i) => Object.is(x, seen[i]))) return had.report;
   const byId = new Map(model.parts.map((p) => [p.id, p]));
-  return dfaReport(model, {
+  const report = dfaReport(model, {
     geometry: geometryFromMeshes(model, (h) => meshes.get(h), (p) => !!buildErrors?.has(p.hash)),
     touching: (a, b) => {
       const pa = byId.get(a);
@@ -57,6 +62,24 @@ export function dfaFor(model: Model, buildErrors?: Map<string, string>): DfaRepo
       return d === null || d === undefined ? undefined : d < CONTACT;
     },
   });
+  kept.set(model, { seen, measured, report });
+  return report;
+}
+
+/** the last assembly report of each model, with what it was worked out from */
+const kept = new WeakMap<Model, { seen: number[]; measured: number; report: DfaReport }>();
+/** goes up whenever a contact is measured (or the measurements are dropped) */
+let measured = 0;
+
+/** What the assembly report reads of the built solids: each part's box and volume, or that it has none (seven numbers a part). */
+function builtOf(model: Model, buildErrors?: Map<string, string>): number[] {
+  const out: number[] = [];
+  for (const p of model.parts) {
+    const m = buildErrors?.has(p.hash) ? undefined : meshes.get(p.hash);
+    if (m) out.push(m.volume, m.bbox[0][0], m.bbox[0][1], m.bbox[0][2], m.bbox[1][0], m.bbox[1][1], m.bbox[1][2]);
+    else out.push(NaN, 0, 0, 0, 0, 0, 0);
+  }
+  return out;
 }
 
 async function drain() {
@@ -72,6 +95,7 @@ async function drain() {
       } catch {
         gaps.set(key, null);
       }
+      measured++;
     }
   } finally {
     measuring = false;
@@ -93,7 +117,10 @@ function assemblyItems(items: CheckItem[], ctx: ReportContext): CheckItem[] {
       if (!gaps.has(key) && queue.length < MAX_PAIRS) queue.push({ key, a, b });
     }
     if (queue.length) void drain();
-    if (gaps.size > 4000) gaps.clear();
+    if (gaps.size > 4000) {
+      gaps.clear();
+      measured++;
+    }
     useDfa.setState({ report, rev: ctx.rev, measuring: queue.length });
   }
   return [...items, ...dfaItems(ctx.model, report)];

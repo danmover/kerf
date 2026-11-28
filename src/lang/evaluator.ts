@@ -1903,6 +1903,8 @@ class Evaluator {
     const decals = decalsProp(props.decal, { error: (m: string) => { throw new EvalError(m, propSpans.decal ?? s.span); } });
     const color = typeof props.color === "string" ? props.color : undefined;
     const group = typeof props.group === "string" ? props.group : def.catalog ? (groupForCatalog(def.catalog.id) ?? entry?.group ?? "Components") : (entry?.group ?? groupFor(key));
+    // one hash for each solid, however many places the component is put in
+    const hashes = def.solids.map((sd) => recipeHash(sd.recipe));
     xfs.forEach((xf, idx) => {
       def.solids.forEach((sd, sdIdx) => {
         const base = multi ? `${s.name}#${idx + 1}` : s.name;
@@ -1920,7 +1922,7 @@ class Evaluator {
           material: (typeof props.material === "string" && (!sd.suffix || imported) ? props.material : undefined) ?? sd.material,
           finish: (typeof props.finish === "string" && (!sd.suffix || imported) ? props.finish : undefined) ?? (typeof props.material === "string" && (!sd.suffix || imported) ? undefined : sd.finish),
           recipe: sd.recipe,
-          hash: recipeHash(sd.recipe),
+          hash: hashes[sdIdx],
           xf,
           locked: flags.has("locked"),
           hidden: flags.has("hidden"),

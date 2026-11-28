@@ -170,11 +170,20 @@ const DIRS: V3[] = (() => {
   return out;
 })();
 
+// each placed part's properties, most recently used last. Kept by how much they hold, not by how many: a design of
+// several hundred parts has to fit whole, or every look at its mechanism works all of them out again
 const propsCache = new Map<string, PartProps | null>();
+let propsBytes = 0;
+const PROPS_BYTES = 96e6;
 
 function partProps(p: EvalPart, e: MeshEntry): PartProps | null {
   const key = `${p.hash}|${JSON.stringify(p.xf)}`;
-  if (propsCache.has(key)) return propsCache.get(key)!;
+  if (propsCache.has(key)) {
+    const hit = propsCache.get(key)!;
+    propsCache.delete(key);
+    propsCache.set(key, hit);
+    return hit;
+  }
   // the fast mesh: its volume is scaled to the exact one, and the run does not repeat when the fine mesh lands
   const mesh = e.preview ?? e.final;
   if (!mesh) return null;
@@ -249,9 +258,30 @@ function partProps(p: EvalPart, e: MeshEntry): PartProps | null {
     return [verts[bi * 3], verts[bi * 3 + 1], verts[bi * 3 + 2]] as V3;
   });
   const out: PartProps = { volume: exact, com, cov, support, min, max, verts, ...shapeBoxes(verts, idx, min, max, V > 0.3 * exact ? exact : 0) };
-  if (propsCache.size > 400) propsCache.clear();
   propsCache.set(key, out);
+  propsBytes += verts.byteLength;
+  for (const [k, old] of propsCache) {
+    if (propsBytes <= PROPS_BYTES || k === key) break;
+    propsBytes -= old?.verts.byteLength ?? 0;
+    propsCache.delete(k);
+  }
   return out;
+}
+
+/**
+ * Each placed part's properties, a piece at a time (core/slices.ts): the slow part of reading a mechanism, with
+ * how the design holds together (core/holds.ts prepareHolds). They are kept, so resolveMechanism asked afterwards
+ * finds them worked out and answers without stopping the page. True when every part has its shape.
+ */
+export function* warmMechanism(model: Model, geom: (hash: string) => MeshEntry | undefined): Generator<void, boolean> {
+  let all = true;
+  for (const p of model.parts) {
+    if (p.hidden || (p.imported && p.imported.kind !== "solid")) continue;
+    const e = geom(p.hash);
+    if (!e || !partProps(p, e)) all = false;
+    yield;
+  }
+  return all;
 }
 
 // ---------- the resolver ----------
@@ -326,6 +356,11 @@ function resolveInner(spec: MechSpec, scn: ScenarioSpec, model: Model, geom: (ha
   }
   const explicit = new Set(bodyOf.keys());
   const named = new Set(spec.items.flatMap((i) => ("name" in i ? [i.name] : [])));
+  // while the design is still building, a part without its shape yet is waited for before anything slow is worked out
+  if (!final) {
+    const waiting = parts.filter((p) => !geom(p.hash)?.preview && !geom(p.hash)?.final).map((p) => p.id);
+    if (waiting.length) return { waiting };
+  }
   // how the design holds together: what each screw clamps, and what moving parts carry with them
   const holds = findHolds(model, (h) => geom(h)?.preview ?? geom(h)?.final);
   const lines = new Map<string, Group>();

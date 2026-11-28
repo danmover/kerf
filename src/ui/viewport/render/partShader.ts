@@ -68,6 +68,8 @@ export interface PartUniforms {
   /** shared by every part: the set's fill light without its shadow-casting panels (StudioEnvironments.fill), and whether to use it */
   tFillEnv: { value: THREE.Texture | null };
   uFillOn: { value: number };
+  /** shared by every part: the block of random values the finishes' noise is read from (noiseValues) */
+  tNoise: { value: THREE.Data3DTexture | null };
 }
 
 /** One for all parts (see PartUniforms.uBevelPx): the view sets it when its size or lens changes. */
@@ -86,6 +88,7 @@ export function setBevelPixel(camera: THREE.PerspectiveCamera, heightPx: number)
 }
 
 export function partUniforms(): PartUniforms {
+  NOISE_TEX.value ??= noiseTexture();
   return {
     uDetail: { value: new THREE.Vector4() },
     uTint2: { value: new THREE.Color() },
@@ -116,6 +119,7 @@ export function partUniforms(): PartUniforms {
     uKBox1: { value: new THREE.Vector3(1, 1, 1) },
     tFillEnv: FILL_ENV,
     uFillOn: FILL_ON,
+    tNoise: NOISE_TEX,
   };
 }
 
@@ -136,20 +140,103 @@ export function plyLayout(min: [number, number, number], max: [number, number, n
   return [thin, grain, min[thin], t > 0 ? t / n : 0];
 }
 
+/** How many cells the noise's block of values is along each side (a power of two: a place is found in it by its low bits). */
+export const NOISE_N = 64;
+
+/**
+ * kHash below, as the graphics card works it out in single precision: the random value at a corner of the noise's
+ * grid.
+ */
+export function noiseHash(x: number, y: number, z: number): number {
+  const f = Math.fround;
+  const part = (v: number, add: number) => {
+    const t = f(f(v * f(0.3183099)) + f(add));
+    return f(f(t - Math.floor(t)) * 17);
+  };
+  const px = part(x, 0.71);
+  const py = part(y, 0.113);
+  const pz = part(z, 0.419);
+  const v = f(f(f(px * py) * pz) * f(f(px + py) + pz));
+  return f(v - Math.floor(v));
+}
+
+/**
+ * The block of random values the finishes' noise is read from: NOISE_N cells a side, repeating. Each cell holds the
+ * values at four of its corners (itself, the next along x, the next along y, the next along both), so a point's eight
+ * corners are two reads: its cell and the one above it.
+ */
+export function noiseValues(): Uint8Array<ArrayBuffer> {
+  const n = NOISE_N;
+  const at = new Uint8Array(n * n * n);
+  for (let z = 0; z < n; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) at[(z * n + y) * n + x] = Math.round(noiseHash(x, y, z) * 255);
+  const data = new Uint8Array(n * n * n * 4);
+  const m = n - 1;
+  for (let z = 0; z < n; z++) {
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const o = ((z * n + y) * n + x) * 4;
+        const x1 = (x + 1) & m;
+        const y1 = (y + 1) & m;
+        data[o] = at[(z * n + y) * n + x];
+        data[o + 1] = at[(z * n + y) * n + x1];
+        data[o + 2] = at[(z * n + y1) * n + x];
+        data[o + 3] = at[(z * n + y1) * n + x1];
+      }
+    }
+  }
+  return data;
+}
+
+/** One for all parts: the noise's block of values (noiseValues), made when the first part's material is. */
+export const NOISE_TEX = { value: null as THREE.Data3DTexture | null };
+
+function noiseTexture(): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(noiseValues(), NOISE_N, NOISE_N, NOISE_N);
+  t.format = THREE.RGBAFormat;
+  t.type = THREE.UnsignedByteType;
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  t.wrapS = t.wrapT = t.wrapR = THREE.RepeatWrapping;
+  t.unpackAlignment = 1;
+  t.needsUpdate = true;
+  return t;
+}
+
+// The noise the finishes are made of: a random value at every corner of a grid of whole numbers, blended between.
+// The corners' values are read from a block of them (tNoise, see noiseValues), four to a read. They were worked out
+// here with kHash, eight to a call, and with some 26 calls in a part's shader that was two thirds of what Direct3D's
+// compiler took over it (1.3 s of 1.9 s on an RX 7800 XT). The reads name their cell and level themselves
+// (texelFetch), so they are no trouble inside a branch.
 const NOISE = /* glsl */ `
+uniform highp sampler3D tNoise;
 float kHash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
   p *= 17.0;
   return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 float kNoise(vec3 x) {
-  vec3 i = floor(x);
-  vec3 f = fract(x);
+  vec3 fl = floor(x);
+  vec3 f = x - fl;
   f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(kHash(i), kHash(i + vec3(1.0, 0.0, 0.0)), f.x),
-                 mix(kHash(i + vec3(0.0, 1.0, 0.0)), kHash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
-             mix(mix(kHash(i + vec3(0.0, 0.0, 1.0)), kHash(i + vec3(1.0, 0.0, 1.0)), f.x),
-                 mix(kHash(i + vec3(0.0, 1.0, 1.0)), kHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+  ivec3 i = ivec3(fl) & ${NOISE_N - 1};
+  // (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1) of this level and the next, blended between the levels first
+  vec4 c = mix(texelFetch(tNoise, i, 0), texelFetch(tNoise, ivec3(i.xy, (i.z + 1) & ${NOISE_N - 1}), 0), f.z);
+  vec2 d = mix(c.xz, c.yw, f.x);
+  return mix(d.x, d.y, f.y);
+}
+// kNoise with how fast it changes along x and y: (value, d/dx, d/dy)
+vec3 kNoiseG(vec3 x) {
+  vec3 fl = floor(x);
+  vec3 f = x - fl;
+  vec3 u = f * f * (3.0 - 2.0 * f);
+  vec3 du = 6.0 * f * (1.0 - f);
+  ivec3 i = ivec3(fl) & ${NOISE_N - 1};
+  vec4 c = mix(texelFetch(tNoise, i, 0), texelFetch(tNoise, ivec3(i.xy, (i.z + 1) & ${NOISE_N - 1}), 0), u.z);
+  vec2 d = mix(c.xz, c.yw, u.x);
+  // along x: the far corners less the near ones; along y the same
+  float sx = mix(c.y - c.x, c.w - c.z, u.y);
+  float sy = d.y - d.x;
+  return vec3(mix(d.x, d.y, u.y), sx * du.x, sy * du.y);
 }
 `;
 
@@ -170,7 +257,7 @@ vec2 kThread() {
   vec2 cs = on > 0.5 ? vThread.yz : vec2(1.0, 0.0);
   float P = max(length(cs), 1e-4);
   float ph = vThread.x + sign(vThreadCode) * starts * atan(cs.y, cs.x) * 0.15915494;
-  float fw = fwidth(vThread.x) + starts * (fwidth(cs.x) + fwidth(cs.y)) / (P * 6.2831853);
+  float fw = kThW.x + starts * (kThW.y + kThW.z) / (P * 6.2831853);
   float fade = on * (1.0 - smoothstep(0.22, 0.5, fw));
   // only between the thread's ends: a plain shank on the same axis stays plain
   float inside = step(-0.02, vThread.x) * step(vThread.x, turns + 0.02);
@@ -224,6 +311,21 @@ vec3 kGrain = vec3(1.0, 0.0, 0.0);
 float kShade = 1.0;
 flat varying float vThreadCode;
 varying vec3 vThread;
+// How the part's own point (kPx, kPy), the view's (kVx, kVy) and a thread's place change from this pixel to the next
+// across and down, with kFw and kThW the widths of the first and last (their fwidth). Taken once at the top of main
+// and nowhere else: a width asked for inside a branch is one Direct3D's compiler has to work free of the branch
+// first, which has broken a shader of this app before (the stress results', PR #185), and the parts' shader asked
+// for some twenty. (It did not make this shader quicker to build: that time is the noise's, see kNoise.) Everything
+// below works its widths out from these: kW for a value that changes by g for each mm along the part's axes.
+vec3 kPx;
+vec3 kPy;
+vec3 kFw;
+vec3 kVx;
+vec3 kVy;
+vec3 kThW;
+float kW(vec3 g) {
+  return abs(dot(g, kPx)) + abs(dot(g, kPy));
+}
 ${NOISE}
 ${THREAD}
 
@@ -238,12 +340,13 @@ float kChangedHere(vec3 viewPos) {
   float z = viewPos.z;
   vec2 uv = gl_FragCoord.xy * uChangeView.xy;
   vec2 o = uChangeView.xy;
-  float g = abs(z - kViewZ(texture2D(tChange, uv).x));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv + vec2(o.x, 0.0)).x)));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv - vec2(o.x, 0.0)).x)));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv + vec2(0.0, o.y)).x)));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv - vec2(0.0, o.y)).x)));
-  vec3 fn = normalize(cross(dFdx(viewPos), dFdy(viewPos)));
+  // (read at its one level: a read that picks its level by itself is a width asked for in a branch, see kPx)
+  float g = abs(z - kViewZ(textureLod(tChange, uv, 0.0).x));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv + vec2(o.x, 0.0), 0.0).x)));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv - vec2(o.x, 0.0), 0.0).x)));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv + vec2(0.0, o.y), 0.0).x)));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv - vec2(0.0, o.y), 0.0).x)));
+  vec3 fn = normalize(cross(kVx, kVy));
   float facing = max(0.15, abs(dot(fn, normalize(viewPos))));
   float tol = uChange.y / facing + z * z / (uChangeView.z * 16777216.0) * 4.0;
   return smoothstep(tol, tol * 2.0, g);
@@ -268,19 +371,19 @@ vec3 kDetail(vec3 p, vec3 n) {
     if (n.z < -0.97 && p.z < uKBox0.z + sc * 0.5) {
       // the face that lay on the textured build plate: a fine pebbled grain, duller than the rest
       vec3 g = p / 0.11;
-      float gfade = 1.0 - smoothstep(0.35, 0.9, length(fwidth(g)));
+      float gfade = 1.0 - smoothstep(0.35, 0.9, length(kFw) / 0.11);
       float pe = kNoise(g) * 0.6 + kNoise(g * 2.3 + 5.1) * 0.4;
       return vec3(amp * 0.6 * pe * gfade, 0.15 * (1.0 - pe) * gfade, 0.12 + (pe - 0.5) * rv * gfade);
     }
     float q = p.z / sc;
-    float fade = 1.0 - smoothstep(0.3, 0.75, fwidth(q));
+    float fade = 1.0 - smoothstep(0.3, 0.75, kFw.z / sc);
     float w = 0.5 + 0.5 * cos(6.2831853 * q);
     w = clamp(w + (kNoise(vec3(p.xy * 0.35, floor(q))) - 0.5) * 0.35, 0.0, 1.0);
     float side = 1.0 - smoothstep(0.75, 0.97, an.z);
     float top = 1.0 - side;
     // top and bottom skins: fine diagonal extrusion lines
     float d = (p.x + p.y) / (sc * 2.0);
-    float tf = 1.0 - smoothstep(0.3, 0.75, fwidth(d));
+    float tf = 1.0 - smoothstep(0.3, 0.75, kW(vec3(1.0, 1.0, 0.0)) / (sc * 2.0));
     float tw = 0.5 + 0.5 * cos(6.2831853 * d);
     float h = side * w * fade + top * tw * tf * 0.35;
     // the seam down the back, where each layer's outer wall starts and ends: a small blob per layer, wandering a little
@@ -289,7 +392,7 @@ vec3 kDetail(vec3 p, vec3 n) {
     float ang = atan(rxy.y, rxy.x) - 1.5707963;
     ang = abs(ang - 6.2831853 * floor(ang / 6.2831853 + 0.5));
     float sd = ang * length(rxy) + (kHash(vec3(floor(q), 4.0, 2.0)) - 0.5) * 0.35;
-    float sw = max(0.18, length(fwidth(p.xy)) * 1.5);
+    float sw = max(0.18, length(kFw.xy) * 1.5);
     float seam = side * fade * (1.0 - smoothstep(sw, sw * 2.2, sd)) * (0.18 / sw) * (0.55 + 0.45 * w);
     h += seam * 1.6;
     return vec3(amp * h, side * (1.0 - w) * fade + top * (1.0 - tw) * tf * 0.3, (h - 0.5 * (side * fade + top * tf * 0.35)) * rv - seam * 0.12);
@@ -302,7 +405,8 @@ vec3 kDetail(vec3 p, vec3 n) {
     float dv = p.y - j * stepv;
     float dx = sqrt(max(R * R - dv * dv, 0.0));
     float ph = (p.x - dx) / (sc * 4.0);
-    float fade = 1.0 - smoothstep(0.3, 0.8, fwidth(ph));
+    // (ph changes by 1 along x and by dv / dx along y, over sc * 4)
+    float fade = 1.0 - smoothstep(0.3, 0.8, kW(vec3(1.0, dv / max(dx, 1e-3), 0.0)) / (sc * 4.0));
     float m = 0.5 + 0.5 * cos(6.2831853 * ph);
     float tone = kHash(vec3(j, 1.0, 2.0)) - 0.5;
     kGrain = vec3(-dv, dx, 0.0) / max(R, 1e-3);
@@ -316,20 +420,20 @@ vec3 kDetail(vec3 p, vec3 n) {
     if (kind == ${Detail.Machined} && an.z < 0.3) kGrain = normalize(vec3(-n.y, n.x, 0.0) + 1e-5);
     vec3 q = an.x > 0.8 ? vec3(p.y / stretch, p.z, p.x) : vec3(p.x / stretch, p.y, p.z);
     q /= sc;
-    float fade = 1.0 - smoothstep(0.4, 1.2, length(fwidth(q.yz)));
+    float fade = 1.0 - smoothstep(0.4, 1.2, length(an.x > 0.8 ? kFw.zx : kFw.yz) / sc);
     float s = kNoise(q) * 0.65 + kNoise(q * vec3(1.0, 2.7, 2.7)) * 0.35;
     return vec3(amp * s * fade, 0.0, (s - 0.5) * rv * (0.35 + 0.65 * fade));
   }
   if (kind == ${Detail.Grain}) {
     vec3 q = p / sc;
-    float fade = 1.0 - smoothstep(0.4, 1.0, length(fwidth(q)));
+    float fade = 1.0 - smoothstep(0.4, 1.0, length(kFw) / sc);
     float s = kNoise(q) * 0.6 + kNoise(q * 2.3) * 0.4;
     return vec3(amp * s * fade, 0.0, (s - 0.5) * rv * fade);
   }
   if (kind == ${Detail.Peel}) {
     vec3 q = p / sc;
     float s = kNoise(q) * 0.55 + kNoise(q * 2.1 + 3.7) * 0.3 + kNoise(q * 4.7) * 0.15;
-    float fade = 1.0 - smoothstep(0.5, 1.5, length(fwidth(q)));
+    float fade = 1.0 - smoothstep(0.5, 1.5, length(kFw) / sc);
     return vec3(amp * s * fade, 0.0, (s - 0.5) * rv * fade);
   }
   if (kind == ${Detail.Weave}) {
@@ -346,7 +450,7 @@ vec3 kDetail(vec3 p, vec3 n) {
     float across = warp ? f.y : f.x;
     float along = warp ? uv.x : uv.y;
     float bulge = sin(3.14159 * across);
-    float fade = 1.0 - smoothstep(0.25, 0.6, length(fwidth(uv)));
+    float fade = 1.0 - smoothstep(0.25, 0.6, length(an.z >= max(an.x, an.y) ? kFw.xy : (an.x >= an.y ? kFw.yz : kFw.xz)) / sc);
     float fib = kNoise(vec3(along * 0.5, (warp ? uv.y : uv.x) * 30.0, cell.x * 1.7 + cell.y));
     return vec3(amp * bulge * fade, (warp ? 0.0 : 1.0) * fade + (fib - 0.5) * 0.3 * fade, ((warp ? -0.5 : 0.5) + (fib - 0.5)) * rv * fade);
   }
@@ -356,7 +460,7 @@ vec3 kDetail(vec3 p, vec3 n) {
     float ring = fract(length(w.yz + vec2(37.0, -53.0)) / sc);
     float late = smoothstep(0.55, 0.9, ring) * (1.0 - smoothstep(0.92, 1.0, ring));
     float pore = kNoise(vec3(p.x * 0.08, p.y * 5.0, p.z * 5.0));
-    float fade = 1.0 - smoothstep(0.6, 1.6, length(fwidth(p.yz / sc)));
+    float fade = 1.0 - smoothstep(0.6, 1.6, length(kFw.yz) / sc);
     return vec3(amp * (late * 0.6 + pore * 0.4) * fade, (late * 0.85 + pore * 0.15) * mix(0.6, 1.0, fade), (pore - 0.5) * rv);
   }
   if (kind == ${Detail.Plywood}) {
@@ -372,16 +476,25 @@ vec3 kDetail(vec3 p, vec3 n) {
     // thin darker late-wood lines, fine fibres and big gentle blotches of tone
     // the bands bunch up and spread out (q's spacing wanders), and each line has its own strength,
     // so the face never reads as evenly ruled stripes
-    float wob = kNoise(vec3(pg * 0.004, po * 0.011, 1.3)) * 4.5 + kNoise(vec3(pg * 0.018, po * 0.045, 4.1)) * 1.1;
+    vec3 wob1 = kNoiseG(vec3(pg * 0.004, po * 0.011, 1.3));
+    vec3 wob2 = kNoiseG(vec3(pg * 0.018, po * 0.045, 4.1));
+    float wob = wob1.x * 4.5 + wob2.x * 1.1;
     float q = po / sc + wob + pg * 0.002;
+    // how fast q changes along the grain and across it (the wander's own slope with it), and so from pixel to pixel
+    float qg = 0.002 + wob1.y * 0.018 + wob2.y * 0.0198;
+    float qo = 1.0 / sc + wob1.z * 0.0495 + wob2.z * 0.0495;
+    vec3 eg = vec3(ga == 0 ? 1.0 : 0.0, ga == 1 ? 1.0 : 0.0, ga == 2 ? 1.0 : 0.0);
+    vec3 eo = vec3(oa == 0 ? 1.0 : 0.0, oa == 1 ? 1.0 : 0.0, oa == 2 ? 1.0 : 0.0);
+    float fo = oa == 0 ? kFw.x : (oa == 1 ? kFw.y : kFw.z);
+    float ft = ta == 0 ? kFw.x : (ta == 1 ? kFw.y : kFw.z);
     float band = fract(q);
     float bi = floor(q);
     float lineK = kHash(vec3(bi, 3.0, 9.0));
     lineK = 0.12 + 0.88 * lineK * lineK;
     float late = smoothstep(0.42, 0.84, band) * (1.0 - smoothstep(0.86, 1.0, band)) * lineK;
-    float ffade = 1.0 - smoothstep(0.25, 0.7, fwidth(q));
+    float ffade = 1.0 - smoothstep(0.25, 0.7, kW(eg * qg + eo * qo));
     float fib = kNoise(vec3(pg * 0.11, po * 3.5, 2.0));
-    float fibFade = 1.0 - smoothstep(0.3, 0.9, fwidth(po * 3.5));
+    float fibFade = 1.0 - smoothstep(0.3, 0.9, fo * 3.5);
     float blot = kNoise(vec3(pg * 0.006, po * 0.02, 7.7)) * 0.7 + kNoise(vec3(pg * 0.03, po * 0.08, 5.3)) * 0.3;
     float faceTone = 0.12 + late * 0.34 * ffade + (fib - 0.5) * 0.16 * fibFade + (blot - 0.5) * 0.36;
     float faceH = late * 0.6 * ffade + fib * 0.4 * fibFade;
@@ -391,8 +504,9 @@ vec3 kDetail(vec3 p, vec3 n) {
     float pl = (pt - uPly.z) / plyW;
     float k = floor(pl);
     float f = fract(pl);
-    float pfade = 1.0 - smoothstep(0.35, 1.1, fwidth(pl));
-    float glue = (1.0 - smoothstep(0.0, 0.05 + fwidth(pl), min(f, 1.0 - f))) * pfade;
+    float plw = ft / plyW;
+    float pfade = 1.0 - smoothstep(0.35, 1.1, plw);
+    float glue = (1.0 - smoothstep(0.0, 0.05 + plw, min(f, 1.0 - f))) * pfade;
     bool along = mod(k, 2.0) < 0.5;
     bool endGrain = (ng > 0.5) == along;
     float pore = kNoise(vec3(pg * 2.4, po * 2.4, pt * 7.0));
@@ -418,7 +532,7 @@ vec3 kMake(vec3 p, vec3 n) {
     float r = length(r2);
     kGrain = r > 1e-4 ? vec3(-r2.y, r2.x, 0.0) / r : vec3(1.0, 0.0, 0.0);
     float ph = (an.z > 0.9 ? r : p.z) / 0.07;
-    float fade = 1.0 - smoothstep(0.3, 0.8, fwidth(ph));
+    float fade = 1.0 - smoothstep(0.3, 0.8, (an.z > 0.9 ? kW(vec3(r2 / max(r, 1e-4), 0.0)) : kFw.z) / 0.07);
     float m = 0.5 + 0.5 * cos(6.2831853 * ph);
     float chatter = kNoise(vec3(r * 0.4, p.z * 0.4, 3.0)) - 0.5;
     return vec3(0.0015 * m * fade, 0.0, (m - 0.5) * 0.14 * fade + chatter * 0.05);
@@ -427,7 +541,7 @@ vec3 kMake(vec3 p, vec3 n) {
     // the parting line round its middle: a hair-thin ridge where the mould halves met
     float side = 1.0 - smoothstep(0.6, 0.9, an.z);
     float zp = c.z;
-    float lw = max(0.05, fwidth(p.z) * 1.5);
+    float lw = max(0.05, kFw.z * 1.5);
     float line = side * (1.0 - smoothstep(lw, lw * 2.0, abs(p.z - zp))) * (0.05 / lw);
     // ejector pins underneath: faint rings on a grid, a touch glossier inside
     float pin = 0.0;
@@ -437,7 +551,7 @@ vec3 kMake(vec3 p, vec3 n) {
       vec2 g = mod(p.xy - c.xy + pitch * 0.5, pitch) - pitch * 0.5;
       float rr = length(g);
       float pr = clamp(pitch * 0.12, 1.0, 3.0);
-      float pw = max(0.06, length(fwidth(p.xy)) * 1.5);
+      float pw = max(0.06, length(kFw.xy) * 1.5);
       pin = (1.0 - smoothstep(pw, pw * 2.0, abs(rr - pr))) * (0.06 / pw);
       inner = 1.0 - smoothstep(pr - pw, pr, rr);
     }
@@ -456,7 +570,7 @@ vec3 kMake(vec3 p, vec3 n) {
     float depth = dot(p - uKBox0, ta) / max(t, 1e-3);
     // the lines lag toward the beam's exit side
     float sCoord = dot(p, along) + depth * depth * 0.12;
-    float fade = 1.0 - smoothstep(0.3, 0.9, fwidth(sCoord * 6.0));
+    float fade = 1.0 - smoothstep(0.3, 0.9, kW(along + ta * (0.24 * depth / max(t, 1e-3))) * 6.0);
     float st = kNoise(vec3(sCoord * 6.0, depth * 0.6, 1.7)) * 0.7 + kNoise(vec3(sCoord * 17.0, depth, 4.2)) * 0.3;
     kGrain = ta;
     kShade *= 0.8 - 0.1 * depth;
@@ -476,13 +590,13 @@ mat3 kTangentFrame(vec3 n) {
 }
 
 // Bump from a height in mm (Mikkelsen, unnormalised so the slope stays true at every zoom)
-vec3 kPerturb(vec3 pos, vec3 n, float h, float faceDir) {
-  vec3 sx = dFdx(pos);
-  vec3 sy = dFdy(pos);
+// (dh: how the height changes from this pixel to the next across and down, taken in main)
+vec3 kPerturb(vec3 n, vec2 dh, float faceDir) {
+  vec3 sx = -kVx;
+  vec3 sy = -kVy;
   vec3 r1 = cross(sy, n);
   vec3 r2 = cross(n, sx);
   float det = dot(sx, r1) * faceDir;
-  vec2 dh = vec2(dFdx(h), dFdy(h));
   vec3 grad = sign(det) * (dh.x * r1 + dh.y * r2);
   return normalize(abs(det) * n - grad);
 }
@@ -518,6 +632,96 @@ const LIGHTS_MAPS = (() => {
   if (out === src) throw new Error("three's lights_fragment_maps changed: update partShader's LIGHTS_MAPS");
   return out;
 })();
+
+/** Less grain than this in a finish is none: its highlights are a plain finish's (see `allInOne`). */
+const NO_GRAIN = "1e-5";
+
+/**
+ * three's lights_physical_pars_fragment, with the highlight of a finish that has a grain in its shader but none to show
+ * worked out as a plain finish's is. For a grained finish three.js keeps one term of the highlight (how much of the
+ * surface is seen and lit) to 1 at most, which it does not for a plain one: a highlight seen at a low angle would be
+ * dimmer for the grain being in the shader.
+ */
+const LIGHTS_PARS = (() => {
+  const src = THREE.ShaderChunk.lights_physical_pars_fragment;
+  const visible = /float V = (V_GGX_SmithCorrelated_Anisotropic\([^;]*\));/;
+  const spread = /float D = (D_GGX_Anisotropic\([^;]*\));/;
+  if (!visible.test(src) || !spread.test(src)) throw new Error("three's lights_physical_pars_fragment changed: update partShader's LIGHTS_PARS");
+  return src
+    .replace(visible, `float V = material.anisotropy > ${NO_GRAIN} ? $1 : V_GGX_SmithCorrelated( alpha, dotNL, dotNV );`)
+    .replace(spread, `float D = material.anisotropy > ${NO_GRAIN} ? $1 : D_GGX( alpha, dotNH );`);
+})();
+
+// One shader for a part however it is drawn.
+//
+// The renderer builds a material another shader for each way it is drawn: see-through or not, cut by no plane, one
+// or two, with a clear coat or not, and so on. The parts' shader is large, and with Direct3D the graphics card takes
+// seconds over each: a design opened for the first time had it built some sixty times over, and the first x-ray, the
+// first section and the first ghosted part each waited for more. So a part's material is kept to one way of being
+// drawn wherever that draws the same picture.
+
+/** A plane that cuts nothing: where a part is not cut, so that its shader is the one for a part that is. */
+export const NO_CUT = new THREE.Plane(new THREE.Vector3(0, 0, 1), 1e9);
+
+/**
+ * The planes a part's material is given, always two: the section's and the one it draws itself in by, each standing
+ * for nothing (`NO_CUT`) when there is none. `into` is used again when given.
+ */
+export function cutsOf(section: THREE.Plane | null, reveal: THREE.Plane | null, into?: THREE.Plane[] | null): THREE.Plane[] {
+  const planes = into && into.length === 2 ? into : [NO_CUT, NO_CUT];
+  planes[0] = section ?? NO_CUT;
+  planes[1] = reveal ?? NO_CUT;
+  return planes;
+}
+
+/**
+ * Makes a part's material see-through or solid. The renderer's shader for a solid material differs from the one for
+ * a see-through material in one line: it writes an alpha of 1 where the other writes the material's opacity. So a
+ * solid material is told not to blend, which the renderer draws with the see-through shader, its opacity 1 and
+ * nothing blended: the same picture, and one build for both. Not for a material with a picture on it (a map may
+ * have see-through places of its own, which a solid material covers) or one that blends some other way: those keep
+ * a shader for each, as before.
+ */
+export function setSeeThrough(mat: THREE.Material & { map?: THREE.Texture | null; alphaMap?: THREE.Texture | null }, seeThrough: boolean) {
+  const solidShader = () => !mat.transparent && mat.blending === THREE.NormalBlending && !mat.alphaToCoverage;
+  const was = solidShader();
+  mat.transparent = seeThrough;
+  const plain = !mat.map && !mat.alphaMap && (mat.blending === THREE.NormalBlending || mat.blending === THREE.NoBlending);
+  if (plain) mat.blending = seeThrough ? THREE.NormalBlending : THREE.NoBlending;
+  if (!seeThrough) mat.opacity = 1;
+  // (only the first time, for a material drawn before it came here, and for one with a picture on it)
+  if (solidShader() !== was) mat.needsUpdate = true;
+}
+
+/**
+ * Every part's shader has a clear coat, a sheen and a grain in it, used or not, so that parts of every finish share
+ * one build where they would have one for each mix of the three. The parts' shader is by far the longest build a
+ * graphics card is given (seconds each with Direct3D), and a design with five mixes of finishes waited for five of
+ * them before its first whole picture. A layer a finish does not have is given the least there is of it, as rough
+ * as it goes, which adds under a millionth to the picture, and a finish with no grain keeps a plain finish's
+ * highlights (`LIGHTS_PARS`). `localStorage kerf.debug.oneShader = 0` gives each mix its own build again.
+ */
+export const ALL_IN_ONE = (() => {
+  try {
+    return typeof localStorage === "undefined" || localStorage.getItem("kerf.debug.oneShader") !== "0";
+  } catch {
+    return true; // storage blocked
+  }
+})();
+const LEAST = 1e-6;
+
+function allInOne(mat: THREE.MeshPhysicalMaterial) {
+  if (!ALL_IN_ONE) return;
+  if (!(mat.clearcoat > 0)) {
+    mat.clearcoat = LEAST;
+    mat.clearcoatRoughness = 1;
+  }
+  if (!(mat.sheen > 0)) {
+    mat.sheen = LEAST;
+    mat.sheenRoughness = 1;
+  }
+  if (!(mat.anisotropy > 0)) mat.anisotropy = LEAST;
+}
 
 /** Patch a part material once; its uniforms come from `u` so animations can drive them. */
 export function patchPartMaterial(mat: THREE.MeshPhysicalMaterial, u: PartUniforms) {
@@ -558,7 +762,15 @@ vThread = aThread.yzw;`,
       .replace("#include <common>", "#include <common>\n" + DETAIL)
       .replace(
         "#include <clipping_planes_fragment>",
-        `#include <clipping_planes_fragment>
+        `  // every width the part's marks need, taken here and nowhere else (see kPx)
+  kPx = dFdx(vKObj);
+  kPy = dFdy(vKObj);
+  kFw = abs(kPx) + abs(kPy);
+  kVx = dFdx(vViewPosition);
+  kVy = dFdy(vViewPosition);
+  kThW = fwidth(vThread);
+  float kScanW = fwidth(dot(vKWorld, uScanDir.xyz));
+#include <clipping_planes_fragment>
   float kChanged = 1.0;
   float kFront = 0.0;
   if (uChange.x > 0.5) {
@@ -569,7 +781,7 @@ vThread = aThread.yzw;`,
     // through the same pixel arrives, so the two swap over at once
     if (uSweep.w > 0.5 && kChanged > 0.5) {
       if (uChange.x > 1.5) {
-        float kdn = texture2D(tChange, gl_FragCoord.xy * uChangeView.xy).x;
+        float kdn = textureLod(tChange, gl_FragCoord.xy * uChangeView.xy, 0.0).x;
         vec3 kp = kdn < 0.99999 ? cameraPosition + (vKWorld - cameraPosition) * (kViewZ(kdn) / -vViewPosition.z) : vKWorld;
         float kAhead = kSweepAt(kp) - uSweepFront.x;
         if (kAhead < 0.0) discard;
@@ -591,7 +803,7 @@ vThread = aThread.yzw;`,
   // a rounded edge carries its face's pattern: the pattern follows the flat face, not the round's turned normal
   vec3 kN = normalize(vKObjN);
   if (vKBand > 0.5) {
-    vec3 kF = cross(dFdx(vKObj), dFdy(vKObj));
+    vec3 kF = cross(kPx, kPy);
     if (dot(kF, kF) > 1e-20) kN = normalize(kF) * sign(dot(kF, kN) + 1e-9);
   }
   vec3 kd = kDetail(vKObj, kN);
@@ -602,8 +814,16 @@ vThread = aThread.yzw;`,
       .replace("#include <normal_fragment_begin>", NORMAL_BEGIN)
       .replace("#include <roughnessmap_fragment>", "#include <roughnessmap_fragment>\n  roughnessFactor = clamp(roughnessFactor + kd.z, 0.03, 1.0);")
       .replace("#include <envmap_physical_pars_fragment>", "#include <envmap_physical_pars_fragment>\n" + FILL_PARS)
+      .replace("#include <lights_physical_pars_fragment>", LIGHTS_PARS)
       .replace("#include <lights_fragment_maps>", LIGHTS_MAPS + "\n  radiance *= uEnvBoost;")
-      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(-vViewPosition, normal, (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x, faceDirection);")
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>
+  // (the height's own slope is taken outside the branch, as every width is: see kPx)
+  float kH = (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x;
+  vec2 kDh = vec2(dFdx(kH), dFdy(kH));
+  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(normal, kDh, faceDirection);`,
+      )
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
@@ -623,7 +843,7 @@ vThread = aThread.yzw;`,
     if (uScanDir.w > 0.0) {
       float kq = kAlong / uScanDir.w;
       float kLine = smoothstep(0.55, 0.95, abs(fract(kq) - 0.5) * 2.0);
-      kBand *= mix(0.35 + 1.3 * kLine, 1.0, smoothstep(0.25, 0.6, fwidth(kq)));
+      kBand *= mix(0.35 + 1.3 * kLine, 1.0, smoothstep(0.25, 0.6, kScanW / uScanDir.w));
     }
     totalEmissiveRadiance += uGlow * 2.5 * kBand;
   }
@@ -632,7 +852,7 @@ vThread = aThread.yzw;`,
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
   (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0], aBevel: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-11";
+  mat.customProgramCacheKey = () => "kerf-part-14";
 }
 
 /**
@@ -693,6 +913,7 @@ export function applyAppearance(mat: THREE.MeshPhysicalMaterial, u: PartUniforms
   u.uEnvBoost.value = a.envBoost;
   u.uBevelR.value = a.bevel;
   mat.anisotropy = a.aniso;
+  allInOne(mat);
 }
 
 /**
@@ -706,6 +927,7 @@ export function applyMake(mat: THREE.MeshPhysicalMaterial, u: PartUniforms, a: A
     u.uKBox1.value.copy(box.max);
   }
   mat.anisotropy = make === Make.Turned ? Math.max(a.aniso, 0.55) : a.aniso;
+  allInOne(mat);
 }
 
 /** Section caps: the part colour with a fine hatch, glowing while a part is being revealed. */

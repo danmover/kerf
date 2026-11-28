@@ -15,6 +15,7 @@ import { hotSoakItems } from "../analysis/hotSoak";
 import { splitItems } from "./splitChecks";
 import { configItems } from "./configs";
 import type { ProcessResult } from "../mfg/types";
+import { during } from "../app/stalls";
 
 export interface ReportContext {
   /** the model the core report was built from */
@@ -63,6 +64,7 @@ export function registerReportPass(id: string, run: ReportPass, order = 0): () =
 /** The core report with every pass applied. Fields other than the items and counts are kept. */
 export function composeReport(base: CheckReport, ctx: ReportContext): CheckReport {
   let items = [...base.items];
-  for (const p of passes) items = p.run(items, ctx);
+  // each pass under its name, so a freeze of the page says which check it was
+  for (const p of passes) items = during(`checks: ${p.id}`, () => p.run(items, ctx));
   return { ...base, ...finishReport(items, base.ms) };
 }

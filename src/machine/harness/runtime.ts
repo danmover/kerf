@@ -12,6 +12,7 @@ import { meshes, refreshReport, useDesign } from "../../core/engine";
 import type { CheckItem } from "../../core/checks";
 import type { EvalPart, Model } from "../../core/model";
 import { registerReportPass, type ReportContext } from "../../core/reportPasses";
+import { breathe } from "../../core/slices";
 import { xformMatrix, type V3 } from "../../kernel/recipe";
 import { posable } from "../pose";
 import { buildHarness, leadLength, routeRequests, type Harness } from "./harness";
@@ -190,22 +191,32 @@ export function updateHarness(model: Model) {
     useHarness.setState({ harness });
     return;
   }
-  // keep showing the old routes for cables that still exist until the new ones arrive
-  useHarness.setState({ harness, key, status: "routing" });
-  if (typeof Worker === "undefined") return;
-  const { geos, placed } = solidsInput({ ...model, parts }, mesh, mounts);
-  pendingId = nextId++;
-  const req: HarnessRouteRequest = {
-    id: pendingId,
-    // the worker takes the mesh buffers, so it gets its own copies
-    input: { geos: geos.map((g) => ({ positions: g.positions.slice(), indices: g.indices.slice() })), placed, wires },
-    travel: travel?.input,
-    wiring: { harness, mounts: specs, screws, pivots, flow },
+  // Keep showing the old routes for cables that still exist until the new ones arrive, with the splices where the
+  // router last put them: left at their first places, every cable of the 3D view was built again at each edit (its
+  // input had changed), and again when the routes came and moved them back.
+  const routing = () => {
+    placeSplices(harness, st.splices);
+    useHarness.setState({ harness, key, status: "routing" });
   };
-  ensureWorker().postMessage(
-    req,
-    req.input.geos.flatMap((g) => [g.positions.buffer, g.indices.buffer]),
-  );
+  if (typeof Worker === "undefined") return routing();
+  try {
+    const { geos, placed } = solidsInput({ ...model, parts }, mesh, mounts);
+    pendingId = nextId++;
+    const req: HarnessRouteRequest = {
+      id: pendingId,
+      // the worker takes the mesh buffers, so it gets its own copies
+      input: { geos: geos.map((g) => ({ positions: g.positions.slice(), indices: g.indices.slice() })), placed, wires },
+      travel: travel?.input,
+      wiring: { harness, mounts: specs, screws, pivots, flow },
+    };
+    ensureWorker().postMessage(
+      req,
+      req.input.geos.flatMap((g) => [g.positions.buffer, g.indices.buffer]),
+    );
+  } finally {
+    // (after the request, which the router gets with the splices at their first places, as it always has)
+    routing();
+  }
 }
 
 /** The wiring and mounting checks for a model, once they are in: resolves when they are (or after `ms`). */
@@ -239,7 +250,8 @@ function wiringPass(items: CheckItem[], ctx: ReportContext): CheckItem[] {
   // every part built (or failed to build) first
   if (model.parts.some((p) => !p.hidden && !ctx.buildErrors.has(p.hash) && !(meshes.get(p.hash)?.preview ?? meshes.get(p.hash)?.final))) return items;
   // routing runs in the worker; ask for it after this report is composed
-  if (model !== lastModel) queueMicrotask(() => updateHarness(model));
+  // (in a turn of its own: reading the harness of a large machine takes a moment, and the report is shown first)
+  if (model !== lastModel) void breathe().then(() => updateHarness(model));
   const st = useHarness.getState();
   if (model === lastModel && st.status === "done" && st.checked === st.key && st.harness) return [...items, ...wiringItems(st.harness, st.findings, st.mounts ?? [], model)];
   if (model === lastModel && st.status === "error")

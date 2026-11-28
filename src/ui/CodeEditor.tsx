@@ -2,7 +2,7 @@
 // the AI, the parameter panel or undo arrive as minimal replacements so the
 // cursor and scroll position survive, and changed lines flash.
 
-import { useEffect, useRef } from "react";
+import { useEffect, useLayoutEffect, useRef } from "react";
 import { EditorState, Compartment, StateEffect, StateField, Transaction, Annotation, type Extension } from "@codemirror/state";
 import { EditorView, keymap, lineNumbers, highlightActiveLine, highlightActiveLineGutter, drawSelection, Decoration, type DecorationSet } from "@codemirror/view";
 import { defaultKeymap, history, historyKeymap, indentWithTab } from "@codemirror/commands";
@@ -13,6 +13,7 @@ import { setDiagnostics, lintGutter, type Diagnostic as CmDiagnostic } from "@co
 import { kerfLanguage, kerfHighlight, kerfTheme, kerfCompletions } from "./editor/kerfLang";
 import { useDesign } from "../core/engine";
 import { minimalChange, blockAt } from "../core/sourceEdit";
+import type { Diagnostic } from "../lang/parser";
 import { typeSource } from "../app/project";
 import { useView, select } from "../app/view";
 import { useChat } from "../ai/chat";
@@ -46,11 +47,18 @@ const flashField = StateField.define<DecorationSet>({
   provide: (f) => EditorView.decorations.from(f),
 });
 
-export function CodeEditor() {
+/**
+ * `shown`: whether the editor is in sight (its tab of the dock is up). Out of sight it is left as it is and catches up
+ * when it is shown: taking in an edit has it read and colour the text again and redraw its lines, a good part of a
+ * second of the page's time on a long design at every edit, for nobody to see.
+ */
+export function CodeEditor({ shown = true }: { shown?: boolean }) {
   const host = useRef<HTMLDivElement>(null);
   const viewRef = useRef<EditorView | null>(null);
   const readOnly = useRef(new Compartment());
   const busy = useChat((s) => s.busy);
+  const inSight = useRef(shown);
+  const catchUp = useRef<() => void>(() => undefined);
 
   useEffect(() => {
     if (!host.current) return;
@@ -100,7 +108,8 @@ export function CodeEditor() {
     const view = new EditorView({ parent: host.current, state: EditorState.create({ doc: useDesign.getState().source, extensions: exts }) });
     viewRef.current = view;
 
-    const applyExternal = (src: string) => {
+    /** `flash`: light up the lines that changed (not when catching up on edits made while out of sight) */
+    const applyExternal = (src: string, flash = true) => {
       const cur = view.state.doc.toString();
       if (cur === src) return;
       if (timer) {
@@ -112,28 +121,50 @@ export function CodeEditor() {
       view.dispatch({
         changes: { from: ch.from, to: ch.to, insert: ch.insert },
         annotations: [External.of(true), Transaction.addToHistory.of(false)],
-        effects: [flashEffect.of({ from: ch.from, to: ch.from + ch.insert.length, cls: "cm-flash" })],
+        effects: flash ? [flashEffect.of({ from: ch.from, to: ch.from + ch.insert.length, cls: "cm-flash" })] : [],
       });
-      setTimeout(() => view.dispatch({ effects: clearFlash.of("cm-flash") }), 1400);
+      if (flash) setTimeout(() => view.dispatch({ effects: clearFlash.of("cm-flash") }), 1400);
+    };
+    const mark = (diagnostics: Diagnostic[]) => {
+      const len = view.state.doc.length;
+      const diags: CmDiagnostic[] = diagnostics.map((d) => {
+        const from = Math.min(Math.max(0, d.start), len);
+        return { from, to: Math.min(Math.max(from, d.end), len), severity: d.severity, message: d.message, source: "kerf" };
+      });
+      view.dispatch(setDiagnostics(view.state, diags));
     };
 
+    // edits that came while the editor was out of sight, not taken in yet
+    let behind = false;
     const unsubSrc = useDesign.subscribe((s, prev) => {
-      if (s.source !== prev.source) applyExternal(s.source);
-      if (s.model !== prev.model && s.model) {
-        const diags: CmDiagnostic[] = s.model.diagnostics.map((d) => {
-          const len = view.state.doc.length;
-          const from = Math.min(Math.max(0, d.start), len);
-          return { from, to: Math.min(Math.max(from, d.end), len), severity: d.severity, message: d.message, source: "kerf" };
-        });
-        view.dispatch(setDiagnostics(view.state, diags));
+      if (s.source === prev.source && s.model === prev.model) return;
+      if (!inSight.current) {
+        behind = true;
+        // (text typed a moment before the tab was left gives way to an edit from elsewhere, as it does in sight)
+        if (timer && s.source !== prev.source) {
+          clearTimeout(timer);
+          timer = null;
+        }
+        return;
       }
+      if (s.source !== prev.source) applyExternal(s.source);
+      if (s.model !== prev.model && s.model) mark(s.model.diagnostics);
     });
+    catchUp.current = () => {
+      if (!behind) return;
+      behind = false;
+      applyExternal(useDesign.getState().source, false);
+      const m = useDesign.getState().model;
+      if (m) mark(m.diagnostics);
+    };
     applyExternal(useDesign.getState().source);
     const m = useDesign.getState().model;
-    if (m) view.dispatch(setDiagnostics(view.state, m.diagnostics.map((d) => ({ from: Math.min(d.start, view.state.doc.length), to: Math.min(Math.max(d.start, d.end), view.state.doc.length), severity: d.severity, message: d.message }))));
+    if (m) mark(m.diagnostics);
 
     const unsubView = useView.subscribe((s, prev) => {
       if (s.reveal && s.reveal !== prev.reveal) {
+        // a place in the text is about to be shown: in the text as it is now
+        catchUp.current();
         const len = view.state.doc.length;
         const from = Math.min(s.reveal.span.start, len);
         const to = Math.min(s.reveal.span.end, len);
@@ -151,8 +182,15 @@ export function CodeEditor() {
       }
       view.destroy();
       viewRef.current = null;
+      catchUp.current = () => undefined;
     };
   }, []);
+
+  // before the tab is painted, so the text is never seen as it was
+  useLayoutEffect(() => {
+    inSight.current = shown;
+    if (shown) catchUp.current();
+  }, [shown]);
 
   useEffect(() => {
     const v = viewRef.current;

@@ -122,36 +122,60 @@ export const UNITS: Record<string, number> = {
   cmh: 1e9 / 3600,
 };
 
-const OPS = [
-  "->",
-  "..",
-  "==",
-  "!=",
-  "<=",
-  ">=",
-  "&&",
-  "||",
-  "+",
-  "-",
-  "*",
-  "/",
-  "^",
-  "(",
-  ")",
-  "[",
-  "]",
-  "{",
-  "}",
-  ",",
-  ":",
-  ".",
-  "=",
-  "<",
-  ">",
-  "!",
-  "?",
-  ";",
-];
+/**
+ * The operator that starts at `i`, the longer one where two fit ("->" before "-"), or undefined. The operators are
+ * -> .. == != <= >= && || and the single characters + - * / ^ ( ) [ ] { } , : . = < > ! ? ;
+ */
+function opAt(src: string, i: number): string | undefined {
+  const next = src.charCodeAt(i + 1);
+  switch (src.charCodeAt(i)) {
+    case 45:
+      return next === 62 ? "->" : "-";
+    case 46:
+      return next === 46 ? ".." : ".";
+    case 61:
+      return next === 61 ? "==" : "=";
+    case 33:
+      return next === 61 ? "!=" : "!";
+    case 60:
+      return next === 61 ? "<=" : "<";
+    case 62:
+      return next === 61 ? ">=" : ">";
+    case 38:
+      return next === 38 ? "&&" : undefined;
+    case 124:
+      return next === 124 ? "||" : undefined;
+    case 43:
+      return "+";
+    case 42:
+      return "*";
+    case 47:
+      return "/";
+    case 94:
+      return "^";
+    case 40:
+      return "(";
+    case 41:
+      return ")";
+    case 91:
+      return "[";
+    case 93:
+      return "]";
+    case 123:
+      return "{";
+    case 125:
+      return "}";
+    case 44:
+      return ",";
+    case 58:
+      return ":";
+    case 63:
+      return "?";
+    case 59:
+      return ";";
+  }
+  return undefined;
+}
 
 export class LexError extends Error {
   constructor(
@@ -170,8 +194,8 @@ export function lex(src: string): Token[] {
   let lineStart = 0;
   const n = src.length;
 
-  const push = (kind: TokenKind, value: string, start: number, extra: Partial<Token> = {}) => {
-    tokens.push({ kind, value, start, end: i, line, col: start - lineStart + 1, ...extra });
+  const push = (kind: TokenKind, value: string, start: number) => {
+    tokens.push({ kind, value, start, end: i, line, col: start - lineStart + 1 });
   };
 
   while (i < n) {
@@ -208,17 +232,17 @@ export function lex(src: string): Token[] {
     }
     const start = i;
     // number (with optional unit). A leading '.' digit is allowed ('.5')
-    if (isDigit(c) || (c === "." && isDigit(src[i + 1] ?? "") && src[i - 1] !== ".")) {
-      while (i < n && isDigit(src[i])) i++;
-      if (src[i] === "." && src[i + 1] !== "." && isDigit(src[i + 1] ?? "")) {
+    if (isDigit(src, i) || (c === "." && isDigit(src, i + 1) && src[i - 1] !== ".")) {
+      while (isDigit(src, i)) i++;
+      if (src[i] === "." && src[i + 1] !== "." && isDigit(src, i + 1)) {
         i++;
-        while (i < n && isDigit(src[i])) i++;
-      } else if (src[i] === "." && src[i + 1] !== "." && !isIdentStart(src[i + 1] ?? "")) {
+        while (isDigit(src, i)) i++;
+      } else if (src[i] === "." && src[i + 1] !== "." && !isIdentStart(src, i + 1)) {
         i++;
       }
-      if ((src[i] === "e" || src[i] === "E") && (isDigit(src[i + 1] ?? "") || ((src[i + 1] === "-" || src[i + 1] === "+") && isDigit(src[i + 2] ?? "")))) {
+      if ((src[i] === "e" || src[i] === "E") && (isDigit(src, i + 1) || ((src[i + 1] === "-" || src[i + 1] === "+") && isDigit(src, i + 2)))) {
         i += 2;
-        while (i < n && isDigit(src[i])) i++;
+        while (isDigit(src, i)) i++;
       }
       const raw = src.slice(start, i);
       let value = parseFloat(raw);
@@ -229,19 +253,19 @@ export function lex(src: string): Token[] {
         i++;
       } else {
         let j = i;
-        while (j < n && /[A-Za-z]/.test(src[j])) j++;
+        while (isLetter(src, j)) j++;
         const u = src.slice(i, j);
-        if (u && UNITS[u] !== undefined && !isIdentChar(src[j] ?? "")) {
+        if (u && UNITS[u] !== undefined && !isIdentChar(src, j)) {
           unit = u;
           i = j;
         } else if (u) {
           let k = j;
-          while (k < n && isIdentChar(src[k])) k++;
+          while (isIdentChar(src, k)) k++;
           throw new LexError(`Unknown unit "${src.slice(i, k)}" after ${raw}. Units are ${Object.keys(UNITS).join(", ")}; leave a space before a name.`, i, k);
         }
       }
       if (unit) value *= UNITS[unit];
-      push("num", src.slice(start, i), start, { num: value, unit });
+      tokens.push({ kind: "num", value: src.slice(start, i), start, end: i, line, col: start - lineStart + 1, num: value, unit });
       continue;
     }
     // """...""": text over several lines, as written (a custom app panel's drawing code), indentation trimmed
@@ -272,19 +296,19 @@ export function lex(src: string): Token[] {
     }
     if (c === "#") {
       i++;
-      while (i < n && /[0-9a-fA-F]/.test(src[i])) i++;
+      while (isHex(src, i)) i++;
       const hex = src.slice(start + 1, i);
       if (hex.length !== 3 && hex.length !== 6) throw new LexError(`Invalid color "#${hex}" (use #RGB or #RRGGBB)`, start, i);
       push("color", "#" + hex.toLowerCase(), start);
       continue;
     }
-    if (isIdentStart(c)) {
-      while (i < n && isIdentChar(src[i])) i++;
+    if (isIdentStart(src, i)) {
+      while (isIdentChar(src, i)) i++;
       const word = src.slice(start, i);
       push(KEYWORDS.has(word) ? "kw" : "ident", word, start);
       continue;
     }
-    const op = OPS.find((o) => src.startsWith(o, i));
+    const op = opAt(src, i);
     if (op) {
       i += op.length;
       push("op", op, start);
@@ -296,14 +320,25 @@ export function lex(src: string): Token[] {
   return tokens;
 }
 
-function isDigit(c: string) {
-  return c >= "0" && c <= "9";
+// What the character at `i` is, by its code: a design is read again at every edit, and a pattern tried against each
+// character was a fifth of that. Past the end of the text there is no character, and every answer is no.
+function isDigit(src: string, i: number) {
+  const c = src.charCodeAt(i);
+  return c >= 48 && c <= 57;
 }
-function isIdentStart(c: string) {
-  return /[A-Za-z_]/.test(c);
+function isLetter(src: string, i: number) {
+  const c = src.charCodeAt(i) | 32;
+  return c >= 97 && c <= 122;
 }
-function isIdentChar(c: string) {
-  return /[A-Za-z0-9_]/.test(c);
+function isIdentStart(src: string, i: number) {
+  return isLetter(src, i) || src.charCodeAt(i) === 95;
+}
+function isIdentChar(src: string, i: number) {
+  return isLetter(src, i) || isDigit(src, i) || src.charCodeAt(i) === 95;
+}
+function isHex(src: string, i: number) {
+  const c = src.charCodeAt(i) | 32;
+  return isDigit(src, i) || (c >= 97 && c <= 102);
 }
 
 /** 1-based line/column for an offset. */

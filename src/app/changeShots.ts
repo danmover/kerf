@@ -40,8 +40,9 @@ export async function shotOf(src: string, frame?: { box: Box; dir: Vec3 }, settl
     if (!vp || s.source !== src || !s.model?.parts.length) return null;
     const box = frame?.box ?? pad(vp.bounds(), 0.12);
     const dir = frame?.dir ?? vp.viewDir();
-    const img = await vp.capture({ view: "current", width: W, height: H, box, dir, mime: "image/webp", quality: 0.84, overlays: false });
-    return useDesign.getState().source === src ? { img, box, dir } : null;
+    // drawn between frames: the page is not held for it (a large assembly's 64 samples in one go stop it for seconds)
+    const img = await vp.captureBetweenFrames({ view: "current", width: W, height: H, box, dir, mime: "image/webp", quality: 0.84, wanted: () => useDesign.getState().source === src });
+    return img && useDesign.getState().source === src ? { img, box, dir } : null;
   } catch {
     return null;
   }

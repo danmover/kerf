@@ -32,6 +32,9 @@ export const WORKER_CSP = "default-src 'self'; script-src 'self' 'unsafe-eval' '
 /** The feasibility solver worker only evaluates design source: no eval, no network. */
 export const SOLVER_CSP = "default-src 'none'; script-src 'self'";
 
+/** The fit check's worker is plain arithmetic on the design's parts: no eval, no network. */
+export const FITS_CSP = "default-src 'none'; script-src 'self'";
+
 /** The stress analysis worker is plain arithmetic on meshes: no eval, no network. */
 export const FEA_CSP = "default-src 'none'; script-src 'self'";
 
@@ -87,6 +90,7 @@ function securityPolicy(): Plugin {
         const path = (req.url ?? "/").split("?")[0];
         if (/^\/assets\/worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", WORKER_CSP);
         else if (/^\/assets\/solver\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SOLVER_CSP);
+        else if (/^\/assets\/fits\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FITS_CSP);
         else if (/^\/assets\/fea\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", FEA_CSP);
         else if (/^\/assets\/(render|route)\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", CIRCUIT_CSP);
         else if (/^\/assets\/sim\.worker-[\w-]+\.js$/.test(path)) res.setHeader("Content-Security-Policy", SIM_CSP);

@@ -56,6 +56,10 @@
 /assets/bevel.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'
 
+# The fit check's worker: plain arithmetic on the design's parts, no network.
+/assets/fits.worker-*
+  Content-Security-Policy: default-src 'none'; script-src 'self'
+
 # The 3D wiring's cable router: plain geometry on meshes, no network.
 /assets/cables.worker-*
   Content-Security-Policy: default-src 'none'; script-src 'self'

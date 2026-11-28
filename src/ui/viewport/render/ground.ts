@@ -3,7 +3,9 @@
 // set and shadowed by every light; the other sets keep their backdrop and
 // catch only the shadows. A glossy floor mirrors the model: its parts are
 // drawn once more from below the floor into a texture, on the view's first
-// sample, and the floor shows them blurred by its roughness.
+// sample, and the floor shows them blurred by its roughness. They are drawn
+// there as in the view itself, under the same lights and with the shadows
+// the view has: with the same shaders, so the card builds none for it.
 
 import * as THREE from "three";
 import type { GroundLook } from "./studio";
@@ -107,7 +109,7 @@ export class FloorMirror {
     const prevColor = r.getClearColor(new THREE.Color());
     const prevAlpha = r.getClearAlpha();
     const prevBg = scene.background;
-    // the shadows are the view's own: not drawn again for the mirror's camera
+    // the shadows are the view's own: used as they are, not drawn again for the mirror's camera
     r.shadowMap.autoUpdate = false;
     r.autoClear = false;
     scene.background = null;

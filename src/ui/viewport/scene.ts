@@ -5,6 +5,7 @@
 // while the view is still, the image refines and then the GPU rests.
 
 import * as THREE from "three";
+import { during, watchGl } from "../../app/stalls";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { turns, type EvalPart, type Motion } from "../../core/model";
 import { driveAngle, motionPose } from "../../core/kinematics";
@@ -14,6 +15,8 @@ import { RopeLine } from "./ropeLine";
 import { ropeLineAt } from "../../machine/ropes";
 import type { RopeNode } from "../../machine/types";
 import type { MeshEntry } from "../../core/engine";
+import { workWaiting } from "../../core/slices";
+import { shotTurn, type ShotWaiting } from "./shotTurn";
 import { closeEnough, pickMesh, threadPitch } from "./threadLod";
 import { prepareRay } from "./fastPick";
 import type { MeshData } from "../../kernel/build";
@@ -23,15 +26,16 @@ import type { ViewPreset } from "../../app/view";
 import type { FilmLayout, FilmShot, FilmView } from "../../app/viewportApi";
 import { buildShare } from "../../film/timeline";
 import { appearanceFor, Detail, makeFor, processFinish, type Appearance } from "./render/appearance";
-import { applyAppearance, applyMake, capMaterial, FILL_ENV, FILL_ON, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, setBevelPixel, type PartUniforms } from "./render/partShader";
+import { applyAppearance, applyMake, capMaterial, cutsOf, FILL_ENV, FILL_ON, partUniforms, patchEdgeMaterial, patchPartMaterial, plyLayout, setBevelPixel, setSeeThrough, type PartUniforms } from "./render/partShader";
 import { BevelBuilder, bevelGeometry, type BevelBands } from "./render/bevel";
 import { ARRIVE_MS, DROP_LAND, arrivalKind, dropHeight, fillAt, fillAxis, screwLeft, screwTravel, traceAt, traceOrder } from "./arrival";
 import { edgeSweep, editSweep, type Sweep } from "./editSweep";
 import { RenderPipeline, SAMPLES, type Quality } from "./render/pipeline";
 import { ChangeDepth } from "./render/changeDepth";
+import { readPixelsLater } from "./render/readback";
 import { ContactShadow } from "./render/contactShadow";
 import { FloorMirror, Ground, mirrorPlane, shadowCatcher } from "./render/ground";
-import { StudioEnvironments, concentricDisc, dirFrom, halton, lightingPreset, type LightingPreset } from "./render/studio";
+import { StudioEnvironments, concentricDisc, dirFrom, fitShadowMap, halton, lightSteps, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
 import { MeasureOverlay } from "./measure";
@@ -73,6 +77,14 @@ const VISIT_BACK_MS = 800;
 const meshTolerance = (geoKey: string) => (geoKey.endsWith(":preview") ? 0.25 : 0.03);
 /** How many material-ball materials are kept */
 const SWATCH_MATS_MAX = 96;
+/** The picture is held this long (ms) for shaders being built before the page says so: most builds are quicker. */
+const SHADERS_TOLD_AFTER = 400;
+/** How long a picture drawn between frames waits for the view to come to rest, unless told otherwise, ms. */
+const SHOT_PATIENCE_MS = 500;
+/** The longest the view's picture goes without a sample while work done a piece at a time is waiting for the page's turn, ms. */
+const SAMPLE_WAIT_MS = 250;
+/** what the freeze record calls drawing a material ball */
+const SWATCH_WORK = "3D view: a material swatch";
 
 interface GeoEntry {
   mesh: THREE.BufferGeometry;
@@ -99,6 +111,8 @@ interface PartObj {
   cap: THREE.Mesh;
   edges: THREE.LineSegments;
   mat: THREE.MeshPhysicalMaterial;
+  /** the planes that cut it now (the section, the one it draws itself in by), null when none: its material always has two (see cutsOf) */
+  cuts: THREE.Plane[] | null;
   u: PartUniforms;
   cap$: ReturnType<typeof capMaterial>;
   edgeMat: THREE.LineBasicMaterial;
@@ -170,6 +184,26 @@ export interface Decorator {
 export interface PartSurface {
   key: string;
   geometry: THREE.BufferGeometry;
+}
+
+/** A picture on its way that the page is not held for: drawn a sample at a time between the view's frames (see SceneController.captureBetweenFrames). */
+interface Shot extends ShotWaiting {
+  view: ViewPreset | "current";
+  width: number;
+  height: number;
+  /** what is framed (the whole model when none) and from which side (the view's own when none) */
+  box?: THREE.Box3;
+  dir?: THREE.Vector3;
+  samples: number;
+  mime: string;
+  quality: number;
+  /** a later picture with the same key takes this one's place */
+  key?: string;
+  /** false once nobody wants the picture any more */
+  wanted?: () => boolean;
+  /** where it is drawn from; null until its first sample */
+  cam: THREE.PerspectiveCamera | null;
+  done: (url: string | null) => void;
 }
 
 interface Decor {
@@ -412,6 +446,13 @@ export class SceneController {
   private keptMaskMat = keptMask(this.keptMaskU);
   /** something in the scene changed: restart the accumulation */
   private changed = true;
+  /** since when the picture has been held for shaders the card is building; null when it is not */
+  private shadersHeld: number | null = null;
+  /** a light set chosen and not in place yet, while the card builds what its maps are baked with: says true once it has */
+  private lightingDue: (() => boolean) | null = null;
+  /** a light set is in place: the first waits for the card like any other, and nothing is drawn before it */
+  private lit = false;
+  private shadersTold = false;
   private maskDirty = true;
   private needComposite = true;
   private raf = 0;
@@ -447,6 +488,18 @@ export class SceneController {
   private raycaster = new THREE.Raycaster();
   private selAmt = 0;
   private swatchPipe: RenderPipeline | null = null;
+  /** pictures being drawn a sample at a time between the view's frames, the first in the list first (see captureBetweenFrames) */
+  private shots: Shot[] = [];
+  private shotPipe: RenderPipeline | null = null;
+  /** when the view's picture last got a sample, and a picture drawn between frames last got one */
+  private sampledAt = 0;
+  private shotAt = 0;
+  /** rounded edges arrived since the last frame (bevelReady) */
+  private edgesCame = false;
+  /** the camera the bevels' width and the floor's mirror were last set for (see beforeSample) */
+  private viewOf: THREE.Camera | null = null;
+  /** the floor's mirror image was drawn with shadows of the model as it was before: drawn again at the next sample */
+  private mirrorOld = false;
   /** selection fill, faded out while materials are being chosen so parts show their true colour */
   private selFill = 1;
   private materialMode = false;
@@ -457,8 +510,11 @@ export class SceneController {
   private turntable = false;
   private lightDrag: { x: number; angle: number } | null = null;
   private swatchCache = new Map<string, string>();
+  /** balls being drawn, by what they will be kept as, and the line they wait in */
+  private swatchJobs = new Map<string, Promise<string>>();
+  private swatchLine: Promise<unknown> = Promise.resolve();
   /** the material ball's scene, built once */
-  private swatchStage: { scene: THREE.Scene; ball: THREE.Mesh; key: THREE.DirectionalLight; backdrop: THREE.Group; cam: THREE.PerspectiveCamera } | null = null;
+  private swatchStage: { scene: THREE.Scene; ball: THREE.Mesh; key: THREE.DirectionalLight; others: THREE.DirectionalLight[]; backdrop: THREE.Group; cam: THREE.PerspectiveCamera } | null = null;
   /** one ball material per look, kept so each look's shader compiles once */
   private swatchMats = new Map<string, THREE.MeshPhysicalMaterial>();
   /** materials of removed parts, kept unused so their compiled shaders stay ready */
@@ -486,6 +542,8 @@ export class SceneController {
   /** a finger or pen held still on the view, in client pixels, and null when it lifts, moves or completes */
   onHold: (at: { x: number; y: number } | null) => void = () => undefined;
   onFirstFrame: () => void = () => undefined;
+  /** the graphics card is building shaders the view needs, and the picture waits for them (true), or it has finished */
+  onShaders: (building: boolean) => void = () => undefined;
   /** the graphics card reset and took the drawing context (true), or gave it back (false) */
   onContextChange: (lost: boolean) => void = () => undefined;
   /** frames keep failing to draw: the view is broken and needs replacing */
@@ -506,6 +564,9 @@ export class SceneController {
   private autoFit = true;
 
   constructor(private container: HTMLElement) {
+    // (named for the list of shader builds, which says what each was asked for)
+    this.scene.name = "the view";
+    this.overlay.name = "the overlays";
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -518,6 +579,8 @@ export class SceneController {
     container.appendChild(this.renderer.domElement);
     this.renderer.domElement.classList.add("vp-canvas");
     this.softwareGL = softwareRenderer(this.renderer.getContext());
+    // calls that wait for the graphics card (a shader compile, an image read back) are named in the freeze record
+    watchGl(this.renderer.getContext());
     // a GPU that resets mid-trace must not be sent straight back into it
     this.renderer.domElement.addEventListener("webglcontextlost", () => {
       // dispose() gives the context back on purpose
@@ -703,7 +766,7 @@ export class SceneController {
       if (this.disposed) return;
       this.raf = requestAnimationFrame(loop);
       try {
-        this.frame();
+        during("3D view: drawing a frame", () => this.frame());
         this.failedFrames = 0;
       } catch (e) {
         this.frameFailed(e);
@@ -765,8 +828,11 @@ export class SceneController {
     this.pipe.dispose();
     this.contact.dispose();
     this.swatchPipe?.dispose();
+    for (const t of [...this.shots]) t.done(null);
+    this.shotPipe?.dispose();
     for (const m of [...this.retired, ...this.swatchMats.values()]) m.dispose();
     this.swatchStage?.ball.geometry.dispose();
+    for (const l of this.swatchStage ? [this.swatchStage.key, ...this.swatchStage.others] : []) l.dispose();
     this.swatchStage?.backdrop.traverse((o) => {
       if (o instanceof THREE.Mesh) {
         o.geometry.dispose();
@@ -812,13 +878,30 @@ export class SceneController {
 
   /** The graphics card reset and three.js has a new context: the environment maps were drawn into the old one. */
   private contextRestored() {
+    this.pipe.forgetShaders();
     this.envs.forget();
-    this.applyLighting();
+    this.applyLighting(false);
     this.maskDirty = true;
+    // what was drawn of a picture between frames went with the context: each starts again
+    for (const t of this.shots) t.cam = null;
   }
 
-  private applyLighting() {
-    const p = (this.preset = lightingPreset(this.render$.lighting, this.render$.theme));
+  /**
+   * Puts the chosen light set in place. `wait`: a set whose maps are not baked yet is put in place a few frames on,
+   * once the card has built the shaders they are baked with, instead of the page being held for those builds here
+   * (frame() comes back when it has). Until then the set before stays, or at the start nothing is drawn.
+   */
+  private applyLighting(wait = true) {
+    const p = lightingPreset(this.render$.lighting, this.render$.theme);
+    if (wait && !this.envs.has(p)) {
+      const before = this.lightingDue;
+      // (nothing new for the card to build, and builds from a moment ago still going: those are waited for)
+      this.lightingDue = this.pipe.rehearse(() => this.envs.rehearse(p)) ?? (before && !before() ? before : null);
+      if (this.lightingDue) return;
+    }
+    this.lightingDue = null;
+    this.lit = true;
+    this.preset = p;
     this.scene.environment = this.envs.get(p);
     this.scene.environmentIntensity = p.envIntensity;
     const rot = THREE.MathUtils.degToRad(this.render$.lightAngle);
@@ -836,6 +919,7 @@ export class SceneController {
       l.dispose();
     }
     while (this.casters.length < casters.length) this.casters.push(this.shadowLight(1024));
+    this.fitShadows();
     this.casterDirs = casters.map((c) => dirFrom(c.az + this.render$.lightAngle, c.el));
     casters.forEach((c, k) => {
       this.casters[k].color.set(c.color);
@@ -875,16 +959,31 @@ export class SceneController {
   private beforeSample(i: number, fresh = false, cam: THREE.PerspectiveCamera = this.camera, heightPx = this.pipe.height) {
     // a capture or film frame poses the model its own way: every shadow is drawn again for it
     if (i === 0 && fresh) this.shadowStamp++;
-    if (i === 0) setBevelPixel(cam, heightPx);
+    // The bevels' width and the floor's mirror are of one camera: set at a picture's first sample, and again when a
+    // sample of another camera's picture was drawn since (a small picture drawn between the view's frames).
+    const anew = i === 0 || this.viewOf !== cam;
+    this.viewOf = cam;
+    if (anew) setBevelPixel(cam, heightPx);
     this.placeKey(i);
     this.prepareShadows();
     if (i === 0 && (fresh || this.contact.dirty)) this.contact.render(this.scene, L_OPAQUE, this.sectionAnim.on ? [this.sectionPlane] : []);
-    if (i === 0) this.drawMirror(cam, heightPx);
+    // The mirror image is lit as the parts are, shadows and all, and is drawn before the sample that draws the
+    // shadows. After the model changed those are still of the model before: the image is then drawn once more at
+    // the next sample, with the shadows this one leaves.
+    if (anew || this.mirrorOld) {
+      this.mirrorOld = [this.key, ...this.casters].some((l) => l.visible && (!l.shadow.map || l.userData.shadowStamp !== this.shadowStamp));
+      this.drawMirror(cam, heightPx);
+    }
   }
 
   /** A light that casts shadows, its map `size` square, redrawn only when told (prepareShadows). */
   private shadowLight(size: number): THREE.DirectionalLight {
     const l = new THREE.DirectionalLight(0xffffff, 1);
+    // Seen by every camera, also the ones that draw only some of the scene (the floor's mirror image, the contact
+    // shadow, the selection's mask). A camera that does not see the lights has the renderer take another shader
+    // for every lit material, the parts' large one among them, and work out again which shader each material gets
+    // every time the lights it draws under change, which is twice a frame for every part.
+    l.layers.enableAll();
     l.castShadow = true;
     l.shadow.mapSize.set(size, size);
     l.shadow.bias = -0.0002;
@@ -930,23 +1029,21 @@ export class SceneController {
 
   /**
    * Position the shadow-casting lights for sample i: each at its centre for i = 0, then spread over its area. With
-   * casters, the key moves on even samples and the casters take turns on odd ones (the others stay put, their shadow
-   * maps still good), so each sample redraws one shadow map as before.
+   * casters, the key moves on even samples and the casters take turns on odd ones (lightSteps), so each sample
+   * redraws one shadow map: a light put where it already stands keeps its map (prepareShadows). Every light is
+   * placed, not only the one whose turn it is: a picture drawn between the view's frames has its own samples, and
+   * each of the two would otherwise be lit in part by where the other's last sample left the lights.
    */
   private placeKey(i: number) {
-    const n = this.casters.length;
-    // each light walks its own disc samples 1, 2, 3...: well spread however many lights share the samples
-    this.placeLight(this.key, this.keyDir, this.preset.key.size, i === 0 ? 0 : n === 0 ? i : i % 2 === 0 ? i / 2 : -1);
-    const odd = i > 0 && i % 2 === 1;
-    const turn = odd ? ((i - 1) / 2) % n : -1;
-    const step = odd ? Math.floor((i - 1) / 2 / n) + 1 : 0;
+    const at = lightSteps(i, this.casters.length);
+    this.placeLight(this.key, this.keyDir, this.preset.key.size, at[0]);
     const sizes = this.preset.casters ?? [];
-    this.casters.forEach((l, k) => this.placeLight(l, this.casterDirs[k], sizes[k]?.size ?? 10, i === 0 ? 0 : turn === k ? step : -1));
+    this.casters.forEach((l, k) => this.placeLight(l, this.casterDirs[k], sizes[k]?.size ?? 10, at[k + 1]));
   }
 
-  /** Put a light at sample `i` of its disc of angular radius `sizeDeg` (0: its centre; -1: leave it where it is). */
+  /** Put a light at sample `i` of its disc of angular radius `sizeDeg` (0: its centre). */
   private placeLight(l: THREE.DirectionalLight, dir: THREE.Vector3 | undefined, sizeDeg: number, i: number) {
-    if (i < 0 || !dir) return;
+    if (!dir) return;
     const size = Math.max(this.bounds.getSize(new THREE.Vector3()).length(), 20);
     const c = this.bounds.getCenter(new THREE.Vector3());
     const d = dir.clone();
@@ -1327,7 +1424,7 @@ export class SceneController {
     if (!g || this.disposed) return;
     g.bevel = bands ? bevelGeometry(bands) : null;
     for (const obj of this.parts.values()) if (obj.geoKey === key) this.attachBevel(obj);
-    this.changed = true;
+    this.edgesCame = true;
   }
 
   /** Give a part its mesh's rounded edges (hidden until they are found, and while the part is see-through). */
@@ -1374,6 +1471,9 @@ export class SceneController {
     const u = partUniforms();
     patchPartMaterial(mat, u);
     applyAppearance(mat, u, look);
+    // one shader whether it is solid or see-through, cut or not (see partShader.ts)
+    setSeeThrough(mat, false);
+    mat.clippingPlanes = cutsOf(null, null);
     return { mat, u };
   }
 
@@ -1408,6 +1508,7 @@ export class SceneController {
       cap,
       edges,
       mat,
+      cuts: null,
       u,
       cap$,
       edgeMat,
@@ -1965,11 +2066,9 @@ export class SceneController {
   private applyOpacity(obj: PartObj) {
     const o = obj.opacity;
     const transparent = o < 0.999;
-    if (obj.mat.transparent !== transparent) {
-      obj.mat.transparent = transparent;
-      obj.mat.needsUpdate = true;
-    }
+    // (its shader is the same either way: nothing for the card to build)
     obj.mat.opacity = o;
+    setSeeThrough(obj.mat, transparent);
     obj.mat.depthWrite = !transparent;
     obj.mesh.castShadow = !transparent && !obj.removing && !obj.arrive;
     // a see-through part's bands would show as lines over its faces
@@ -1977,11 +2076,8 @@ export class SceneController {
     if (obj.decor) {
       for (const mat of obj.decor.mats) {
         const t = transparent || !!mat.userData.decal;
-        if (mat.transparent !== t) {
-          mat.transparent = t;
-          mat.needsUpdate = true;
-        }
         mat.opacity = o;
+        setSeeThrough(mat, t);
         mat.depthWrite = !t;
       }
       for (const m of obj.decor.meshes) m.castShadow = !transparent && !obj.removing && m.userData.shadow !== false;
@@ -1993,25 +2089,28 @@ export class SceneController {
     const planes: THREE.Plane[] = [];
     if (this.sectionAnim.on) planes.push(this.sectionPlane);
     if (obj.reveal) planes.push(obj.reveal.plane);
+    obj.cuts = planes.length ? planes : null;
     // the shadow of a part filling in fills in with it
     const clipShadows = !!obj.reveal;
-    const changed = (obj.mat.clippingPlanes?.length ?? 0) !== planes.length || obj.mat.clipShadows !== clipShadows;
-    obj.mat.clippingPlanes = planes.length ? planes : null;
+    // The part itself always has two planes, one standing for nothing where it is not cut: its shader is then the
+    // same cut or whole, and the card has nothing to build at the first section (see partShader.ts).
+    const two = cutsOf(this.sectionAnim.on ? this.sectionPlane : null, obj.reveal?.plane ?? null, obj.mat.clippingPlanes);
+    const changed = obj.mat.clippingPlanes !== two || obj.mat.clipShadows !== clipShadows;
+    const capChanged = (obj.cap$.mat.clippingPlanes?.length ?? 0) !== planes.length;
+    obj.mat.clippingPlanes = two;
     obj.mat.clipShadows = clipShadows;
     // the outline shows above the fill: only the section cuts it
     const edgePlanes = this.sectionAnim.on ? [this.sectionPlane] : null;
     const edgesChanged = (obj.edgeMat.clippingPlanes?.length ?? 0) !== (edgePlanes?.length ?? 0);
     obj.edgeMat.clippingPlanes = edgePlanes;
-    if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = planes.length ? planes : null;
+    if (obj.decor) for (const mat of obj.decor.mats) mat.clippingPlanes = cutsOf(two[0], two[1], mat.clippingPlanes);
     obj.cap$.mat.clippingPlanes = planes.length ? planes : null;
     obj.cap.visible = (this.sectionAnim.on || !!obj.reveal) && obj.opacity >= 0.999;
     obj.cap$.uGlowAmt.value = obj.reveal ? 1 : 0;
     obj.cap$.mat.color.set(obj.look.color).multiplyScalar(0.85);
-    if (changed) {
-      obj.mat.needsUpdate = true;
-      obj.cap$.mat.needsUpdate = true;
-    }
-    if (changed || edgesChanged) obj.edgeMat.needsUpdate = true;
+    if (changed) obj.mat.needsUpdate = true;
+    if (capChanged) obj.cap$.mat.needsUpdate = true;
+    if (edgesChanged) obj.edgeMat.needsUpdate = true;
   }
 
   setDisplay(d: DisplayState) {
@@ -2161,6 +2260,9 @@ export class SceneController {
     });
     obj.group.add(d.object);
     obj.decor = { d, key, meshes, mats: [...mats] };
+    // drawn as the part is from the first: see-through or solid, and cut as it is (one shader for each, see partShader.ts)
+    this.applyOpacity(obj);
+    this.updateClipping(obj);
     for (const id of d.hides ?? []) this.decorHidden.add(id);
     this.decorHiddenDirty ||= !!d.hides?.length;
   }
@@ -2381,7 +2483,7 @@ export class SceneController {
   /** A part's clipping planes and opacity, so overlays cut and ghost with it. */
   partLook(id: string): { planes: THREE.Plane[] | null; opacity: number } | undefined {
     const obj = this.parts.get(id);
-    return obj ? { planes: obj.mat.clippingPlanes, opacity: obj.mat.opacity } : undefined;
+    return obj ? { planes: obj.cuts, opacity: obj.mat.opacity } : undefined;
   }
 
   /** Redraw on the next frame (after an overlay changes). */
@@ -2443,6 +2545,16 @@ export class SceneController {
     this.placeSection();
   }
 
+  /**
+   * Sizes every shadow-casting light's map to the model. Also when a light set is put in place: a light it brings is
+   * new, and one made after the model was laid out (a set changed, or one that waited for the graphics card) would
+   * keep the 10 units its map starts with, so that its shadows fell only on the middle of the model.
+   */
+  private fitShadows() {
+    const size = this.bounds.getSize(new THREE.Vector3());
+    for (const l of [this.key, ...this.casters]) fitShadowMap(l.shadow, size);
+  }
+
   private layoutStage() {
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
@@ -2464,28 +2576,7 @@ export class SceneController {
     this.gridMat.uniforms.uCell.value = Math.max(cell, 1);
     this.gridMat.uniforms.uFade.value = r * 3.5;
     this.gridMat.uniforms.uCenter.value.set(center.x, center.y, zFloor);
-    const diag = size.length();
-    const sc = this.key.shadow.camera as THREE.OrthographicCamera;
-    const ext = Math.max(diag, 20) * 0.85;
-    sc.left = -ext;
-    sc.right = ext;
-    sc.top = ext;
-    sc.bottom = -ext;
-    sc.near = Math.max(diag, 20) * 0.2;
-    sc.far = Math.max(diag, 20) * 4;
-    sc.updateProjectionMatrix();
-    this.key.shadow.normalBias = Math.max(0.02, r * 0.0025);
-    for (const l of this.casters) {
-      const cc = l.shadow.camera as THREE.OrthographicCamera;
-      cc.left = sc.left;
-      cc.right = sc.right;
-      cc.top = sc.top;
-      cc.bottom = sc.bottom;
-      cc.near = sc.near;
-      cc.far = sc.far;
-      cc.updateProjectionMatrix();
-      l.shadow.normalBias = this.key.shadow.normalBias;
-    }
+    this.fitShadows();
     this.placeKey(0);
     this.pipe.look.aoRadius = THREE.MathUtils.clamp(r * 0.06, 0.8, 60);
     // contact shadow: surfaces up to a third of the model's size above the floor darken it, the closest the most
@@ -3046,6 +3137,13 @@ export class SceneController {
       this.contact.dirty = true;
       this.shadowStamp++;
     }
+    // Rounded edges found since the last frame: the view's picture starts again with them. They cast no shadow, so
+    // the shadows stay as drawn, and so does a picture being drawn between frames (the edges of a large assembly
+    // arrive a mesh at a time for seconds, and it would start again at each).
+    if (this.edgesCame) {
+      this.edgesCame = false;
+      this.changed = true;
+    }
     if (import.meta.env.DEV && (moving || this.changed)) this.debugReason = `${moving ? "moving " : ""}${controlsMoved ? "controls " : ""}${this.changed ? "changed" : ""}`;
     if (moving) this.changed = true;
     this.camera.updateMatrixWorld();
@@ -3071,6 +3169,47 @@ export class SceneController {
       this.lodDue = 0;
       this.updateCloseUps();
     }
+    // a light set that waited for the card goes in place once the card is done; before the first there is nothing to show
+    if (this.lightingDue?.()) this.applyLighting(false);
+    if (!this.lit) {
+      this.shadersHeld ??= now;
+      if (!this.shadersTold && now - this.shadersHeld > SHADERS_TOLD_AFTER) this.onShaders((this.shadersTold = true));
+      return;
+    }
+    // What is new in the scene is built by the graphics card before it is drawn, and the picture stays as it is
+    // until the card has finished: a draw with a shader it is still building stops the whole page until it is built,
+    // which is seconds for the parts' shader with Direct3D (see ShaderGate).
+    if ((this.changed || this.needComposite || this.shadersHeld !== null) && !this.shadersBuilt(now)) return;
+    // and a draw the card turns out not to be ready for is left out of the frame: such a frame is not shown
+    let whole = this.drawWatched(now, frameMs, dt);
+    // When the card had the shader for what was left out all along (a new part, drawn with shaders other parts are
+    // drawn with), there is nothing to wait for: the frame is drawn again here, whole, instead of the picture
+    // missing a turn. While a design is built, a part arrives at most frames.
+    if (!whole && this.pipe.ready(this.scene, this.camera, this.overlay)) {
+      this.changed = true;
+      this.contact.dirty = true;
+      this.shadowStamp++;
+      whole = this.drawWatched(now, frameMs, 0);
+    }
+    if (!whole) this.shadersHeld ??= now;
+    // the view has had its turn: a picture waiting to be drawn between frames gets a sample
+    if (this.shots.length) this.stepShots(now);
+  }
+
+  /** Draws a frame of the live view with every draw the card is not ready for left out. False when any was: the frame was not shown. */
+  private drawWatched(now: number, frameMs: number, dt: number): boolean {
+    let partial = true;
+    this.pipe.frameBegins();
+    try {
+      this.draw(now, frameMs, dt);
+    } finally {
+      partial = this.pipe.frameDrawn();
+    }
+    return !partial;
+  }
+
+  /** Draw what is due of the live view: the next sample of the image, the selection's mask, the picture on screen. */
+  private draw(now: number, frameMs: number, dt: number) {
     let restarted = false;
     if (this.changed) {
       this.changed = false;
@@ -3114,7 +3253,13 @@ export class SceneController {
     // under the photoreal view the interactive image is only a preview
     const rasterMax = photo ? Math.min(this.pipe.maxSamples, PHOTO_PREVIEW) : this.pipe.maxSamples;
     let rastered = false;
-    if (this.pipe.samples < rasterMax) {
+    // Every sample makes the picture finer. With a picture on screen, the next one waits a moment while work done a
+    // piece at a time is waiting for the page's turn (the checks after an edit): each sample drawn then holds that
+    // work up for as long as a frame takes, which on a large design is most of the time. Never for long: the
+    // picture gets a sample a few times a second whatever is waiting.
+    const later = this.pipe.samples >= 1 && workWaiting() && now - this.sampledAt < SAMPLE_WAIT_MS;
+    if (this.pipe.samples < rasterMax && !later) {
+      this.sampledAt = now;
       this.pipe.lens = this.lens;
       this.pipe.renderSample(this.scene, this.camera, (i) => {
         this.beforeSample(i);
@@ -3156,11 +3301,40 @@ export class SceneController {
     this.reportPhoto(photo, held, now);
     this.traceOnly = traced && !rastered && !this.needComposite;
     if (!this.needComposite) return;
+    // a frame with a draw left out (its shader is not built yet) is not a picture to show: it is drawn again, whole.
+    // What showing it draws with is gone through undrawn, so the card builds that too meanwhile.
+    if (this.pipe.framePartial) {
+      this.pipe.frameUnshown(() => this.present(now));
+      return;
+    }
     this.needComposite = false;
     if (photo && this.photoMix > 0) this.pipe.photo(photo.texture, { mix: this.photoMix, samples: photo.samples, near: this.camera.near, far: this.camera.far });
     else this.pipe.photo(null);
     this.present(now);
     for (const fn of this.renderListeners) fn();
+  }
+
+  /**
+   * Whether the next frame is drawn. While the card is building shaders the frame needs, it is not (but for one
+   * frame that goes through to meet what else needs building, and is not shown): the picture stays as it is, and
+   * after a moment the page is told, so it can say what the view is waiting for.
+   */
+  private shadersBuilt(now: number): boolean {
+    if (this.pipe.ready(this.scene, this.camera, this.overlay)) {
+      if (this.shadersHeld !== null) {
+        this.shadersHeld = null;
+        // what moved while the picture was held is drawn now, and what a frame with draws left out got wrong
+        // (shadows without all that casts them) is drawn again
+        this.changed = true;
+        this.contact.dirty = true;
+        this.shadowStamp++;
+        if (this.shadersTold) this.onShaders((this.shadersTold = false));
+      }
+      return true;
+    }
+    this.shadersHeld ??= now;
+    if (!this.shadersTold && now - this.shadersHeld > SHADERS_TOLD_AFTER) this.onShaders((this.shadersTold = true));
+    return this.pipe.scoutFrame();
   }
 
   // ---------- photoreal ----------
@@ -3426,6 +3600,7 @@ export class SceneController {
 
   /** Render a finished, converged image of the model at any size, without touching the on-screen view. */
   async capture(opts: { view: ViewPreset | "current"; width: number; height: number; focus?: string[]; frame?: "model" | "focus"; section?: "x" | "y" | "z"; mime?: string; quality?: number; samples?: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; overlays?: boolean; explode?: number; only?: string[] }): Promise<string> {
+    await this.whenLit();
     // parts still arriving or showing a change get a moment to finish, so the capture doesn't cut them short
     for (let t = 0; t < 1200 && this.effectsRunning() && !this.disposed; t += 50) await new Promise((r) => setTimeout(r, 50));
     const prev = { pos: this.camera.position.clone(), target: this.controls.target.clone(), aspect: this.camera.aspect, display: this.display, section: this.section, sectionAnim: { ...this.sectionAnim }, replaced: this.replaced };
@@ -3454,6 +3629,9 @@ export class SceneController {
     this.finishEffects();
     // an exploded capture: every part where the plan puts it at that amount, framed to fit
     const unexploded = opts.explode !== undefined ? this.poseExploded(opts.explode) : null;
+    const px = new Uint8Array(opts.width * opts.height * 4);
+    // the image is read back after the view is put back as it was: the page is not held while the card draws it
+    let read: Promise<void>;
     try {
       this.camera.aspect = opts.width / opts.height;
       let box: THREE.Box3 | undefined = opts.box ? new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])) : undefined;
@@ -3514,9 +3692,7 @@ export class SceneController {
       this.renderer.setRenderTarget(out);
       if (showOverlays) this.overlayDepth();
       this.renderer.render(this.overlay, this.camera);
-      const px = new Uint8Array(opts.width * opts.height * 4);
-      this.renderer.readRenderTargetPixels(out, 0, 0, opts.width, opts.height, px);
-      return toDataUrl(px, opts.width, opts.height, opts.mime ?? "image/png", opts.quality ?? 0.9);
+      read = readPixelsLater(this.renderer, opts.width, opts.height, px);
     } finally {
       pipe.dispose();
       out.dispose();
@@ -3543,6 +3719,174 @@ export class SceneController {
       }
       this.controls.update();
       this.changed = true;
+    }
+    await read;
+    return toDataUrl(px, opts.width, opts.height, opts.mime ?? "image/png", opts.quality ?? 0.9);
+  }
+
+  /**
+   * A picture of the plain model that the page is not held for: what capture() draws for the same view, size, box
+   * and direction with { overlays: false }. capture() draws all its samples in one go, which for a large assembly
+   * is half a second or more in which nothing else moves, and the view starts its own picture again after. This
+   * draws one sample a frame, after the view's own, from a camera of its own; the view and its camera are left as
+   * they are. The view goes first: for `patience` ms the picture waits until the view has finished its own and
+   * nothing in it moves, and after that it is drawn alongside (a view being turned stays live, at a lower frame
+   * rate for as long as the picture takes). When anything but the camera changes on the way, it starts again from
+   * the scene as it then is (rounded edges arriving do not count: they cast no shadow and it carries on), and when
+   * that has gone on for two seconds (a mechanism playing) it is drawn at once of the scene as it is. Several are
+   * drawn in the order they were asked for, one that has begun before the next, and one with the `key` of another
+   * still waiting takes its place. Null when its place was taken, it is no longer `wanted`, or the view went.
+   * Where it cannot be drawn this way (the photoreal look is on, or results are drawn in place of parts), it is
+   * drawn at once as capture() does.
+   */
+  async captureBetweenFrames(opts: { view: ViewPreset | "current"; width: number; height: number; box?: [[number, number, number], [number, number, number]]; dir?: [number, number, number]; mime?: string; quality?: number; samples?: number; key?: string; wanted?: () => boolean; patience?: number }): Promise<string | null> {
+    await this.whenLit();
+    if (this.disposed || this.contextLost) return null;
+    if (opts.wanted && !opts.wanted()) return null;
+    if (opts.key !== undefined) for (const t of this.shots.filter((t) => t.key === opts.key)) t.done(null);
+    return new Promise((resolve) => {
+      const t: Shot = {
+        view: opts.view,
+        width: opts.width,
+        height: opts.height,
+        box: opts.box && new THREE.Box3(new THREE.Vector3(...opts.box[0]), new THREE.Vector3(...opts.box[1])),
+        dir: opts.dir && new THREE.Vector3(...opts.dir),
+        samples: opts.samples ?? Math.max(16, Math.min(96, this.pipe.maxSamples)),
+        mime: opts.mime ?? "image/png",
+        quality: opts.quality ?? 0.9,
+        key: opts.key,
+        wanted: opts.wanted,
+        patience: opts.patience ?? SHOT_PATIENCE_MS,
+        asked: performance.now(),
+        begun: 0,
+        cam: null,
+        stamp: -1,
+        done: (url) => {
+          const i = this.shots.indexOf(t);
+          if (i >= 0) this.shots.splice(i, 1);
+          resolve(url);
+        },
+      };
+      this.shots.push(t);
+      // a film has the renderer and no frames are drawn; the picture is drawn at once, as before
+      if (this.filming) this.shotAtOnce(t);
+    });
+  }
+
+  /** Whether anything drawn over the parts stands in for some of them: a picture of the plain model then needs them put back, which capture() does. */
+  private overlaysReplace(): boolean {
+    for (const o of this.overlays) if (o.replaces.size) return true;
+    return false;
+  }
+
+  /** A picture that cannot be drawn between frames, drawn in one go as capture() does. */
+  private shotAtOnce(t: Shot) {
+    const i = this.shots.indexOf(t);
+    if (i >= 0) this.shots.splice(i, 1);
+    const box = t.box && ([t.box.min.toArray(), t.box.max.toArray()] as [[number, number, number], [number, number, number]]);
+    this.capture({ view: t.view, width: t.width, height: t.height, box, dir: t.dir?.toArray(), mime: t.mime, quality: t.quality, samples: t.samples, overlays: false }).then(t.done, () => t.done(null));
+  }
+
+  /** One sample of a picture being drawn between frames: of the first in line whose turn it is. After its last, the picture is read back. */
+  private stepShots(now: number) {
+    for (const t of [...this.shots]) if (t.wanted && !t.wanted()) t.done(null);
+    if (!this.shots.length) return;
+    // none can be drawn this way now: each is drawn in one go, as it used to be
+    if (this.photoLookOn || this.overlaysReplace()) {
+      for (const t of [...this.shots]) this.shotAtOnce(t);
+      return;
+    }
+    // nothing is drawn while the card builds what the view needs
+    if (this.shadersHeld !== null) return;
+    // The view first: its own picture finished, nothing moving or arriving. Each picture gives it so long
+    // (shotTurn).
+    const moving = this.effectsRunning();
+    const busy = moving || this.changed || this.pipe.samples < this.pipe.maxSamples;
+    const turn = shotTurn(this.shots, busy, now, this.shadowStamp);
+    if (!turn) return;
+    const t = turn.shot;
+    if (moving) {
+      // as capture() does: what is still arriving or changing ends, and the picture starts from the scene after
+      this.finishEffects();
+      this.changed = true;
+      return;
+    }
+    // and work waiting for the page's turn goes first too, as it does before the view's own samples
+    if (workWaiting() && now - this.shotAt < SAMPLE_WAIT_MS) return;
+    this.shotAt = now;
+    const r = this.renderer;
+    const pipe = (this.shotPipe ??= new RenderPipeline(r));
+    // the scene keeps changing under it (a mechanism playing): in one go of the scene as it is now, as it used to be
+    if (turn.atOnce) {
+      this.shotAtOnce(t);
+      return;
+    }
+    t.begun ||= now;
+    if (!t.cam || t.stamp !== this.shadowStamp) {
+      // the first sample, or the scene changed since the last one: from the start, framed on the model as it is now
+      t.stamp = this.shadowStamp;
+      t.cam = this.cameraFor(t.view, t.width / t.height, t.box, t.dir);
+      pipe.setSize(t.width, t.height, 1);
+      Object.assign(pipe.look, this.pipe.look);
+      pipe.reset();
+      // (they share the one set of buffers: another that had begun begins again when its turn comes)
+      for (const o of this.shots) if (o !== t) o.cam = null;
+    }
+    const cam = t.cam;
+    try {
+      pipe.renderSample(this.scene, cam, (k) => this.beforeSample(k, false, cam, pipe.height));
+      if (pipe.samples < t.samples) return;
+      const px = new Uint8Array(t.width * t.height * 4);
+      const out = new THREE.WebGLRenderTarget(t.width, t.height, { type: THREE.UnsignedByteType, depthBuffer: false });
+      out.texture.colorSpace = THREE.SRGBColorSpace;
+      try {
+        pipe.composite(out, { time: 0 });
+        r.setRenderTarget(out);
+        // the view's own marks, without what is drawn over the parts (cables, results)
+        const over = [...this.overlays].filter((o) => o.object.visible);
+        for (const o of over) o.object.visible = false;
+        try {
+          r.render(this.overlay, cam);
+        } finally {
+          for (const o of over) o.object.visible = true;
+        }
+        // read back in the card's own time; the next in line is drawn meanwhile
+        this.shots.splice(this.shots.indexOf(t), 1);
+        readPixelsLater(r, t.width, t.height, px).then(
+          () => t.done(toDataUrl(px, t.width, t.height, t.mime, t.quality)),
+          () => t.done(null),
+        );
+      } finally {
+        out.dispose();
+      }
+      // the bevels' width, the floor's mirror and the lights are the view's own again
+      r.setRenderTarget(null);
+      this.beforeSample(0);
+    } catch {
+      t.done(null);
+    } finally {
+      r.setRenderTarget(null);
+    }
+  }
+
+  /** A camera of its own that frames `box` (the whole model when none) as capture() frames it for that view. The view's camera is left as it was. */
+  private cameraFor(view: ViewPreset | "current", aspect: number, box?: THREE.Box3, dir?: THREE.Vector3): THREE.PerspectiveCamera {
+    const live = this.camera;
+    const was = { pos: live.position.clone(), quat: live.quaternion.clone(), aspect: live.aspect };
+    try {
+      live.aspect = aspect;
+      const { pos, target } = this.framing(view, aspect, box, dir);
+      live.position.copy(this.tighten(pos, target, box ?? this.bounds));
+      live.lookAt(target);
+      live.updateProjectionMatrix();
+      live.updateMatrixWorld();
+      return live.clone(false);
+    } finally {
+      live.position.copy(was.pos);
+      live.quaternion.copy(was.quat);
+      live.aspect = was.aspect;
+      live.updateProjectionMatrix();
+      live.updateMatrixWorld();
     }
   }
 
@@ -3617,6 +3961,8 @@ export class SceneController {
   beginFilm(opts: { width: number; height: number; look?: string; fine?: boolean }): FilmView {
     if (this.filming) throw new Error("A film is already being made");
     this.filming = true;
+    // a light set still waiting for the card goes in place now
+    if (this.lightingDue) this.applyLighting(false);
     // films show the real threads
     this.repickMeshes();
     const saved = {
@@ -3642,7 +3988,7 @@ export class SceneController {
     const look = opts.look ?? this.render$.lighting;
     if (look !== this.render$.lighting || this.render$.theme === "light") {
       this.render$ = { ...this.render$, lighting: look, theme: "dark" };
-      this.applyLighting();
+      this.applyLighting(false);
     }
     this.photoLookOn = true;
     this.display = { ...this.display, selected: new Set(), hovered: null, focus: new Set(), isolate: false, xray: false };
@@ -3917,7 +4263,7 @@ export class SceneController {
         }
         if (this.render$.lighting !== saved.render.lighting || this.render$.theme !== saved.render.theme) {
           this.render$ = { ...this.render$, lighting: saved.render.lighting, theme: saved.render.theme };
-          this.applyLighting();
+          this.applyLighting(false);
         }
         this.photoLookOn = saved.photoLookOn;
         this.filming = false;
@@ -3945,10 +4291,11 @@ export class SceneController {
   private stageSwatch() {
     if (this.swatchStage) return this.swatchStage;
     const scene = new THREE.Scene();
+    scene.name = "the material ball";
     const ball = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48));
     // turn the ball so printed layers and brushing run across the view
     ball.rotation.set(0.35, 0, 0.6);
-    const key = new THREE.DirectionalLight();
+    const key = stageLight(1);
     // something behind a clear material to see through it
     const backdrop = new THREE.Group();
     const back = new THREE.Mesh(new THREE.PlaneGeometry(60, 60), new THREE.MeshBasicMaterial({ color: 0x8a93a6 }));
@@ -3964,7 +4311,7 @@ export class SceneController {
     cam.position.set(0, -52, 14);
     cam.lookAt(0, 0, 0);
     cam.updateMatrixWorld();
-    return (this.swatchStage = { scene, ball, key, backdrop, cam });
+    return (this.swatchStage = { scene, ball, key, others: [], backdrop, cam });
   }
 
   /** The ball's material for a look. Kept, newest last, so a look seen before doesn't compile its shader again. */
@@ -3985,56 +4332,139 @@ export class SceneController {
     return mat;
   }
 
-  /** A rendered ball of a material under the current lighting, as a data URL with a transparent background. */
-  swatch(material: string, finish: string | undefined, color: string, size = 96): string {
+  /**
+   * A rendered ball of a material under the current lighting, as a data URL with a transparent background. The page
+   * is not held for the graphics card: the ball's shader is built and the image read back in the card's own time.
+   * Balls are drawn one at a time, since they share a stage, and a card handed a dozen at once holds up the view.
+   */
+  swatch(material: string, finish: string | undefined, color: string, size = 96): Promise<string> {
     const look = appearanceFor(material, finish, color);
     const key = `${look.key}|${this.preset.id}|${size}`;
     const hit = this.swatchCache.get(key);
-    if (hit) return hit;
-    const r = this.renderer;
+    if (hit) return Promise.resolve(hit);
+    let job = this.swatchJobs.get(key);
+    if (!job) {
+      const mine = this.swatchLine.then(() => this.drawSwatch(look, size));
+      const over = () => {
+        if (this.swatchJobs.get(key) === mine) this.swatchJobs.delete(key);
+      };
+      this.swatchLine = mine.then(over, over);
+      this.swatchJobs.set(key, (job = mine));
+    }
+    return job;
+  }
+
+  /** The ball on its stage, lit as the view is now. */
+  private poseSwatch(look: Appearance) {
     const st = this.stageSwatch();
-    const { scene, ball, cam } = st;
+    const { scene, ball } = st;
     scene.environment = this.scene.environment;
     scene.environmentIntensity = this.scene.environmentIntensity;
     scene.environmentRotation.copy(this.scene.environmentRotation);
     ball.material = this.swatchMaterial(look);
+    // The stage has as many lights as the view, each casting a shadow as there, so the renderer draws the ball with
+    // the shader a part of that material has in the view, which the card has built already more often than not.
+    // Only the key lights the ball, as it always did, and nothing on the stage casts or takes a shadow.
+    while (st.others.length > this.casters.length) {
+      const l = st.others.pop()!;
+      scene.remove(l);
+      l.dispose();
+    }
+    while (st.others.length < this.casters.length) {
+      const l = stageLight(0);
+      st.others.push(l);
+      scene.add(l);
+    }
     st.key.color.copy(this.key.color);
     st.key.intensity = this.key.intensity;
     // same angle to the camera as the key light has to the default view
     st.key.position.copy(dirFrom(this.preset.key.az - 36, this.preset.key.el)).multiplyScalar(50);
     st.backdrop.visible = look.transmission > 0;
+    return st;
+  }
+
+  private async drawSwatch(look: Appearance, size: number): Promise<string> {
+    const gone = () => {
+      if (this.disposed || this.contextLost) throw new Error("The 3D view is not there to draw a material in");
+    };
+    await this.whenLit();
+    gone();
+    const r = this.renderer;
     // one small pipeline reused for every swatch, and kept: its shaders compile once
     const pipe = (this.swatchPipe ??= new RenderPipeline(r));
-    Object.assign(pipe.look, this.pipe.look);
-    pipe.look.ao = 0;
-    pipe.look.bloom = 0;
     pipe.setSize(size, size, 1);
-    pipe.reset();
-    const out = new THREE.WebGLRenderTarget(size, size, { type: THREE.UnsignedByteType, depthBuffer: false });
-    try {
-      for (let i = 0; i < 12; i++) pipe.renderSample(scene, cam);
-      pipe.composite(out, { transparent: !look.transmission });
-      const px = new Uint8Array(size * size * 4);
-      r.readRenderTargetPixels(out, 0, 0, size, size, px);
-      if (look.transmission > 0) {
-        // clear materials render over a backdrop to show refraction; cut that back to the ball
-        const rad = (Math.tan(Math.asin(10 / cam.position.length())) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2))) * (size / 2);
-        for (let y = 0; y < size; y++)
-          for (let x = 0; x < size; x++) {
-            const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
-            const i = (y * size + x) * 4 + 3;
-            px[i] = Math.round(px[i] * Math.min(1, Math.max(0, rad - d + 0.5)));
-          }
+    await this.untilBuilt(
+      during(SWATCH_WORK, () => {
+        const { scene, cam } = this.poseSwatch(look);
+        return pipe.compile(scene, cam);
+      }),
+    );
+    gone();
+    // the lighting may have changed while the shader was built: the ball is lit, and kept, as the view is now
+    const key = `${look.key}|${this.preset.id}|${size}`;
+    const hit = this.swatchCache.get(key);
+    if (hit) return hit;
+    const { scene, cam } = this.poseSwatch(look);
+    const px = new Uint8Array(size * size * 4);
+    await during(SWATCH_WORK, () => {
+      Object.assign(pipe.look, this.pipe.look);
+      pipe.look.ao = 0;
+      pipe.look.bloom = 0;
+      pipe.reset();
+      const out = new THREE.WebGLRenderTarget(size, size, { type: THREE.UnsignedByteType, depthBuffer: false });
+      try {
+        for (let i = 0; i < 12; i++) pipe.renderSample(scene, cam);
+        pipe.composite(out, { transparent: !look.transmission });
+        r.setRenderTarget(out);
+        return readPixelsLater(r, size, size, px);
+      } finally {
+        out.dispose();
+        r.setRenderTarget(null);
+        this.needComposite = true;
       }
-      const url = toDataUrl(px, size, size, "image/png", 1);
-      this.swatchCache.set(key, url);
-      return url;
-    } finally {
-      out.dispose();
-      r.setRenderTarget(null);
-      this.needComposite = true;
+    });
+    if (look.transmission > 0) {
+      // clear materials render over a backdrop to show refraction; cut that back to the ball
+      const rad = (Math.tan(Math.asin(10 / cam.position.length())) / Math.tan(THREE.MathUtils.degToRad(cam.fov / 2))) * (size / 2);
+      for (let y = 0; y < size; y++)
+        for (let x = 0; x < size; x++) {
+          const d = Math.hypot(x + 0.5 - size / 2, y + 0.5 - size / 2);
+          const i = (y * size + x) * 4 + 3;
+          px[i] = Math.round(px[i] * Math.min(1, Math.max(0, rad - d + 0.5)));
+        }
+    }
+    const url = toDataUrl(px, size, size, "image/png", 1);
+    this.swatchCache.set(key, url);
+    return url;
+  }
+
+  /** Resolves once the chosen light set is in place: a picture for a file, or a material's ball, is lit by it. */
+  private async whenLit(): Promise<void> {
+    while (this.lightingDue && !this.disposed && !this.contextLost && !this.filming) {
+      if (this.lightingDue()) this.applyLighting(false);
+      else await new Promise((r) => setTimeout(r, 30));
     }
   }
+
+  /** Waits for the card to say shaders are built, but not for a view that has gone: a lost card never says so. */
+  private untilBuilt(built: Promise<void>): Promise<void> {
+    return new Promise((resolve) => {
+      const end = () => {
+        clearInterval(watch);
+        resolve();
+      };
+      const watch = setInterval(() => (this.disposed || this.contextLost) && end(), 200);
+      built.then(end, end);
+    });
+  }
+}
+
+/** A light for the material ball's stage: it counts as one that casts a shadow, with the smallest shadow there is. */
+function stageLight(intensity: number): THREE.DirectionalLight {
+  const l = new THREE.DirectionalLight(0xffffff, intensity);
+  l.castShadow = true;
+  l.shadow.mapSize.set(1, 1);
+  return l;
 }
 
 function slerpDir(a: THREE.Vector3, b: THREE.Vector3, t: number): THREE.Vector3 {

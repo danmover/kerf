@@ -40,7 +40,6 @@ export function Workspace() {
   const dockOpen = useView((s) => s.dockOpen);
   const center = useRef<HTMLDivElement>(null);
   const drop = useStepDrop();
-  useThumbnails();
   // upright on a tablet the code panel starts folded, so the model gets the height
   const projectId = project?.id;
   useEffect(() => {
@@ -116,6 +115,7 @@ export function Workspace() {
         </div>
       </div>
       <StatusBar />
+      <Thumbnails />
       <RefViewer />
       <SketchPad />
     </div>
@@ -206,8 +206,12 @@ function StatusBar() {
   );
 }
 
-/** Capture a small thumbnail for the projects screen after each settled rebuild. */
-function useThumbnails() {
+/**
+ * Capture a small thumbnail for the projects screen after each settled rebuild. A component of its own that draws
+ * nothing: it follows the build's stage, which changes four times at every edit, and as a hook of the workspace it
+ * had the whole screen rendered again each time.
+ */
+function Thumbnails() {
   const stage = useDesign((s) => s.stage);
   const rev = useDesign((s) => s.rev);
   const last = useRef(-1);
@@ -219,7 +223,10 @@ function useThumbnails() {
       if (!vp || useDesign.getState().rev !== rev || useProject.getState().preview) return;
       if (!useDesign.getState().model?.parts.length) return;
       try {
-        const url = await vp.capture({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12, overlays: false });
+        // drawn between frames once the view is at rest, however long that takes: the page is not held for it
+        const url = await vp.captureBetweenFrames({ view: "iso", width: 480, height: 300, mime: "image/webp", quality: 0.82, samples: 12, key: "thumbnail", patience: Infinity, wanted: () => useDesign.getState().rev === rev });
+        // none: the design moved on meanwhile, and its next settled rebuild asks again
+        if (!url || useDesign.getState().rev !== rev || useProject.getState().preview) return;
         last.current = rev;
         await saveThumbnail(url);
       } catch {
@@ -228,4 +235,5 @@ function useThumbnails() {
     }, 1500);
     return () => clearTimeout(t);
   }, [stage, rev]);
+  return null;
 }

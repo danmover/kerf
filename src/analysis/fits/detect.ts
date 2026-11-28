@@ -129,25 +129,144 @@ function rubbery(p: EvalPart): boolean {
   return E !== undefined && E < 200;
 }
 
-/** Every fit, gear pair and screw joint in the model. */
+const found = new WeakMap<Model, FoundFits>();
+
+/** Every fit, gear pair and screw joint in the model (worked out once per model: the fit check, the hold check and the exploded view all ask). */
 export function findFits(model: Model): FoundFits {
+  const work = findFitsWork(model);
+  for (;;) {
+    const step = work.next();
+    if (step.done) return step.value;
+  }
+}
+
+/** a model's fits being read a piece at a time, by whoever asked first */
+const reading = new WeakMap<Model, Generator<void, FoundFits>>();
+
+/**
+ * findFits a piece at a time, for a caller with a page to keep moving (core/slices.ts). Two callers working on one
+ * model at once (the fit check and the hold check both start with this) share the one reading of it.
+ */
+export function* findFitsWork(model: Model): Generator<void, FoundFits> {
+  for (;;) {
+    const f = found.get(model);
+    if (f) return f;
+    let work = reading.get(model);
+    if (!work) reading.set(model, (work = readFits(model)));
+    let step: IteratorResult<void, FoundFits>;
+    try {
+      step = work.next();
+    } catch (e) {
+      // a reading that failed is not left for the next caller to pick up where it broke
+      reading.delete(model);
+      throw e;
+    }
+    if (step.done) {
+      reading.delete(model);
+      found.set(model, step.value);
+      return step.value;
+    }
+    yield;
+  }
+}
+
+/** Grid cell for the shafts' middles, mm, and the length past which a shaft is asked about by every hole. */
+const CELL = 16;
+const LONG = 64;
+
+/**
+ * The shafts a hole has to be tried against, in their own order: those whose middle is near the hole's line where
+ * the two could overlap, and every long shaft. A shaft that fits has its middle within `off` of the line, no
+ * further past either end of the hole than half its own length; the rest are left out without being looked at.
+ */
+function shaftGrid(shafts: Cyl[], mids: V3[]): (h: Cyl, off: number) => number[] {
+  const cell = (x: number) => Math.max(-32768, Math.min(32767, Math.floor(x / CELL))) + 32768;
+  const cells = new Map<number, number[]>();
+  const long: number[] = [];
+  for (let j = 0; j < shafts.length; j++) {
+    const m = mids[j];
+    // (and one whose place is not a number: left to the tests, as before)
+    if (!(shafts[j].length <= LONG) || !Number.isFinite(m[0] + m[1] + m[2])) {
+      long.push(j);
+      continue;
+    }
+    const k = (cell(m[0]) * 65536 + cell(m[1])) * 65536 + cell(m[2]);
+    const list = cells.get(k);
+    if (list) list.push(j);
+    else cells.set(k, [j]);
+  }
+  const all = shafts.map((_, j) => j);
+  return (h, off) => {
+    // the box of the hole's line, a long shaft's half length past each end, grown by how far off the line a middle may be
+    const lo = [0, 0, 0];
+    const hi = [0, 0, 0];
+    const pad = off + 1e-3;
+    let n = 1;
+    for (let k = 0; k < 3; k++) {
+      const a = h.at[k] - h.axis[k] * (LONG / 2);
+      const b = h.at[k] + h.axis[k] * (h.length + LONG / 2);
+      lo[k] = cell(Math.min(a, b) - pad);
+      hi[k] = cell(Math.max(a, b) + pad);
+      n *= hi[k] - lo[k] + 1;
+    }
+    // a hole that long (or one that is not a number): every shaft
+    if (!(n <= 4096)) return all;
+    const out = long.slice();
+    for (let i = lo[0]; i <= hi[0]; i++)
+      for (let j = lo[1]; j <= hi[1]; j++)
+        for (let k = lo[2]; k <= hi[2]; k++) {
+          const list = cells.get((i * 65536 + j) * 65536 + k);
+          if (list) for (const x of list) out.push(x);
+        }
+    return out.sort((a, b) => a - b);
+  };
+}
+
+function* readFits(model: Model): Generator<void, FoundFits> {
   const holes: Cyl[] = [];
   const shafts: Cyl[] = [];
+  // each part's component instance, read once: the search below compares them for every hole against every shaft
+  const instance = new Map<EvalPart, string>();
   for (const p of model.parts) {
     if (p.hidden || rubbery(p)) continue;
+    instance.set(p, instanceOf(p));
     for (const c of partCylinders(p)) (c.side === "hole" ? holes : shafts).push(c);
   }
 
+  const mids = shafts.map(cylMid);
+  const shaftInstance = shafts.map((s) => instance.get(s.part));
+
   const instances: { kind: FitKind; inst: FitInstance }[] = [];
   const located = new Map<string, Set<EvalPart>>(); // screw part id -> parts it threads into
+  const near = shaftGrid(shafts, mids);
+  let since = 0;
   for (const h of holes) {
     const cands: { s: Cyl; score: number; overlap: number; ecc: number }[] = [];
-    for (const s of shafts) {
-      if (s.part === h.part || instanceOf(s.part) === instanceOf(h.part)) continue;
+    const mine = instance.get(h.part);
+    const [hx, hy, hz] = h.at;
+    const [ax, ay, az] = h.axis;
+    const off = Math.max(0.3, 0.03 * h.d);
+    // only the shafts whose middles are near the hole's line can fit it: a design has thousands of each
+    const ask = near(h, off);
+    // a breath every few thousand tries
+    if ((since += ask.length) > 20000) {
+      since = 0;
+      yield;
+    }
+    for (const j of ask) {
+      const s = shafts[j];
+      // the two tests nearly every shaft fails come first, on numbers read once: is it along the hole, and on its line
+      const sa = s.axis;
+      if (Math.abs(sa[0] * ax + sa[1] * ay + sa[2] * az) < 0.995) continue;
+      const m = mids[j];
+      const vx = m[0] - hx,
+        vy = m[1] - hy,
+        vz = m[2] - hz;
+      const t = vx * ax + vy * ay + vz * az;
+      const ecc = Math.hypot(vx - t * ax, vy - t * ay, vz - t * az);
+      if (ecc > off) continue;
+      if (s.part === h.part || shaftInstance[j] === mine) continue;
       if (s.role === "insert") continue;
-      if (Math.abs(vdot(s.axis, h.axis)) < 0.995) continue;
-      const ecc = lineDistance(cylMid(s), h.at, h.axis);
-      if (ecc > Math.max(0.3, 0.03 * h.d)) continue;
       const overlap = axialOverlap(h, s);
       if (overlap < Math.min(0.5, 0.3 * Math.min(h.length, s.length))) continue;
       // a screw in a hole much smaller than its thread is screwed in, not fitted

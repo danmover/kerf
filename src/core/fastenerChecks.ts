@@ -7,7 +7,7 @@
 
 import type { EvalPart, Model } from "./model";
 import type { CheckItem } from "./checks";
-import { vdot, vsub } from "../kernel/recipe";
+import { vdot, vsub, type V3 } from "../kernel/recipe";
 import { axialOverlap, cylEnd, cylMid, lineDistance, partCylinders, type Cyl } from "../analysis/fits/geometry";
 import { engagementFor, gradeFrom, proofLoad, stockLengths, threadCapacity, HEAD_TYPES, type HeadType, type Into } from "../library/fasteners";
 import { materialRecord } from "../library/materialDb";
@@ -42,15 +42,33 @@ function intoOf(host: EvalPart, hole: Cyl): Engagement["into"] {
 /** Holes a catalog component's screws go into are blind (a motor face): the screw must stop short of the bottom. */
 const blind = (host: EvalPart, into: Engagement["into"]) => host.kind === "component" && into === "tapped" && host.libKind !== "screw";
 
-function engagements(screw: EvalPart, shank: Cyl, holes: Cyl[]): { threads: Engagement[]; through: EvalPart[]; short?: { host: EvalPart; gap: number } } {
+/** Every hole of the design, with what the search below reads of each for every screw: its middle and its part's instance. */
+interface Holes {
+  list: Cyl[];
+  mids: V3[];
+  instances: string[];
+}
+
+function engagements(screw: EvalPart, shank: Cyl, holes: Holes): { threads: Engagement[]; through: EvalPart[]; short?: { host: EvalPart; gap: number } } {
   const threads: Engagement[] = [];
   const through: EvalPart[] = [];
   let short: { host: EvalPart; gap: number } | undefined;
   const tip = cylEnd(shank);
-  for (const h of holes) {
-    if (h.part === screw || instanceOf(h.part) === instanceOf(screw)) continue;
-    if (Math.abs(vdot(h.axis, shank.axis)) < 0.995) continue;
-    if (lineDistance(cylMid(h), shank.at, shank.axis) > Math.max(0.3, 0.03 * h.d)) continue;
+  const own = instanceOf(screw);
+  const [sx, sy, sz] = shank.at;
+  const [ax, ay, az] = shank.axis;
+  for (let j = 0; j < holes.list.length; j++) {
+    const h = holes.list[j];
+    // the two tests nearly every hole fails come first: is it along the screw, and on its line
+    const ha = h.axis;
+    if (Math.abs(ha[0] * ax + ha[1] * ay + ha[2] * az) < 0.995) continue;
+    const m = holes.mids[j];
+    const vx = m[0] - sx,
+      vy = m[1] - sy,
+      vz = m[2] - sz;
+    const along = vx * ax + vy * ay + vz * az;
+    if (Math.hypot(vx - along * ax, vy - along * ay, vz - along * az) > Math.max(0.3, 0.03 * h.d)) continue;
+    if (h.part === screw || holes.instances[j] === own) continue;
     const overlap = axialOverlap(h, shank);
     const threaded = h.role === "thread" || h.d < shank.d - 0.2;
     if (overlap < 0.3) {
@@ -89,6 +107,7 @@ export function fastenerChecks(model: Model): CheckItem[] {
 
   const holes: Cyl[] = [];
   for (const p of model.parts) if (!p.hidden && !p.fastener) for (const c of partCylinders(p)) if (c.side === "hole") holes.push(c);
+  const allHoles: Holes = { list: holes, mids: holes.map(cylMid), instances: holes.map((h) => instanceOf(h.part)) };
 
   // grouped so a pattern of identical screws gives one line
   type Item = Omit<CheckItem, "parts" | "detail"> & { detail: (n: number, names: string) => string };
@@ -116,7 +135,7 @@ export function fastenerChecks(model: Model): CheckItem[] {
     const t = shank.thread;
     const head = (HEAD_TYPES as string[]).includes(f.head ?? "") ? (f.head as HeadType) : "socket";
     const name = `${t.name}${f.length ? `×${fmtNum(f.length)}` : ""} ${s.name}`;
-    const { threads, through, short } = engagements(s, shank, holes);
+    const { threads, through, short } = engagements(s, shank, allHoles);
     for (const e of [...threads.map((x) => x.host), ...through]) if (motorNames.has(e.name)) screwsIn.set(instanceOf(e), (screwsIn.get(instanceOf(e)) ?? new Set()).add(s.id));
 
     if (!threads.length) {

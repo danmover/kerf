@@ -9,17 +9,22 @@ import { detailKernel, kernel, type KernelStatus, type PartResult } from "../ker
 import type { MeshData, MeshQuality } from "../kernel/build";
 import { keepMesh, keptKey, keptMeshes, type KeptMesh, type KeptQuality } from "../persist/geometryCache";
 import type { Interference, ChecksResult } from "../kernel/protocol";
-import { hasDetail, type V3 } from "../kernel/recipe";
+import { hasDetail, stableStringify, type V3 } from "../kernel/recipe";
 import { displayBuilt, hasThreads } from "../kernel/threadMarks";
-import { assembleReport, buildChecksRequest, type CheckItem, type CheckReport } from "./checks";
+import { assembleReport, buildChecksRequest, reportAhead, type CheckItem, type CheckReport } from "./checks";
 import { composeReport, registerReportPass, type ReportContext } from "./reportPasses";
+import { during } from "../app/stalls";
+import { prepareFits } from "../analysis/fits/report";
+import { prepareHolds } from "./holds";
+import { awaiting, breathe, inSlices, pacer } from "./slices";
 import type { Conflict } from "./feasibility";
 import type { EvalPart, Model } from "./model";
 import type { SolveRequest, SolveResponse } from "./solver.worker";
 import { processProbes } from "../mfg/report";
 import { userMachines } from "../mfg/userMachines";
 import { useSettings } from "../app/settings";
-import type { ProcessResult } from "../mfg/types";
+import type { ProcessProbe, ProcessResult } from "../mfg/types";
+import type { MachineContext } from "../mfg/machines";
 import { detailImportsLoaded, importsLoaded, modelUsesImports, onImportsChanged, recipeUsesImport, reloadImports } from "./imports";
 import { evalImports } from "../lang/imports";
 import { designsUsed, evalDesigns } from "../lang/designs";
@@ -50,7 +55,14 @@ export interface DesignState {
   model: Model | null;
   stage: Stage;
   progress: { done: number; total: number };
-  timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number };
+  /**
+   * `checkSteps`: what the checks' time went on, each from the end of the one before, ms: the kernel's answer, the
+   * making checks still to come, the fit study, how the design holds together, and putting the report together.
+   * They wait one after another while the work behind them runs side by side, so a step that reads 0 was done by
+   * the time the one before it was. `kernelOwn` is how long the kernel itself worked on its answer: the rest of
+   * `kernel` is the answer waiting for the page to take it.
+   */
+  timings: { evalMs: number; buildMs: number; checksMs: number; built: number; reused: number; checkSteps?: { kernel: number; kernelOwn: number; kernelSteps?: Record<string, number>; process: number; fits: number; holds: number; report: number } };
   meshVersion: number;
   buildErrors: Map<string, string>;
   /** problems in the detailed (full-quality) build, by geometry hash */
@@ -208,6 +220,9 @@ export function loadSource(src: string) {
   keptWarnings.clear();
   kernel.evict([]);
   reportBase = null;
+  ahead?.stop();
+  ahead = null;
+  processKept.clear();
   detailKernel.evict([]);
   set({ buildErrors: new Map(), detailIssues: new Map(), report: null, interferences: [], process: {}, conflict: null, conflictState: "idle", hold: [], checksError: "" });
   bumpMeshes();
@@ -431,6 +446,74 @@ async function refine(rev: number, byHash: Map<string, EvalPart>, restoring: Pro
   return result(false, async () => true);
 }
 
+// ---------- manufacturing-process checks, alongside the build ----------
+
+/** Process results by geometry and rules: a part is checked once however often the design is read. */
+const processKept = new Map<string, ProcessResult>();
+const PROCESS_KEPT = 4000;
+const probeKey = (p: ProcessProbe) => `${p.hash}|${stableStringify(p.rules)}`;
+
+function keepProcess(key: string, r: ProcessResult) {
+  // (a failure is asked about again next time)
+  if (r.error) return;
+  processKept.delete(key);
+  processKept.set(key, r);
+  if (processKept.size > PROCESS_KEPT) processKept.delete(processKept.keys().next().value as string);
+}
+
+/** the process checks asked ahead for the design being built */
+let ahead: { stop: () => void; done: Promise<void>; over: boolean } | null = null;
+/** Up to this many process checks still to come are asked of the kernel along with its checks (see runPipeline). */
+const EARLY_PROBES = 6;
+
+/**
+ * Start a design's manufacturing-process checks in the detail worker, which has nothing to do until the parts are
+ * built: it builds each part they are of and checks it while the kernel builds and checks the design, instead of
+ * in line after the kernel's checks (where they were half the wait on a large assembly). What it gets through is
+ * kept by geometry and rules; the pipeline asks the kernel for whatever is still missing when it gets there.
+ */
+function processAhead(model: Model, byHash: Map<string, EvalPart>, machines: MachineContext) {
+  ahead?.stop();
+  ahead = null;
+  if (detailKernel.status === "error") return;
+  const errors = get().buildErrors;
+  // (an imported body's file may not be in the detail worker yet: those are left to the kernel)
+  const hashes = new Set([...byHash.values()].filter((p) => !errors.has(p.hash) && !recipeUsesImport(p.recipe)).map((p) => p.hash));
+  const groups = new Map<string, Map<string, ProcessProbe>>();
+  for (const probe of processProbes(model, hashes, machines)) {
+    const key = probeKey(probe);
+    if (processKept.has(key)) continue;
+    const g = groups.get(probe.hash);
+    if (g) g.set(key, probe);
+    else groups.set(probe.hash, new Map([[key, probe]]));
+  }
+  if (!groups.size) return;
+  detailKernel.start();
+  // one request a part, all asked now: the worker takes them in turn, ahead of the detailed builds asked for later
+  const asked = [...groups].map(([hash, byKey]) => {
+    const part = byHash.get(hash)!;
+    const keys = [...byKey.keys()];
+    const job = detailKernel.processParts([...byKey.values()], [{ hash, recipe: part.recipe, label: part.label }]);
+    return {
+      cancel: job.cancel,
+      done: job.promise.then(
+        (results) => results.forEach((r, i) => keepProcess(keys[i], r)),
+        () => undefined,
+      ),
+    };
+  });
+  const mine = {
+    stop: () => {
+      for (const a of asked) a.cancel();
+    },
+    over: false,
+    done: Promise.all(asked.map((a) => a.done)).then(() => {
+      mine.over = true;
+    }),
+  };
+  ahead = mine;
+}
+
 async function runPipeline(rev: number, src: string, model: Model, parsed: ReturnType<typeof parse>) {
   for (const j of activeJobs) j.cancel();
   activeJobs = [];
@@ -456,8 +539,25 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   let done = total - todo.length;
   const reused = done;
   set({ stage: todo.length ? "building" : "checking", progress: { done, total } });
+  // the manufacturing-process checks start now, in the detail worker
+  const machines = userMachines();
+  processAhead(model, byHash, machines);
 
   const tBuild = performance.now();
+  // The fit check and a good part of the report read the design, not its geometry: where there is a build to wait
+  // for, they start with it and are done, at a small edit, by the time the kernel has checked the geometry. (With
+  // nothing to build the kernel answers in a moment, and work begun early only gets in the way of what the report
+  // waits for. Nor where the design is about to be read again for its mates' faces: that makes a new model, and the
+  // work would be thrown away.) They begin once the page has had its turn: an edit has just been read and shown in
+  // this one.
+  if (todo.length && !(model.mateQueries ?? []).some((h) => !faceCats.has(h))) {
+    const wanted = () => get().rev === rev;
+    void breathe().then(() => {
+      if (!wanted()) return;
+      void prepareFits(model, wanted);
+      void inSlices(reportAhead(model), wanted);
+    });
+  }
   if (todo.length) {
     const job = kernel.build(
       todo.map((p) => ({ hash: p.hash, recipe: p.recipe, label: p.label })),
@@ -486,7 +586,8 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
       },
     );
     activeJobs.push(job);
-    const r = await job.done;
+    // (the page goes on from the build's answer: while that is a moment away, it leaves what can wait)
+    const r = await awaiting(job.done);
     if (r.cancelled || get().rev !== rev) return;
   }
   const buildMs = performance.now() - tBuild;
@@ -509,37 +610,91 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
   if (get().rev !== rev) return;
   if (mated) model = mated;
 
+  // the fit check builds the design thousands of times in simulation: it works on that between frames from here on,
+  // while the kernel checks the geometry
+  const fitted = prepareFits(model, () => get().rev === rev);
+  // and how the design holds together (hundreds of screws to measure on a large assembly), which the report reads
+  const held = prepareHolds(model, meshOf, () => get().rev === rev);
+
   // checks need every solid in the worker's cache
   set({ stage: "checking", timings: { ...get().timings, buildMs, built: todo.length, reused } });
   const builtHashes = new Set([...byHash.keys()].filter((h) => meshes.has(h)));
   const tChecks = performance.now();
   let result: ChecksResult | null = null;
   let checksError = "";
+  const checking = kernel.checks(buildChecksRequest(model, builtHashes));
+  // manufacturing-process checks: asked ahead of the build in the detail worker (processAhead), and kept by
+  // geometry and rules from earlier reads of the design
+  const process: Record<string, ProcessResult> = {};
+  const probes = processProbes(model, builtHashes, machines);
+  const keys = probes.map(probeKey);
+  const missing = () => {
+    const out = new Map<string, ProcessProbe>();
+    probes.forEach((p, i) => {
+      if (!processKept.has(keys[i])) out.set(keys[i], p);
+    });
+    return out;
+  };
+  // what the kernel answers, failures too
+  const direct = new Map<string, ProcessResult>();
+  const askKernel = (need: Map<string, ProcessProbe>) => {
+    const order = [...need.keys()];
+    return kernel.process([...need.values()]).then(
+      (results) =>
+        results.forEach((r, i) => {
+          direct.set(order[i], r);
+          keepProcess(order[i], r);
+        }),
+      (e) => {
+        const error = e instanceof Error ? e.message : String(e);
+        for (const k of order) direct.set(k, { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error });
+      },
+    );
+  };
+  // a few parts' worth still to come (a small design, a small edit): the kernel, which has every part built, is
+  // asked for them now, behind the checks, so its answer comes back with theirs instead of a trip later
+  const early = missing();
+  let fromKernel = early.size && early.size <= EARLY_PROBES ? askKernel(early) : null;
   try {
-    result = await kernel.checks(buildChecksRequest(model, builtHashes));
+    result = await awaiting(checking);
   } catch (e) {
     checksError = e instanceof Error ? e.message : String(e);
   }
   if (get().rev !== rev) return;
+  const tKernel = performance.now();
   lastKernel = result;
-  // manufacturing-process checks (cached in the worker by geometry and rules)
-  const process: Record<string, ProcessResult> = {};
-  const machines = userMachines();
-  const probes = processProbes(model, builtHashes, machines);
   if (probes.length) {
-    try {
-      const results = await kernel.process(probes);
-      probes.forEach((p, i) => (process[p.id] = results[i]));
-    } catch (e) {
-      for (const p of probes) process[p.id] = { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: e instanceof Error ? e.message : String(e) };
+    if (missing().size) {
+      // not all in yet (or there is no detail worker): the kernel takes what is left as well, and whichever answers
+      // first is used
+      fromKernel ??= askKernel(missing());
+      const racing = ahead && !ahead.over ? ahead : null;
+      if (racing) await Promise.race([fromKernel, racing.done]);
+      if (!racing || missing().size) await fromKernel;
+      racing?.stop();
     }
+    probes.forEach((p, i) => (process[p.id] = processKept.get(keys[i]) ?? direct.get(keys[i]) ?? { key: "", findings: [], stats: { triangles: 0, samples: 0 }, ms: 0, error: "The part has not been built" }));
     if (get().rev !== rev) return;
   }
-  const geoModel = result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null;
-  const base = assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h), mesh: meshOf, sweepLater: true });
+  const tProcess = performance.now();
+  await fitted;
+  const tFits = performance.now();
+  await held;
+  const tHolds = performance.now();
+  if (get().rev !== rev) return;
+  // The report is put together in three steps (its core, the passes over it, showing it). On a large assembly each
+  // takes a few tens of milliseconds, and in one go they were the stop felt when the checks came in: the page gets
+  // to draw and answer between them. On a small design they take no time, and follow each other with no pause.
+  const pace = pacer();
+  const geoModel = pace.step(() => (result && model.geoQueries.length ? evaluate(src, { parsed, geo: result.geo }) : null));
+  const base = pace.step(() => during("checks: the core report", () => assembleReport(model, { geoModel, kernel: result, buildErrors: get().buildErrors, geom: (h) => meshes.get(h), mesh: meshOf, sweepLater: true })));
+  await pace.pause();
+  if (get().rev !== rev) return;
   const ctx: ReportContext = { model, live: true, rev, buildErrors: get().buildErrors, process, machines, src, refresh: () => setTimeout(refreshReport, 0) };
   reportBase = { report: base, ctx };
-  const report = composeReport(base, ctx);
+  const report = pace.step(() => composeReport(base, ctx));
+  await pace.pause();
+  if (get().rev !== rev) return;
   set({
     report,
     reportRev: rev,
@@ -548,7 +703,11 @@ async function runPipeline(rev: number, src: string, model: Model, parsed: Retur
     interferences: (result?.interferences ?? []).filter((i) => base.items.find((x) => x.id === `int:${i.a}|${i.b}`)?.status !== "pass"),
     process,
     stage: "refining",
-    timings: { ...get().timings, checksMs: performance.now() - tChecks },
+    timings: {
+      ...get().timings,
+      checksMs: performance.now() - tChecks,
+      checkSteps: { kernel: tKernel - tChecks, kernelOwn: result?.ms ?? 0, kernelSteps: result?.steps, process: tProcess - tKernel, fits: tFits - tProcess, holds: tHolds - tFits, report: performance.now() - tHolds },
+    },
   });
 
   // refine: whatever the detail worker could not do (it is unavailable), here after the checks, then the detail
@@ -586,7 +745,34 @@ registerReportPass("detail", (items, ctx) => (ctx.live ? detailItems(items, ctx.
 /** Compose the latest report again, after a pass's inputs changed (an analysis finished, for example). */
 export function refreshReport() {
   if (!reportBase || reportBase.ctx.rev !== get().reportRev) return;
-  set({ report: composeReport(reportBase.report, reportBase.ctx) });
+  const next = composeReport(reportBase.report, reportBase.ctx);
+  const now = get().report;
+  // many things ask for this and most of the time nothing has changed: the report that says the same is kept as
+  // it is, so nothing that shows it has to be drawn again
+  set({ report: now && sameData(now, next) ? now : next });
+}
+
+/** True when two pieces of plain data (a report: numbers, text, lists and records of them) say the same. */
+function sameData(a: unknown, b: unknown): boolean {
+  if (Object.is(a, b)) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  if (Array.isArray(a)) {
+    const y = b as unknown[];
+    if (a.length !== y.length) return false;
+    for (let i = 0; i < a.length; i++) if (!sameData(a[i], y[i])) return false;
+    return true;
+  }
+  const x = a as Record<string, unknown>;
+  const y = b as Record<string, unknown>;
+  let n = 0;
+  for (const k in x) {
+    if (x[k] === undefined) continue;
+    if (!sameData(x[k], y[k])) return false;
+    n++;
+  }
+  for (const k in y) if (y[k] !== undefined) n--;
+  return n === 0;
 }
 
 /** Resolves once checks have run for the current revision (or a later one). */

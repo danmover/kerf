@@ -104,7 +104,8 @@ export function WiringLayer({ scene }: { scene: SceneController }) {
     if (!o || !harness || !model) return;
     // the model view only draws the cables that have a real route
     const h = on ? harness : routedOnly(harness, routes, plan);
-    o.set(h, routes, model.parts, (p) => meshes.get(p.hash)?.bbox, plan, findings);
+    // (nothing to do when the cables are already built from exactly this: see WiringOverlay.set)
+    if (!o.set(h, routes, model.parts, (p) => meshes.get(p.hash)?.bbox, plan, findings)) return;
     scene.overlaysChanged();
     setDrawn((n) => n + 1);
     // the model is read when the harness changes, not on every model update in between

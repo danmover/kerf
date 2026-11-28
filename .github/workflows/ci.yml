@@ -32,3 +32,13 @@ jobs:
       - run: npm test
       - run: npm run typecheck
       - run: npm run build
+
+  geom:
+    name: Geometry core (Rust)
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      # the crates have no dependencies, so there is nothing to cache; the app's tests check that the committed
+      # WebAssembly build (src/geom/kerf_geom.wasm) was made from these sources
+      - run: cargo test --workspace

@@ -368,7 +368,38 @@ function disposeScene(scene: THREE.Scene) {
 export class StudioEnvironments {
   private cache = new Map<string, THREE.WebGLRenderTarget>();
   private cubes = new Map<LightingId, THREE.WebGLCubeRenderTarget>();
+  /** one baker for every map: the shader it blurs with is built by the graphics card once */
+  private pmrem: THREE.PMREMGenerator | null = null;
   constructor(private renderer: THREE.WebGLRenderer) {}
+
+  /** Whether the maps of `p` are baked: get() and fill() draw nothing. */
+  has(p: LightingPreset): boolean {
+    return this.cache.has(p.id) && (!p.panels.some((pn) => pn.cast) || this.cache.has(`${p.id}:fill`));
+  }
+
+  /**
+   * Goes through baking the maps of `p` and keeps none of it: for the graphics card to be handed the shaders a bake
+   * is drawn with, by a renderer that draws nothing meanwhile (see ShaderGate.rehearse). The set's materials are
+   * left as they are, so that the card keeps what it built for them: the bake itself, and every set after, use the
+   * same shaders.
+   */
+  rehearse(p: LightingPreset) {
+    for (const fill of p.panels.some((pn) => pn.cast) ? [false, true] : [false]) {
+      if (this.cache.has(fill ? `${p.id}:fill` : p.id)) continue;
+      const scene = studioScene(p, fill);
+      try {
+        this.baker().fromScene(scene, 0, 0.1, 100).dispose();
+      } finally {
+        scene.traverse((o) => {
+          if (o instanceof THREE.Mesh) o.geometry.dispose();
+        });
+      }
+    }
+  }
+
+  private baker(): THREE.PMREMGenerator {
+    return (this.pmrem ??= new THREE.PMREMGenerator(this.renderer));
+  }
 
   /** Prefiltered for the interactive view. */
   get(p: LightingPreset): THREE.Texture {
@@ -388,10 +419,11 @@ export class StudioEnvironments {
     let rt = this.cache.get(key);
     if (!rt) {
       const scene = studioScene(p, fill);
-      const pmrem = new THREE.PMREMGenerator(this.renderer);
-      rt = pmrem.fromScene(scene, 0, 0.1, 100);
-      pmrem.dispose();
-      disposeScene(scene);
+      try {
+        rt = this.baker().fromScene(scene, 0, 0.1, 100);
+      } finally {
+        disposeScene(scene);
+      }
       this.cache.set(key, rt);
     }
     return rt.texture;
@@ -427,6 +459,7 @@ export class StudioEnvironments {
   forget() {
     this.cache.clear();
     this.cubes.clear();
+    this.pmrem = null;
   }
 
   dispose() {
@@ -434,7 +467,48 @@ export class StudioEnvironments {
     for (const rt of this.cubes.values()) rt.dispose();
     this.cache.clear();
     this.cubes.clear();
+    this.pmrem?.dispose();
+    this.pmrem = null;
   }
+}
+
+/**
+ * Where each shadow-casting light stands for sample `i` of a picture, as the sample of its own disc (0: its centre):
+ * the key first, then each of `casters` casters. Alone, the key takes a new place at every sample. With casters it
+ * moves at even samples and the casters take turns at odd ones, so one shadow map is drawn anew per sample and each
+ * light walks its own samples 1, 2, 3... however many share the picture's.
+ *
+ * It is every light's place at that sample, not only the one that moved for it: pictures drawn in turn (the view's
+ * own and one drawn between its frames) then each find the lights where their own samples have them, whatever the
+ * other left behind.
+ */
+export function lightSteps(i: number, casters: number): number[] {
+  if (casters <= 0) return [i];
+  // the casters' turns so far, counted from 0 (none before the first odd sample)
+  const turns = ((i + 1) >> 1) - 1;
+  const at = [i >> 1];
+  for (let k = 0; k < casters; k++) at.push(turns >= k ? Math.floor((turns - k) / casters) + 1 : 0);
+  return at;
+}
+
+/**
+ * Sizes a shadow-casting light's map to a model of this size: square and deep enough to hold the model from wherever
+ * the light stands (it stands twice the model's diagonal from its middle, see the scene's placeLight). A light made
+ * with the renderer's own map sees 10 units across, whatever the model.
+ */
+export function fitShadowMap(shadow: THREE.DirectionalLightShadow, size: THREE.Vector3) {
+  const r = Math.max(size.x, size.y, size.z, 20);
+  const diag = Math.max(size.length(), 20);
+  const ext = diag * 0.85;
+  const c = shadow.camera;
+  c.left = -ext;
+  c.right = ext;
+  c.top = ext;
+  c.bottom = -ext;
+  c.near = diag * 0.2;
+  c.far = diag * 4;
+  c.updateProjectionMatrix();
+  shadow.normalBias = Math.max(0.02, r * 0.0025);
 }
 
 /** Low-discrepancy sequence used for jitter: light positions, sub-pixel offsets, AO rotation. */

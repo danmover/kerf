@@ -7,7 +7,7 @@ import { ProcessOverlay } from "./viewport/processOverlay";
 import { useMfgView } from "./mfgView";
 import { meshes, meshOf, useDesign } from "../core/engine";
 import { turns, type Motion } from "../core/model";
-import { findHolds } from "../core/holds";
+import { findHolds, prepareHolds } from "../core/holds";
 import { ropeParts } from "../core/ropeChecks";
 import { planExplode } from "../core/explode";
 import { useView, requestCamera, revealSpan, select, type ViewPreset } from "../app/view";
@@ -16,6 +16,7 @@ import { useReduceMotion } from "../app/motion";
 import { useChat } from "../ai/chat";
 import { useTheme } from "../app/theme";
 import { lightingPreset } from "./viewport/render/studio";
+import { buildsYieldTo } from "./viewport/render/shaderQueue";
 import { registerViewport } from "../app/viewportApi";
 import { openFind } from "../app/ui";
 import { Icon } from "./icons";
@@ -67,8 +68,16 @@ import { soloHidden } from "../app/partGroups";
 import { GroupButton, GroupsKey, GroupsMenu } from "./ViewGroups";
 import { LayerBoundary } from "./ErrorBoundary";
 import { kernel } from "../kernel/client";
+import { during } from "../app/stalls";
 import { ViewCube } from "./viewport/ViewCube";
 import { openViewportMenu } from "./viewport/contextMenus";
+
+// While the kernel is starting, or the design is being built or checked, the graphics card is given fewer shader
+// builds at once: with more, its builds take the processor from that work (see shaderQueue.ts).
+buildsYieldTo(() => {
+  const { stage, kernelStatus } = useDesign.getState();
+  return kernelStatus === "loading" || (stage !== "idle" && stage !== "done");
+});
 
 /** Waits (ms) before each retry of a 3D view that failed to start. */
 const GL_RETRIES = [400, 1200, 3000];
@@ -121,6 +130,8 @@ export function Viewport() {
   const lastCamera = useRef<{ pos: [number, number, number]; target: [number, number, number] } | null>(null);
   // the graphics card reset and the view is waiting for its drawing context
   const [glLost, setGlLost] = useState(false);
+  // the graphics card is building shaders the view needs: the picture waits for them, and says so
+  const [shaders, setShaders] = useState(false);
   const [scene, setScene] = useState<SceneController | null>(null);
   // a ring that fills while a finger is held on the model, to open the spot chat
   const [hold, setHold] = useState<{ x: number; y: number; n: number } | null>(null);
@@ -176,6 +187,7 @@ export function Viewport() {
       if (c.framed) lastCamera.current = c.cameraState();
       setGlGen((g) => g + 1);
     };
+    c.onShaders = setShaders;
     let lostTimer = 0;
     c.onContextChange = (lost) => {
       window.clearTimeout(lostTimer);
@@ -243,6 +255,7 @@ export function Viewport() {
     };
     registerViewport({
       capture: (o) => c.capture(o),
+      captureBetweenFrames: (o) => c.captureBetweenFrames(o),
       swatch: (m, f, col, size) => c.swatch(m, f, col, size),
       preview: (ids, look) => c.setOverride(ids, look),
       materialMode: (on) => c.setMaterialMode(on),
@@ -264,9 +277,11 @@ export function Viewport() {
     return () => {
       // a view closed on purpose gives its context back: that is not a reset
       c.onContextChange = () => undefined;
+      c.onShaders = () => undefined;
       c.onBroken = () => undefined;
       window.clearTimeout(lostTimer);
       setGlLost(false);
+      setShaders(false);
       setScene(null);
       registerViewport(null);
       mfgOverlay.current?.destroy();
@@ -299,7 +314,7 @@ export function Viewport() {
   const building = stage === "building";
   useEffect(() => {
     boardDecor.current?.setModel(model);
-    if (model) ctl.current?.setParts(model.parts, meshes, { building });
+    if (model) during("3D view: taking in the parts", () => ctl.current?.setParts(model.parts, meshes, { building }));
   }, [model, meshVersion, scene, building]);
 
   // the exploded view: which way each part comes off and in what order, worked out when first needed
@@ -318,8 +333,13 @@ export function Viewport() {
       ctl.current?.setHolds(null);
       return;
     }
-    const t = window.setTimeout(() => ctl.current?.setHolds(findHolds(model, meshOf)), 400);
-    return () => window.clearTimeout(t);
+    // (between frames: a large assembly has hundreds of screws to measure)
+    let wanted = true;
+    const t = window.setTimeout(() => void prepareHolds(model, meshOf, () => wanted).then((h) => h && wanted && ctl.current?.setHolds(h)), 400);
+    return () => {
+      wanted = false;
+      window.clearTimeout(t);
+    };
   }, [model, meshVersion, scene]);
 
   // ropes are drawn moving with what they run on: which part each drum, sheave and tied end is
@@ -592,7 +612,7 @@ export function Viewport() {
         {scene && !inSketch && <DragLayer host={pickHost} scene={scene} />}
       </LayerBoundary>
       <AnimatePresence>{photo.state !== "off" && <PhotoPill key="photo" s={photo} />}</AnimatePresence>
-      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} note={glNote} />
+      <ViewNotice glLost={glLost} kernelRestarting={kernelStatus === "loading" && kernelStarted} shaders={shaders} note={glNote} />
 
       <LayerBoundary label="Analysis results" retry={model}>
         {scene && !inSketch && <ResultsLayer scene={scene} />}
@@ -752,14 +772,21 @@ function Range({ value, onChange, label }: { value: number; onChange: (v: number
 
 /**
  * What the 3D view is waiting on, while the model stays on screen: the graphics card reset and the view is getting
- * its drawing context back, or the geometry kernel is restarting and building the parts again.
+ * its drawing context back, the geometry kernel is restarting and building the parts again, or the graphics card is
+ * building the shaders for something it has not drawn since the last update.
  */
-function ViewNotice({ glLost, kernelRestarting, note }: { glLost: boolean; kernelRestarting: boolean; note: string }) {
-  const text = glLost ? "The graphics card reset. Bringing the 3D view back…" : kernelRestarting ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…" : note;
+function ViewNotice({ glLost, kernelRestarting, shaders, note }: { glLost: boolean; kernelRestarting: boolean; shaders: boolean; note: string }) {
+  const text = glLost
+    ? "The graphics card reset. Bringing the 3D view back…"
+    : kernelRestarting
+      ? "Restarting the geometry kernel. The model stays as it is while its parts are built again…"
+      : shaders
+        ? "The graphics card is getting this view ready. It does this once after an update…"
+        : note;
   return (
     <AnimatePresence>
       {text && (
-        <motion.div key={text} className="vp-notice" role="status" style={{ x: "-50%" }} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
+        <motion.div key={text} className="vp-notice" role="status" data-shaders-building={shaders && !glLost && !kernelRestarting ? "" : undefined} style={{ x: "-50%" }} initial={{ opacity: 0, y: -4 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
           {text === note ? <Icon.Alert size={13} /> : <span className="spinner sm" />}
           {text}
         </motion.div>

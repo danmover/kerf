@@ -1,0 +1,18 @@
+# Kerf's Rust core. These crates hold the geometry and solver code that the native app is built on; today's app
+# loads them as WebAssembly (crates/kerf-wasm), so the same code runs in both.
+[workspace]
+resolver = "2"
+members = ["crates/kerf-geom", "crates/kerf-wasm"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "UNLICENSED"
+publish = false
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

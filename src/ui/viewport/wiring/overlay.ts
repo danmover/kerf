@@ -133,6 +133,8 @@ export class WiringOverlay implements SceneOverlay {
   private xrays: { src: THREE.Mesh; copy: THREE.Mesh; wire?: string }[] = [];
   private xrayMat = new THREE.MeshBasicMaterial({ vertexColors: true, transparent: true, opacity: XRAY, depthWrite: false, depthFunc: THREE.GreaterDepth, polygonOffset: true, polygonOffsetFactor: -1, polygonOffsetUnits: -4 });
   private wires = new Map<string, WireObj>();
+  /** everything the cables drawn now were built from, as text (see set) */
+  private from = "";
   private flexes: FlexObj[] = [];
   private sockets: SocketObj[] = [];
   private follows = new Map<string, Follow>();
@@ -244,8 +246,14 @@ export class WiringOverlay implements SceneOverlay {
    * and so, less, do made parts that a plug sits inside (an electronics box, a
    * carriage around the hotend's leads). `boxOf` is a part's box in its own frame.
    */
-  set(h: Harness, routes: Map<string, RoutedWire> | null, parts: EvalPart[], boxOf?: (p: EvalPart) => [V3, V3] | undefined, plan?: TravelPlan | null, findings?: WiringFindings | null) {
+  set(h: Harness, routes: Map<string, RoutedWire> | null, parts: EvalPart[], boxOf?: (p: EvalPart) => [V3, V3] | undefined, plan?: TravelPlan | null, findings?: WiringFindings | null): boolean {
+    // A design is read again at every edit, and its wiring comes back the same from most: built from exactly what
+    // it is built from now, every cable stays as it is. (Building them all takes a large harness a good part of a
+    // second, with the page held.)
+    const from = builtFrom(h, routes, parts, boxOf, plan, findings);
+    if (from === this.from) return false;
     this.clear();
+    this.from = from;
     this.byWire = new Map(h.wires.map((w) => [w.id, w]));
     const byId = new Map(parts.map((p) => [p.id, p]));
     for (const p of parts) if (p.removable) this.fade.set(p.id, 0.14);
@@ -345,6 +353,7 @@ export class WiringOverlay implements SceneOverlay {
     if (this.tint) this.setTint(this.tint);
     this.applyLook();
     this.host.requestRender();
+    return true;
   }
 
   /** A see-through copy of every wiring mesh, drawn only where a part is in front of it (the solid look). */
@@ -643,6 +652,7 @@ export class WiringOverlay implements SceneOverlay {
   }
 
   private clear() {
+    this.from = "";
     for (const o of this.wires.values()) {
       for (const sg of o.segs) sg.cable.geometry.dispose();
       for (const g of o.plugs) for (const c of g.children) (c as THREE.Mesh).geometry.dispose();
@@ -670,6 +680,14 @@ export class WiringOverlay implements SceneOverlay {
 }
 
 const NO_GHOSTS: ReadonlyMap<string, number> = new Map();
+
+/** All that set() reads of what it is given, as text: the same text builds the same cables. */
+function builtFrom(h: Harness, routes: Map<string, RoutedWire> | null, parts: EvalPart[], boxOf: ((p: EvalPart) => [V3, V3] | undefined) | undefined, plan: TravelPlan | null | undefined, findings: WiringFindings | null | undefined): string {
+  // of a part: where it is, how it is drawn, and its box when a cable's end may be inside it
+  const of = parts.map((p) => [p.id, p.xf, p.removable ? 1 : 0, p.hidden ? 1 : 0, p.kind === "component" ? 1 : 0, p.kind === "component" || p.removable || p.hidden ? null : (boxOf?.(p) ?? null)]);
+  // (how long the planning took is not what was planned)
+  return JSON.stringify([h, routes ? [...routes.values()] : null, of, plan ? { ...plan, ms: 0 } : null, findings?.ties ?? null]);
+}
 
 const sameSet = (a: ReadonlySet<string> | null, b: ReadonlySet<string> | null) => (!a && !b) || (!!a && !!b && a.size === b.size && [...a].every((x) => b.has(x)));
 

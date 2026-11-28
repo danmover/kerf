@@ -12,8 +12,11 @@
 // so editing an `expect` line re-checks without running again.
 
 import { create } from "zustand";
-import { meshes, refreshReport, useDesign } from "../core/engine";
-import { resolveMechanism } from "./mech/resolve";
+import { during } from "../app/stalls";
+import { meshes, meshOf, refreshReport, useDesign } from "../core/engine";
+import { prepareHolds } from "../core/holds";
+import { resolveMechanism, warmMechanism } from "./mech/resolve";
+import { breathe, inSlices } from "../core/slices";
 import { useProject } from "../app/project";
 import type { CheckItem } from "../core/checks";
 import { useVerdict } from "../core/briefChecks";
@@ -163,7 +166,18 @@ interface Slot {
 
 /** a variant that takes longer than this is stopped */
 export const RUN_TIME_LIMIT_MS = 600_000;
-const POOL = Math.max(1, Math.min(3, (typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 2 : 2) - 1));
+const CORES = typeof navigator !== "undefined" ? navigator.hardwareConcurrency || 2 : 2;
+const POOL = Math.max(1, Math.min(3, CORES - 1));
+/**
+ * On a machine with few cores, runs wait while the design builds and is checked. The kernel, the detailed builds
+ * and the fit check each keep a core busy then, and runs started beside them were measured to double the wait for
+ * the checks, which is what the person at the screen is waiting for. Runs already going carry on.
+ */
+const holdRuns = () => {
+  if (CORES >= 8) return false;
+  const d = useDesign.getState();
+  return (d.stage === "building" || d.stage === "checking") && d.kernelStatus !== "error";
+};
 const slots: Slot[] = [];
 let queue: Job[] = [];
 let nextId = 0;
@@ -242,6 +256,7 @@ function finishVariant(job: Job, result: RunResult) {
 }
 
 function pump() {
+  if (holdRuns()) return;
   while (queue.length) {
     let slot = slots.find((s) => !s.job);
     if (!slot) {
@@ -312,8 +327,8 @@ export function loadSavedRuns(projectId: string): Promise<void> {
     if (loading !== entry) return;
     loading = null;
     const next = entry.then;
-    if (next && useDesign.getState().model === next.model) schedule(next.model, next.force);
-    refreshReport();
+    if (next && useDesign.getState().model === next.model) void scheduleReady(next.model, next.force);
+    else refreshReport();
   });
   return entry.done;
 }
@@ -358,7 +373,7 @@ function schedule(model: Model, force?: string) {
   const auto = sGet().auto;
   waitingForGeometry = false;
   for (const def of defs) {
-    const spec = runSpecOf(def, model);
+    const spec = during("simulations: reading the mechanism", () => runSpecOf(def, model));
     if (spec === null || "error" in spec) {
       const prev = runs.get(def.label);
       cancel(def.label);
@@ -390,15 +405,44 @@ function schedule(model: Model, force?: string) {
 }
 
 let timer: ReturnType<typeof setTimeout> | null = null;
+/** the model whose mechanisms are being got ready to read (scheduleReady) */
+let warming: Model | null = null;
 
 /** Schedule after typing settles, so a half-typed number does not start three runs. */
 function scheduleSoon(model: Model) {
   if (timer) clearTimeout(timer);
   timer = setTimeout(() => {
     timer = null;
-    schedule(model);
-    refreshReport();
+    void scheduleReady(model);
   }, 700);
+}
+
+/**
+ * Schedule a model's runs once the slow parts of reading its mechanisms are worked out. On a large assembly those
+ * take a few tenths of a second (hundreds of screws to measure, every part's mass); they are done between frames
+ * here, so the page keeps answering, and the read in schedule() finds them ready.
+ */
+async function scheduleReady(model: Model, force?: string) {
+  if ((model.scenarios ?? []).some((d) => d.spec.mechanism)) {
+    warming = model;
+    const wanted = () => warming === model && useDesign.getState().model === model;
+    const all = await inSlices(warmMechanism(model, (h) => meshes.get(h)), wanted);
+    // every part has its shape: the read will ask how the design holds together
+    if (all) await prepareHolds(model, meshOf, wanted);
+    // the read gets a turn of its own, after whatever the last piece of that left to do
+    if (all !== null && wanted()) await breathe();
+    const dropped = all === null || !wanted();
+    if (warming === model) warming = null;
+    // dropped: the design changed, and its own schedule is on the way
+    if (dropped) return;
+    schedule(model, force);
+    // and so does putting the report together again
+    await breathe();
+    if (useDesign.getState().model === model) refreshReport();
+    return;
+  }
+  schedule(model, force);
+  refreshReport();
 }
 
 function scheduleNow() {
@@ -464,7 +508,7 @@ export function simItems(items: CheckItem[], ctx: ReportContext): CheckItem[] {
   if (!defs.length) return out;
   // the report can be re-composed for an older model while a newer one is still building: only the design's
   // current model schedules runs, or an older one would drop scenarios added since
-  if (ctx.live && scheduledModel !== ctx.model && !timer && ctx.model === useDesign.getState().model) schedule(ctx.model);
+  if (ctx.live && scheduledModel !== ctx.model && !timer && !warming && ctx.model === useDesign.getState().model) schedule(ctx.model);
   for (const def of defs) {
     const base = { category: "simulation" as const, basis: "virtual test" as const, uses: def.uses.length ? def.uses : undefined };
     const id = (s: string) => `sim:${def.label}:${s}`;
@@ -552,6 +596,7 @@ let started = false;
 export function resetSim() {
   if (timer) clearTimeout(timer);
   timer = null;
+  warming = null;
   queue = [];
   partial.clear();
   for (const s of [...slots]) if (s.job) kill(s);
@@ -581,10 +626,12 @@ export function startSimRuntime() {
   const open = useProject.getState().current;
   if (open) void loadSavedRuns(open.id);
   useDesign.subscribe((s, prev) => {
+    // runs held back for the checks (holdRuns) start once they are in
+    if (s.stage !== prev.stage || s.kernelStatus !== prev.kernelStatus) pump();
     if (!useProject.getState().current) return;
     if (s.model && s.model !== prev.model && s.model !== scheduledModel) scheduleSoon(s.model);
     // a mechanism waiting for its parts' shapes runs once they are built
-    else if (waitingForGeometry && s.model && (s.meshVersion !== prev.meshVersion || s.stage !== prev.stage) && !timer) scheduleSoon(s.model);
+    else if (waitingForGeometry && s.model && (s.meshVersion !== prev.meshVersion || s.stage !== prev.stage) && !timer && !warming) scheduleSoon(s.model);
   });
   const m = useDesign.getState().model;
   if (m) schedule(m);
@@ -596,7 +643,7 @@ export function whenSimulated(timeoutMs = 600_000, labels?: string[], signal?: A
   const done = () => {
     const m = useDesign.getState().model;
     if (!m) return false;
-    if (timer || scheduledModel !== m) return false;
+    if (timer || warming || scheduledModel !== m) return false;
     return (m.scenarios ?? []).every((d) => (labels && !labels.includes(d.label)) || ["done", "error", "idle"].includes(sGet().runs.get(d.label)?.status ?? ""));
   };
   return new Promise((resolve) => {
