@@ -35,7 +35,7 @@ import { ChangeDepth } from "./render/changeDepth";
 import { readPixelsLater } from "./render/readback";
 import { ContactShadow } from "./render/contactShadow";
 import { FloorMirror, Ground, mirrorPlane, shadowCatcher } from "./render/ground";
-import { StudioEnvironments, concentricDisc, dirFrom, halton, lightSteps, lightingPreset, type LightingPreset } from "./render/studio";
+import { StudioEnvironments, concentricDisc, dirFrom, fitShadowMap, halton, lightSteps, lightingPreset, type LightingPreset } from "./render/studio";
 import type { PhotoRenderer, PhotoPart, PhotoQuality, PhotoStage } from "./render/photoreal";
 import { MOUSE_SCHEMES, sketchButtons, type MouseAction, type MouseScheme } from "../../app/mouse";
 import { MeasureOverlay } from "./measure";
@@ -911,6 +911,7 @@ export class SceneController {
       l.dispose();
     }
     while (this.casters.length < casters.length) this.casters.push(this.shadowLight(1024));
+    this.fitShadows();
     this.casterDirs = casters.map((c) => dirFrom(c.az + this.render$.lightAngle, c.el));
     casters.forEach((c, k) => {
       this.casters[k].color.set(c.color);
@@ -2520,6 +2521,16 @@ export class SceneController {
     this.placeSection();
   }
 
+  /**
+   * Sizes every shadow-casting light's map to the model. Also when a light set is put in place: a light it brings is
+   * new, and one made after the model was laid out (a set changed, or one that waited for the graphics card) would
+   * keep the 10 units its map starts with, so that its shadows fell only on the middle of the model.
+   */
+  private fitShadows() {
+    const size = this.bounds.getSize(new THREE.Vector3());
+    for (const l of [this.key, ...this.casters]) fitShadowMap(l.shadow, size);
+  }
+
   private layoutStage() {
     const size = new THREE.Vector3();
     const center = new THREE.Vector3();
@@ -2541,28 +2552,7 @@ export class SceneController {
     this.gridMat.uniforms.uCell.value = Math.max(cell, 1);
     this.gridMat.uniforms.uFade.value = r * 3.5;
     this.gridMat.uniforms.uCenter.value.set(center.x, center.y, zFloor);
-    const diag = size.length();
-    const sc = this.key.shadow.camera as THREE.OrthographicCamera;
-    const ext = Math.max(diag, 20) * 0.85;
-    sc.left = -ext;
-    sc.right = ext;
-    sc.top = ext;
-    sc.bottom = -ext;
-    sc.near = Math.max(diag, 20) * 0.2;
-    sc.far = Math.max(diag, 20) * 4;
-    sc.updateProjectionMatrix();
-    this.key.shadow.normalBias = Math.max(0.02, r * 0.0025);
-    for (const l of this.casters) {
-      const cc = l.shadow.camera as THREE.OrthographicCamera;
-      cc.left = sc.left;
-      cc.right = sc.right;
-      cc.top = sc.top;
-      cc.bottom = sc.bottom;
-      cc.near = sc.near;
-      cc.far = sc.far;
-      cc.updateProjectionMatrix();
-      l.shadow.normalBias = this.key.shadow.normalBias;
-    }
+    this.fitShadows();
     this.placeKey(0);
     this.pipe.look.aoRadius = THREE.MathUtils.clamp(r * 0.06, 0.8, 60);
     // contact shadow: surfaces up to a third of the model's size above the floor darken it, the closest the most

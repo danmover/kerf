@@ -491,6 +491,26 @@ export function lightSteps(i: number, casters: number): number[] {
   return at;
 }
 
+/**
+ * Sizes a shadow-casting light's map to a model of this size: square and deep enough to hold the model from wherever
+ * the light stands (it stands twice the model's diagonal from its middle, see the scene's placeLight). A light made
+ * with the renderer's own map sees 10 units across, whatever the model.
+ */
+export function fitShadowMap(shadow: THREE.DirectionalLightShadow, size: THREE.Vector3) {
+  const r = Math.max(size.x, size.y, size.z, 20);
+  const diag = Math.max(size.length(), 20);
+  const ext = diag * 0.85;
+  const c = shadow.camera;
+  c.left = -ext;
+  c.right = ext;
+  c.top = ext;
+  c.bottom = -ext;
+  c.near = diag * 0.2;
+  c.far = diag * 4;
+  c.updateProjectionMatrix();
+  shadow.normalBias = Math.max(0.02, r * 0.0025);
+}
+
 /** Low-discrepancy sequence used for jitter: light positions, sub-pixel offsets, AO rotation. */
 export function halton(i: number, base: number): number {
   let f = 1;
