@@ -151,6 +151,26 @@ float kNoise(vec3 x) {
              mix(mix(kHash(i + vec3(0.0, 0.0, 1.0)), kHash(i + vec3(1.0, 0.0, 1.0)), f.x),
                  mix(kHash(i + vec3(0.0, 1.0, 1.0)), kHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
 }
+// kNoise with how fast it changes along x and y: (value, d/dx, d/dy)
+vec3 kNoiseG(vec3 x) {
+  vec3 i = floor(x);
+  vec3 f = fract(x);
+  vec3 u = f * f * (3.0 - 2.0 * f);
+  vec3 du = 6.0 * f * (1.0 - f);
+  float a = kHash(i);
+  float b = kHash(i + vec3(1.0, 0.0, 0.0));
+  float c = kHash(i + vec3(0.0, 1.0, 0.0));
+  float d = kHash(i + vec3(1.0, 1.0, 0.0));
+  float e = kHash(i + vec3(0.0, 0.0, 1.0));
+  float g = kHash(i + vec3(1.0, 0.0, 1.0));
+  float h = kHash(i + vec3(0.0, 1.0, 1.0));
+  float k = kHash(i + vec3(1.0, 1.0, 1.0));
+  float lo = mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
+  float hi = mix(mix(e, g, u.x), mix(h, k, u.x), u.y);
+  float sx = mix(mix(b - a, d - c, u.y), mix(g - e, k - h, u.y), u.z);
+  float sy = mix(mix(c, d, u.x) - mix(a, b, u.x), mix(h, k, u.x) - mix(e, g, u.x), u.z);
+  return vec3(mix(lo, hi, u.z), sx * du.x, sy * du.y);
+}
 `;
 
 /**
@@ -170,7 +190,7 @@ vec2 kThread() {
   vec2 cs = on > 0.5 ? vThread.yz : vec2(1.0, 0.0);
   float P = max(length(cs), 1e-4);
   float ph = vThread.x + sign(vThreadCode) * starts * atan(cs.y, cs.x) * 0.15915494;
-  float fw = fwidth(vThread.x) + starts * (fwidth(cs.x) + fwidth(cs.y)) / (P * 6.2831853);
+  float fw = kThW.x + starts * (kThW.y + kThW.z) / (P * 6.2831853);
   float fade = on * (1.0 - smoothstep(0.22, 0.5, fw));
   // only between the thread's ends: a plain shank on the same axis stays plain
   float inside = step(-0.02, vThread.x) * step(vThread.x, turns + 0.02);
@@ -224,6 +244,20 @@ vec3 kGrain = vec3(1.0, 0.0, 0.0);
 float kShade = 1.0;
 flat varying float vThreadCode;
 varying vec3 vThread;
+// How the part's own point (kPx, kPy), the view's (kVx, kVy) and a thread's place change from this pixel to the next
+// across and down, with kFw and kThW the widths of the first and last (their fwidth). Taken once at the top of main
+// and nowhere else: Direct3D's compiler takes seconds over a width asked for inside a branch, which it has to work
+// free of the branch first, and the parts' shader asked for some twenty. Everything below works its widths out from
+// these: kW for a value that changes by g for each mm along the part's axes.
+vec3 kPx;
+vec3 kPy;
+vec3 kFw;
+vec3 kVx;
+vec3 kVy;
+vec3 kThW;
+float kW(vec3 g) {
+  return abs(dot(g, kPx)) + abs(dot(g, kPy));
+}
 ${NOISE}
 ${THREAD}
 
@@ -238,12 +272,13 @@ float kChangedHere(vec3 viewPos) {
   float z = viewPos.z;
   vec2 uv = gl_FragCoord.xy * uChangeView.xy;
   vec2 o = uChangeView.xy;
-  float g = abs(z - kViewZ(texture2D(tChange, uv).x));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv + vec2(o.x, 0.0)).x)));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv - vec2(o.x, 0.0)).x)));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv + vec2(0.0, o.y)).x)));
-  g = min(g, abs(z - kViewZ(texture2D(tChange, uv - vec2(0.0, o.y)).x)));
-  vec3 fn = normalize(cross(dFdx(viewPos), dFdy(viewPos)));
+  // (read at its one level: a read that picks its level by itself is a width asked for in a branch, see kPx)
+  float g = abs(z - kViewZ(textureLod(tChange, uv, 0.0).x));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv + vec2(o.x, 0.0), 0.0).x)));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv - vec2(o.x, 0.0), 0.0).x)));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv + vec2(0.0, o.y), 0.0).x)));
+  g = min(g, abs(z - kViewZ(textureLod(tChange, uv - vec2(0.0, o.y), 0.0).x)));
+  vec3 fn = normalize(cross(kVx, kVy));
   float facing = max(0.15, abs(dot(fn, normalize(viewPos))));
   float tol = uChange.y / facing + z * z / (uChangeView.z * 16777216.0) * 4.0;
   return smoothstep(tol, tol * 2.0, g);
@@ -268,19 +303,19 @@ vec3 kDetail(vec3 p, vec3 n) {
     if (n.z < -0.97 && p.z < uKBox0.z + sc * 0.5) {
       // the face that lay on the textured build plate: a fine pebbled grain, duller than the rest
       vec3 g = p / 0.11;
-      float gfade = 1.0 - smoothstep(0.35, 0.9, length(fwidth(g)));
+      float gfade = 1.0 - smoothstep(0.35, 0.9, length(kFw) / 0.11);
       float pe = kNoise(g) * 0.6 + kNoise(g * 2.3 + 5.1) * 0.4;
       return vec3(amp * 0.6 * pe * gfade, 0.15 * (1.0 - pe) * gfade, 0.12 + (pe - 0.5) * rv * gfade);
     }
     float q = p.z / sc;
-    float fade = 1.0 - smoothstep(0.3, 0.75, fwidth(q));
+    float fade = 1.0 - smoothstep(0.3, 0.75, kFw.z / sc);
     float w = 0.5 + 0.5 * cos(6.2831853 * q);
     w = clamp(w + (kNoise(vec3(p.xy * 0.35, floor(q))) - 0.5) * 0.35, 0.0, 1.0);
     float side = 1.0 - smoothstep(0.75, 0.97, an.z);
     float top = 1.0 - side;
     // top and bottom skins: fine diagonal extrusion lines
     float d = (p.x + p.y) / (sc * 2.0);
-    float tf = 1.0 - smoothstep(0.3, 0.75, fwidth(d));
+    float tf = 1.0 - smoothstep(0.3, 0.75, kW(vec3(1.0, 1.0, 0.0)) / (sc * 2.0));
     float tw = 0.5 + 0.5 * cos(6.2831853 * d);
     float h = side * w * fade + top * tw * tf * 0.35;
     // the seam down the back, where each layer's outer wall starts and ends: a small blob per layer, wandering a little
@@ -289,7 +324,7 @@ vec3 kDetail(vec3 p, vec3 n) {
     float ang = atan(rxy.y, rxy.x) - 1.5707963;
     ang = abs(ang - 6.2831853 * floor(ang / 6.2831853 + 0.5));
     float sd = ang * length(rxy) + (kHash(vec3(floor(q), 4.0, 2.0)) - 0.5) * 0.35;
-    float sw = max(0.18, length(fwidth(p.xy)) * 1.5);
+    float sw = max(0.18, length(kFw.xy) * 1.5);
     float seam = side * fade * (1.0 - smoothstep(sw, sw * 2.2, sd)) * (0.18 / sw) * (0.55 + 0.45 * w);
     h += seam * 1.6;
     return vec3(amp * h, side * (1.0 - w) * fade + top * (1.0 - tw) * tf * 0.3, (h - 0.5 * (side * fade + top * tf * 0.35)) * rv - seam * 0.12);
@@ -302,7 +337,8 @@ vec3 kDetail(vec3 p, vec3 n) {
     float dv = p.y - j * stepv;
     float dx = sqrt(max(R * R - dv * dv, 0.0));
     float ph = (p.x - dx) / (sc * 4.0);
-    float fade = 1.0 - smoothstep(0.3, 0.8, fwidth(ph));
+    // (ph changes by 1 along x and by dv / dx along y, over sc * 4)
+    float fade = 1.0 - smoothstep(0.3, 0.8, kW(vec3(1.0, dv / max(dx, 1e-3), 0.0)) / (sc * 4.0));
     float m = 0.5 + 0.5 * cos(6.2831853 * ph);
     float tone = kHash(vec3(j, 1.0, 2.0)) - 0.5;
     kGrain = vec3(-dv, dx, 0.0) / max(R, 1e-3);
@@ -316,20 +352,20 @@ vec3 kDetail(vec3 p, vec3 n) {
     if (kind == ${Detail.Machined} && an.z < 0.3) kGrain = normalize(vec3(-n.y, n.x, 0.0) + 1e-5);
     vec3 q = an.x > 0.8 ? vec3(p.y / stretch, p.z, p.x) : vec3(p.x / stretch, p.y, p.z);
     q /= sc;
-    float fade = 1.0 - smoothstep(0.4, 1.2, length(fwidth(q.yz)));
+    float fade = 1.0 - smoothstep(0.4, 1.2, length(an.x > 0.8 ? kFw.zx : kFw.yz) / sc);
     float s = kNoise(q) * 0.65 + kNoise(q * vec3(1.0, 2.7, 2.7)) * 0.35;
     return vec3(amp * s * fade, 0.0, (s - 0.5) * rv * (0.35 + 0.65 * fade));
   }
   if (kind == ${Detail.Grain}) {
     vec3 q = p / sc;
-    float fade = 1.0 - smoothstep(0.4, 1.0, length(fwidth(q)));
+    float fade = 1.0 - smoothstep(0.4, 1.0, length(kFw) / sc);
     float s = kNoise(q) * 0.6 + kNoise(q * 2.3) * 0.4;
     return vec3(amp * s * fade, 0.0, (s - 0.5) * rv * fade);
   }
   if (kind == ${Detail.Peel}) {
     vec3 q = p / sc;
     float s = kNoise(q) * 0.55 + kNoise(q * 2.1 + 3.7) * 0.3 + kNoise(q * 4.7) * 0.15;
-    float fade = 1.0 - smoothstep(0.5, 1.5, length(fwidth(q)));
+    float fade = 1.0 - smoothstep(0.5, 1.5, length(kFw) / sc);
     return vec3(amp * s * fade, 0.0, (s - 0.5) * rv * fade);
   }
   if (kind == ${Detail.Weave}) {
@@ -346,7 +382,7 @@ vec3 kDetail(vec3 p, vec3 n) {
     float across = warp ? f.y : f.x;
     float along = warp ? uv.x : uv.y;
     float bulge = sin(3.14159 * across);
-    float fade = 1.0 - smoothstep(0.25, 0.6, length(fwidth(uv)));
+    float fade = 1.0 - smoothstep(0.25, 0.6, length(an.z >= max(an.x, an.y) ? kFw.xy : (an.x >= an.y ? kFw.yz : kFw.xz)) / sc);
     float fib = kNoise(vec3(along * 0.5, (warp ? uv.y : uv.x) * 30.0, cell.x * 1.7 + cell.y));
     return vec3(amp * bulge * fade, (warp ? 0.0 : 1.0) * fade + (fib - 0.5) * 0.3 * fade, ((warp ? -0.5 : 0.5) + (fib - 0.5)) * rv * fade);
   }
@@ -356,7 +392,7 @@ vec3 kDetail(vec3 p, vec3 n) {
     float ring = fract(length(w.yz + vec2(37.0, -53.0)) / sc);
     float late = smoothstep(0.55, 0.9, ring) * (1.0 - smoothstep(0.92, 1.0, ring));
     float pore = kNoise(vec3(p.x * 0.08, p.y * 5.0, p.z * 5.0));
-    float fade = 1.0 - smoothstep(0.6, 1.6, length(fwidth(p.yz / sc)));
+    float fade = 1.0 - smoothstep(0.6, 1.6, length(kFw.yz) / sc);
     return vec3(amp * (late * 0.6 + pore * 0.4) * fade, (late * 0.85 + pore * 0.15) * mix(0.6, 1.0, fade), (pore - 0.5) * rv);
   }
   if (kind == ${Detail.Plywood}) {
@@ -372,16 +408,25 @@ vec3 kDetail(vec3 p, vec3 n) {
     // thin darker late-wood lines, fine fibres and big gentle blotches of tone
     // the bands bunch up and spread out (q's spacing wanders), and each line has its own strength,
     // so the face never reads as evenly ruled stripes
-    float wob = kNoise(vec3(pg * 0.004, po * 0.011, 1.3)) * 4.5 + kNoise(vec3(pg * 0.018, po * 0.045, 4.1)) * 1.1;
+    vec3 wob1 = kNoiseG(vec3(pg * 0.004, po * 0.011, 1.3));
+    vec3 wob2 = kNoiseG(vec3(pg * 0.018, po * 0.045, 4.1));
+    float wob = wob1.x * 4.5 + wob2.x * 1.1;
     float q = po / sc + wob + pg * 0.002;
+    // how fast q changes along the grain and across it (the wander's own slope with it), and so from pixel to pixel
+    float qg = 0.002 + wob1.y * 0.018 + wob2.y * 0.0198;
+    float qo = 1.0 / sc + wob1.z * 0.0495 + wob2.z * 0.0495;
+    vec3 eg = vec3(ga == 0 ? 1.0 : 0.0, ga == 1 ? 1.0 : 0.0, ga == 2 ? 1.0 : 0.0);
+    vec3 eo = vec3(oa == 0 ? 1.0 : 0.0, oa == 1 ? 1.0 : 0.0, oa == 2 ? 1.0 : 0.0);
+    float fo = oa == 0 ? kFw.x : (oa == 1 ? kFw.y : kFw.z);
+    float ft = ta == 0 ? kFw.x : (ta == 1 ? kFw.y : kFw.z);
     float band = fract(q);
     float bi = floor(q);
     float lineK = kHash(vec3(bi, 3.0, 9.0));
     lineK = 0.12 + 0.88 * lineK * lineK;
     float late = smoothstep(0.42, 0.84, band) * (1.0 - smoothstep(0.86, 1.0, band)) * lineK;
-    float ffade = 1.0 - smoothstep(0.25, 0.7, fwidth(q));
+    float ffade = 1.0 - smoothstep(0.25, 0.7, kW(eg * qg + eo * qo));
     float fib = kNoise(vec3(pg * 0.11, po * 3.5, 2.0));
-    float fibFade = 1.0 - smoothstep(0.3, 0.9, fwidth(po * 3.5));
+    float fibFade = 1.0 - smoothstep(0.3, 0.9, fo * 3.5);
     float blot = kNoise(vec3(pg * 0.006, po * 0.02, 7.7)) * 0.7 + kNoise(vec3(pg * 0.03, po * 0.08, 5.3)) * 0.3;
     float faceTone = 0.12 + late * 0.34 * ffade + (fib - 0.5) * 0.16 * fibFade + (blot - 0.5) * 0.36;
     float faceH = late * 0.6 * ffade + fib * 0.4 * fibFade;
@@ -391,8 +436,9 @@ vec3 kDetail(vec3 p, vec3 n) {
     float pl = (pt - uPly.z) / plyW;
     float k = floor(pl);
     float f = fract(pl);
-    float pfade = 1.0 - smoothstep(0.35, 1.1, fwidth(pl));
-    float glue = (1.0 - smoothstep(0.0, 0.05 + fwidth(pl), min(f, 1.0 - f))) * pfade;
+    float plw = ft / plyW;
+    float pfade = 1.0 - smoothstep(0.35, 1.1, plw);
+    float glue = (1.0 - smoothstep(0.0, 0.05 + plw, min(f, 1.0 - f))) * pfade;
     bool along = mod(k, 2.0) < 0.5;
     bool endGrain = (ng > 0.5) == along;
     float pore = kNoise(vec3(pg * 2.4, po * 2.4, pt * 7.0));
@@ -418,7 +464,7 @@ vec3 kMake(vec3 p, vec3 n) {
     float r = length(r2);
     kGrain = r > 1e-4 ? vec3(-r2.y, r2.x, 0.0) / r : vec3(1.0, 0.0, 0.0);
     float ph = (an.z > 0.9 ? r : p.z) / 0.07;
-    float fade = 1.0 - smoothstep(0.3, 0.8, fwidth(ph));
+    float fade = 1.0 - smoothstep(0.3, 0.8, (an.z > 0.9 ? kW(vec3(r2 / max(r, 1e-4), 0.0)) : kFw.z) / 0.07);
     float m = 0.5 + 0.5 * cos(6.2831853 * ph);
     float chatter = kNoise(vec3(r * 0.4, p.z * 0.4, 3.0)) - 0.5;
     return vec3(0.0015 * m * fade, 0.0, (m - 0.5) * 0.14 * fade + chatter * 0.05);
@@ -427,7 +473,7 @@ vec3 kMake(vec3 p, vec3 n) {
     // the parting line round its middle: a hair-thin ridge where the mould halves met
     float side = 1.0 - smoothstep(0.6, 0.9, an.z);
     float zp = c.z;
-    float lw = max(0.05, fwidth(p.z) * 1.5);
+    float lw = max(0.05, kFw.z * 1.5);
     float line = side * (1.0 - smoothstep(lw, lw * 2.0, abs(p.z - zp))) * (0.05 / lw);
     // ejector pins underneath: faint rings on a grid, a touch glossier inside
     float pin = 0.0;
@@ -437,7 +483,7 @@ vec3 kMake(vec3 p, vec3 n) {
       vec2 g = mod(p.xy - c.xy + pitch * 0.5, pitch) - pitch * 0.5;
       float rr = length(g);
       float pr = clamp(pitch * 0.12, 1.0, 3.0);
-      float pw = max(0.06, length(fwidth(p.xy)) * 1.5);
+      float pw = max(0.06, length(kFw.xy) * 1.5);
       pin = (1.0 - smoothstep(pw, pw * 2.0, abs(rr - pr))) * (0.06 / pw);
       inner = 1.0 - smoothstep(pr - pw, pr, rr);
     }
@@ -456,7 +502,7 @@ vec3 kMake(vec3 p, vec3 n) {
     float depth = dot(p - uKBox0, ta) / max(t, 1e-3);
     // the lines lag toward the beam's exit side
     float sCoord = dot(p, along) + depth * depth * 0.12;
-    float fade = 1.0 - smoothstep(0.3, 0.9, fwidth(sCoord * 6.0));
+    float fade = 1.0 - smoothstep(0.3, 0.9, kW(along + ta * (0.24 * depth / max(t, 1e-3))) * 6.0);
     float st = kNoise(vec3(sCoord * 6.0, depth * 0.6, 1.7)) * 0.7 + kNoise(vec3(sCoord * 17.0, depth, 4.2)) * 0.3;
     kGrain = ta;
     kShade *= 0.8 - 0.1 * depth;
@@ -476,13 +522,13 @@ mat3 kTangentFrame(vec3 n) {
 }
 
 // Bump from a height in mm (Mikkelsen, unnormalised so the slope stays true at every zoom)
-vec3 kPerturb(vec3 pos, vec3 n, float h, float faceDir) {
-  vec3 sx = dFdx(pos);
-  vec3 sy = dFdy(pos);
+// (dh: how the height changes from this pixel to the next across and down, taken in main)
+vec3 kPerturb(vec3 n, vec2 dh, float faceDir) {
+  vec3 sx = -kVx;
+  vec3 sy = -kVy;
   vec3 r1 = cross(sy, n);
   vec3 r2 = cross(n, sx);
   float det = dot(sx, r1) * faceDir;
-  vec2 dh = vec2(dFdx(h), dFdy(h));
   vec3 grad = sign(det) * (dh.x * r1 + dh.y * r2);
   return normalize(abs(det) * n - grad);
 }
@@ -646,7 +692,15 @@ vThread = aThread.yzw;`,
       .replace("#include <common>", "#include <common>\n" + DETAIL)
       .replace(
         "#include <clipping_planes_fragment>",
-        `#include <clipping_planes_fragment>
+        `  // every width the part's marks need, taken here and nowhere else (see kPx)
+  kPx = dFdx(vKObj);
+  kPy = dFdy(vKObj);
+  kFw = abs(kPx) + abs(kPy);
+  kVx = dFdx(vViewPosition);
+  kVy = dFdy(vViewPosition);
+  kThW = fwidth(vThread);
+  float kScanW = fwidth(dot(vKWorld, uScanDir.xyz));
+#include <clipping_planes_fragment>
   float kChanged = 1.0;
   float kFront = 0.0;
   if (uChange.x > 0.5) {
@@ -657,7 +711,7 @@ vThread = aThread.yzw;`,
     // through the same pixel arrives, so the two swap over at once
     if (uSweep.w > 0.5 && kChanged > 0.5) {
       if (uChange.x > 1.5) {
-        float kdn = texture2D(tChange, gl_FragCoord.xy * uChangeView.xy).x;
+        float kdn = textureLod(tChange, gl_FragCoord.xy * uChangeView.xy, 0.0).x;
         vec3 kp = kdn < 0.99999 ? cameraPosition + (vKWorld - cameraPosition) * (kViewZ(kdn) / -vViewPosition.z) : vKWorld;
         float kAhead = kSweepAt(kp) - uSweepFront.x;
         if (kAhead < 0.0) discard;
@@ -679,7 +733,7 @@ vThread = aThread.yzw;`,
   // a rounded edge carries its face's pattern: the pattern follows the flat face, not the round's turned normal
   vec3 kN = normalize(vKObjN);
   if (vKBand > 0.5) {
-    vec3 kF = cross(dFdx(vKObj), dFdy(vKObj));
+    vec3 kF = cross(kPx, kPy);
     if (dot(kF, kF) > 1e-20) kN = normalize(kF) * sign(dot(kF, kN) + 1e-9);
   }
   vec3 kd = kDetail(vKObj, kN);
@@ -692,7 +746,14 @@ vThread = aThread.yzw;`,
       .replace("#include <envmap_physical_pars_fragment>", "#include <envmap_physical_pars_fragment>\n" + FILL_PARS)
       .replace("#include <lights_physical_pars_fragment>", LIGHTS_PARS)
       .replace("#include <lights_fragment_maps>", LIGHTS_MAPS + "\n  radiance *= uEnvBoost;")
-      .replace("#include <normal_fragment_maps>", "#include <normal_fragment_maps>\n  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(-vViewPosition, normal, (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x, faceDirection);")
+      .replace(
+        "#include <normal_fragment_maps>",
+        `#include <normal_fragment_maps>
+  // (the height's own slope is taken outside the branch, as every width is: see kPx)
+  float kH = (uDetail.y > 0.0 ? kd.x : 0.0) + kThr.x;
+  vec2 kDh = vec2(dFdx(kH), dFdy(kH));
+  if (uDetail.y > 0.0 || uThreads > 0.5) normal = kPerturb(normal, kDh, faceDirection);`,
+      )
       .replace(
         "#include <emissivemap_fragment>",
         `#include <emissivemap_fragment>
@@ -712,7 +773,7 @@ vThread = aThread.yzw;`,
     if (uScanDir.w > 0.0) {
       float kq = kAlong / uScanDir.w;
       float kLine = smoothstep(0.55, 0.95, abs(fract(kq) - 0.5) * 2.0);
-      kBand *= mix(0.35 + 1.3 * kLine, 1.0, smoothstep(0.25, 0.6, fwidth(kq)));
+      kBand *= mix(0.35 + 1.3 * kLine, 1.0, smoothstep(0.25, 0.6, kScanW / uScanDir.w));
     }
     totalEmissiveRadiance += uGlow * 2.5 * kBand;
   }
@@ -721,7 +782,7 @@ vThread = aThread.yzw;`,
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
   (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0], aBevel: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-12";
+  mat.customProgramCacheKey = () => "kerf-part-13";
 }
 
 /**

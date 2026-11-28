@@ -15,7 +15,7 @@
 import * as THREE from "three";
 import { FullScreenQuad } from "three/examples/jsm/postprocessing/Pass.js";
 import { concentricDisc, halton } from "./studio";
-import { ShaderGate, handing, listOf } from "./shaderGate";
+import { ShaderGate, askedBy, handing, listOf } from "./shaderGate";
 
 export type Quality = "draft" | "balanced" | "high";
 
@@ -748,13 +748,13 @@ export class RenderPipeline {
         if (!r.localClippingEnabled) {
           // and which shader a material gets depends on what is drawn into: against the canvas it would be another one
           r.setRenderTarget(this.sampleRT);
-          return r.compileAsync(scene, camera).then(() => undefined);
+          return askedBy(`${scene.name || scene.type}, built ahead, layers ${camera.layers.mask}`, () => r.compileAsync(scene, camera)).then(() => undefined);
         }
         return Promise.all(
           [...byCuts].map(([cuts, objects]) => {
             gate.cutNext(cuts);
             r.setRenderTarget(this.sampleRT);
-            return r.compileAsync(listOf(objects), camera, scene);
+            return askedBy(`${scene.name || scene.type}, built ahead, layers ${camera.layers.mask}`, () => r.compileAsync(listOf(objects), camera, scene));
           }),
         ).then(() => undefined);
       }, false);

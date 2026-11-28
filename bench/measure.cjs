@@ -286,7 +286,7 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
     const last = (list) => list.reduce((a, b) => Math.max(a, b[1] + b[2]), 0);
     console.log(`shader builds the card finished: ${built.length}, ${Math.round(total / 100) / 10} s of building in all (builds side by side each count in full); ${waited.length} a picture waited for, the last of those done ${Math.round(last(waited) / 100) / 10} s after the page opened, the last of all ${Math.round(last(built) / 100) / 10} s after`);
     console.log('by kind of shader (builds, s in all, longest s): ' + Object.entries(kinds).sort((a, b) => b[1].totalMs - a[1].totalMs).slice(0, 24).map(([k, v]) => `${k}: ${v.builds}, ${Math.round(v.totalMs / 100) / 10}, ${Math.round(v.longestMs / 100) / 10}`).join(' | '));
-    console.log('the 30 that took longest (what, sent at ms, took ms, a picture waited): ' + JSON.stringify(built.slice().sort((a, b) => b[2] - a[2]).slice(0, 30)));
+    console.log('the 30 that took longest (what, sent at ms, took ms, a picture waited, what asked for it): ' + JSON.stringify(built.slice().sort((a, b) => b[2] - a[2]).slice(0, 30)));
   }
   if (m.record) console.log(m.record.split('\n').slice(0, 45).join('\n'));
   // the longest frames, with what ran in each

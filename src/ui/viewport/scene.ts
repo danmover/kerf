@@ -564,6 +564,9 @@ export class SceneController {
   private autoFit = true;
 
   constructor(private container: HTMLElement) {
+    // (named for the list of shader builds, which says what each was asked for)
+    this.scene.name = "the view";
+    this.overlay.name = "the overlays";
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, powerPreference: "high-performance" });
     this.renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
     this.renderer.outputColorSpace = THREE.SRGBColorSpace;
@@ -4288,6 +4291,7 @@ export class SceneController {
   private stageSwatch() {
     if (this.swatchStage) return this.swatchStage;
     const scene = new THREE.Scene();
+    scene.name = "the material ball";
     const ball = new THREE.Mesh(new THREE.SphereGeometry(10, 64, 48));
     // turn the ball so printed layers and brushing run across the view
     ball.rotation.set(0.35, 0, 0.6);

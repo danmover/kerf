@@ -1,0 +1,119 @@
+design "Finishes"
+note "One part of every finish and way of making the 3D view draws marks for, to compare pictures of the parts' shader before and after a change to it."
+
+part printed_pla {
+  material: "PLA"
+  process: mfg.fdm(layer: 0.2)
+  body box(30, 30, 12, at: (-69, -69, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-69, -69, 12))
+}
+
+part matte_abs {
+  material: "ABS"
+  finish: "matte"
+  body box(30, 30, 12, at: (-23, -69, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-23, -69, 12))
+}
+
+part textured_abs {
+  material: "ABS"
+  finish: "textured"
+  body box(30, 30, 12, at: (23, -69, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (23, -69, 12))
+}
+
+part gloss_abs {
+  material: "ABS"
+  finish: "gloss"
+  body box(30, 30, 12, at: (69, -69, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (69, -69, 12))
+}
+
+part milled_alu {
+  material: "Aluminum 6061"
+  finish: "machined"
+  process: mfg.cnc_mill()
+  body box(30, 30, 12, at: (-69, -23, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-69, -23, 12))
+}
+
+part brushed_alu {
+  material: "Aluminum 6061"
+  finish: "brushed"
+  body box(30, 30, 12, at: (-23, -23, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-23, -23, 12))
+}
+
+part turned_steel {
+  material: "Stainless 304"
+  finish: "machined"
+  process: mfg.cnc_lathe()
+  body cylinder(d: 30, h: 14, at: (23, -23, 0))
+  add cylinder(d: 14, h: 14, at: (23, -23, 14))
+}
+
+part anodized_alu {
+  material: "Aluminum 6061"
+  finish: "anodized"
+  body box(30, 30, 12, at: (69, -23, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (69, -23, 12))
+}
+
+part oxide_steel {
+  material: "Steel"
+  finish: "black-oxide"
+  body box(30, 30, 12, at: (-69, 23, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-69, 23, 12))
+}
+
+part carbon {
+  material: "Carbon fiber"
+  finish: "gloss"
+  process: mfg.carbon_layup()
+  body box(30, 30, 12, at: (-23, 23, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-23, 23, 12))
+}
+
+part ply_varnished {
+  material: "Wood"
+  finish: "varnished"
+  process: mfg.laser_cut()
+  body box(36, 30, 3, at: (23, 23, 0))
+  cut cylinder(d: 10, h: 3, at: (23, 23, 0))
+}
+
+part ply_raw {
+  material: "Wood"
+  finish: "raw"
+  body box(30, 30, 12, at: (69, 23, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (69, 23, 12))
+}
+
+part cast_pu {
+  material: "Polyurethane"
+  process: mfg.vacuum_cast()
+  body box(30, 30, 12, at: (-69, 69, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (-69, 69, 12))
+}
+
+part cut_steel {
+  material: "Steel"
+  process: mfg.laser_cut()
+  body box(36, 30, 3, at: (-23, 69, 0))
+  cut cylinder(d: 10, h: 3, at: (-23, 69, 0))
+}
+
+part silicone {
+  material: "Silicone"
+  body box(30, 30, 12, at: (23, 69, 0), r: 3)
+  add cylinder(d: 16, h: 12, at: (23, 69, 12))
+}
+
+part blasted_alu {
+  material: "Aluminum 6061"
+  finish: "bead-blasted"
+  body cylinder(d: 30, h: 14, at: (69, 69, 0))
+  add cylinder(d: 14, h: 14, at: (69, 69, 14))
+}
+
+component screws = lib.screw(M8, 30) { at: [(-69, 120, 40), (-23, 120, 40), (23, 120, 40), (69, 120, 40)], axis: -Z }

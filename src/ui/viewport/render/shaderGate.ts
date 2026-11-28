@@ -81,7 +81,7 @@ const GIVE_UP_ON_ONE_MS = 300_000;
  * build the card finished, as what it was of (see `told`), when it went to the card (ms since the page opened), how
  * long until it was seen done (ms), and whether a picture waited for it (1 or 0).
  */
-export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0, atOnce: 0, atOnceIdle: 0, heldBack: 0, mostHeld: 0, built: [] as [string, number, number, number][] };
+export const shaderBuilds = { ahead: 0, late: 0, lateFor: [] as string[], waitedMs: 0, waits: [] as string[], leftOut: [] as string[], gaveUp: 0, atOnce: 0, atOnceIdle: 0, heldBack: 0, mostHeld: 0, built: [] as [string, number, number, number, string][] };
 
 /** the draw being made, for telling what a build met at a draw was for */
 const drawing = { on: false, material: null as THREE.Material | null, object: null as THREE.Object3D | null, frame: false, canvas: false, planes: 0, shadow: false };
@@ -97,6 +97,10 @@ const watched = new WeakSet<object>();
 let ahead = 0;
 /** what each of the card's programs is of, for the list of builds */
 const told = new WeakMap<object, string>();
+/** what the builds handed over just now are for (the scene, the camera's layers, what is drawn into), and each program's */
+let askedFor = "";
+const asked = new WeakMap<object, string>();
+const called = (o: THREE.Object3D) => o.name || o.type || "a list";
 
 /** what of the many things a material can be drawn as a shader is built for, by the defines the renderer gives it */
 const DRAWN_AS: [string, string][] = [
@@ -173,6 +177,7 @@ function watchBuilds(gl: WebGLRenderingContext | WebGL2RenderingContext) {
   gl.linkProgram = function (this: unknown, program: WebGLProgram) {
     names.set(program, name || "unnamed");
     told.set(program, tell(texts[0], texts[1]));
+    asked.set(program, ahead ? askedFor : `met at a draw (${drawnNow()})`);
     if (ahead) shaderBuilds.ahead++;
     else {
       shaderBuilds.late++;
@@ -197,6 +202,17 @@ function watchBuilds(gl: WebGLRenderingContext | WebGL2RenderingContext) {
     };
   gl.getProgramInfoLog = timed(gl.getProgramInfoLog as (this: unknown, program: WebGLProgram) => string | null) as typeof gl.getProgramInfoLog;
   gl.getProgramParameter = timed(gl.getProgramParameter as (this: unknown, program: WebGLProgram, what: number) => unknown) as typeof gl.getProgramParameter;
+}
+
+/** Shader builds started inside `work` are written down as asked for by `what` (the list of builds says so). */
+export function askedBy<T>(what: string, work: () => T): T {
+  const was = askedFor;
+  askedFor = what;
+  try {
+    return work();
+  } finally {
+    askedFor = was;
+  }
 }
 
 /**
@@ -374,7 +390,7 @@ export class ShaderGate {
     shaderBuilds.atOnce = this.queue.limit;
     shaderBuilds.atOnceIdle = this.queue.idleLimit;
     this.queue.onBuilt = (program, sentAt, ms, urgent) => {
-      shaderBuilds.built.push([told.get(program) ?? "unnamed", Math.round(sentAt), Math.round(ms), urgent ? 1 : 0]);
+      shaderBuilds.built.push([told.get(program) ?? "unnamed", Math.round(sentAt), Math.round(ms), urgent ? 1 : 0, asked.get(program) ?? ""]);
       if (shaderBuilds.built.length > 800) shaderBuilds.built.shift();
     };
     watchBuilds(r.getContext());
@@ -800,7 +816,12 @@ export class ShaderGate {
     // the builds each material has already: one that is new after this is this kind of draw's
     const had = new Map<THREE.Material, Set<Program>>();
     for (const o of objects) for (const mat of materialsOf(o)) if (!had.has(mat)) had.set(mat, new Set((r.properties.get(mat) as Programs).programs?.values()));
-    holdingBuilds(() => r.compile(list, camera, stage as THREE.Scene), wait);
+    askedFor = `${called(root)}${stage === root ? "" : ` as ${called(stage)}`}, layers ${camera.layers.mask}, into ${target ? `${target.width}x${target.height}` : "the canvas"}${shadow ? ", shadows" : ""}`;
+    try {
+      holdingBuilds(() => r.compile(list, camera, stage as THREE.Scene), wait);
+    } finally {
+      askedFor = "";
+    }
     // (that gathered the lights of what it was told they are drawn in)
     this.gatheredFor(stage, 0, camera.layers.mask);
     // These kinds of draw are with the card now, each with the builds it is drawn with: the one the renderer
