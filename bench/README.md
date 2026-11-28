@@ -63,3 +63,18 @@ The code editor is hidden unless its tab is open, and does nothing while it is. 
 edits, to time them with the design's text on show.
 
 To compare two versions, build each in its own worktree on its own port and run them turn about.
+
+## What a shader costs to build
+
+`shadercost.cjs` finds which piece of the parts' shader a graphics card takes its time over. It opens a design in
+the same hooked build, keeps the text of every shader of the parts the view asks for, and then has the card build
+them one at a time in a page with nothing else going on: each as it is, and the first of them with one piece of
+Kerf's additions taken out each time (the finish detail, the making marks, the noise, the widths taken with
+`fwidth`, and so on). The time a build loses when a piece is gone is what that piece costs.
+
+```
+node bench/shadercost.cjs http://localhost:5302/ bench/designs/robot-dog.kerf cost.json
+```
+
+It also writes the first shader's text beside the results (`cost.frag`, `cost.vert`). With software graphics the
+times mean nothing; run it on the card in question.
