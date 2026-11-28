@@ -68,6 +68,8 @@ export interface PartUniforms {
   /** shared by every part: the set's fill light without its shadow-casting panels (StudioEnvironments.fill), and whether to use it */
   tFillEnv: { value: THREE.Texture | null };
   uFillOn: { value: number };
+  /** shared by every part: the block of random values the finishes' noise is read from (noiseValues) */
+  tNoise: { value: THREE.Data3DTexture | null };
 }
 
 /** One for all parts (see PartUniforms.uBevelPx): the view sets it when its size or lens changes. */
@@ -86,6 +88,7 @@ export function setBevelPixel(camera: THREE.PerspectiveCamera, heightPx: number)
 }
 
 export function partUniforms(): PartUniforms {
+  NOISE_TEX.value ??= noiseTexture();
   return {
     uDetail: { value: new THREE.Vector4() },
     uTint2: { value: new THREE.Color() },
@@ -116,6 +119,7 @@ export function partUniforms(): PartUniforms {
     uKBox1: { value: new THREE.Vector3(1, 1, 1) },
     tFillEnv: FILL_ENV,
     uFillOn: FILL_ON,
+    tNoise: NOISE_TEX,
   };
 }
 
@@ -136,40 +140,103 @@ export function plyLayout(min: [number, number, number], max: [number, number, n
   return [thin, grain, min[thin], t > 0 ? t / n : 0];
 }
 
+/** How many cells the noise's block of values is along each side (a power of two: a place is found in it by its low bits). */
+export const NOISE_N = 64;
+
+/**
+ * kHash below, as the graphics card works it out in single precision: the random value at a corner of the noise's
+ * grid.
+ */
+export function noiseHash(x: number, y: number, z: number): number {
+  const f = Math.fround;
+  const part = (v: number, add: number) => {
+    const t = f(f(v * f(0.3183099)) + f(add));
+    return f(f(t - Math.floor(t)) * 17);
+  };
+  const px = part(x, 0.71);
+  const py = part(y, 0.113);
+  const pz = part(z, 0.419);
+  const v = f(f(f(px * py) * pz) * f(f(px + py) + pz));
+  return f(v - Math.floor(v));
+}
+
+/**
+ * The block of random values the finishes' noise is read from: NOISE_N cells a side, repeating. Each cell holds the
+ * values at four of its corners (itself, the next along x, the next along y, the next along both), so a point's eight
+ * corners are two reads: its cell and the one above it.
+ */
+export function noiseValues(): Uint8Array<ArrayBuffer> {
+  const n = NOISE_N;
+  const at = new Uint8Array(n * n * n);
+  for (let z = 0; z < n; z++) for (let y = 0; y < n; y++) for (let x = 0; x < n; x++) at[(z * n + y) * n + x] = Math.round(noiseHash(x, y, z) * 255);
+  const data = new Uint8Array(n * n * n * 4);
+  const m = n - 1;
+  for (let z = 0; z < n; z++) {
+    for (let y = 0; y < n; y++) {
+      for (let x = 0; x < n; x++) {
+        const o = ((z * n + y) * n + x) * 4;
+        const x1 = (x + 1) & m;
+        const y1 = (y + 1) & m;
+        data[o] = at[(z * n + y) * n + x];
+        data[o + 1] = at[(z * n + y) * n + x1];
+        data[o + 2] = at[(z * n + y1) * n + x];
+        data[o + 3] = at[(z * n + y1) * n + x1];
+      }
+    }
+  }
+  return data;
+}
+
+/** One for all parts: the noise's block of values (noiseValues), made when the first part's material is. */
+export const NOISE_TEX = { value: null as THREE.Data3DTexture | null };
+
+function noiseTexture(): THREE.Data3DTexture {
+  const t = new THREE.Data3DTexture(noiseValues(), NOISE_N, NOISE_N, NOISE_N);
+  t.format = THREE.RGBAFormat;
+  t.type = THREE.UnsignedByteType;
+  t.minFilter = THREE.NearestFilter;
+  t.magFilter = THREE.NearestFilter;
+  t.wrapS = t.wrapT = t.wrapR = THREE.RepeatWrapping;
+  t.unpackAlignment = 1;
+  t.needsUpdate = true;
+  return t;
+}
+
+// The noise the finishes are made of: a random value at every corner of a grid of whole numbers, blended between.
+// The corners' values are read from a block of them (tNoise, see noiseValues), four to a read. They were worked out
+// here with kHash, eight to a call, and with some 26 calls in a part's shader that was two thirds of what Direct3D's
+// compiler took over it (1.3 s of 1.9 s on an RX 7800 XT). The reads name their cell and level themselves
+// (texelFetch), so they are no trouble inside a branch.
 const NOISE = /* glsl */ `
+uniform highp sampler3D tNoise;
 float kHash(vec3 p) {
   p = fract(p * 0.3183099 + vec3(0.71, 0.113, 0.419));
   p *= 17.0;
   return fract(p.x * p.y * p.z * (p.x + p.y + p.z));
 }
 float kNoise(vec3 x) {
-  vec3 i = floor(x);
-  vec3 f = fract(x);
+  vec3 fl = floor(x);
+  vec3 f = x - fl;
   f = f * f * (3.0 - 2.0 * f);
-  return mix(mix(mix(kHash(i), kHash(i + vec3(1.0, 0.0, 0.0)), f.x),
-                 mix(kHash(i + vec3(0.0, 1.0, 0.0)), kHash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
-             mix(mix(kHash(i + vec3(0.0, 0.0, 1.0)), kHash(i + vec3(1.0, 0.0, 1.0)), f.x),
-                 mix(kHash(i + vec3(0.0, 1.0, 1.0)), kHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+  ivec3 i = ivec3(fl) & ${NOISE_N - 1};
+  // (x, y), (x + 1, y), (x, y + 1), (x + 1, y + 1) of this level and the next, blended between the levels first
+  vec4 c = mix(texelFetch(tNoise, i, 0), texelFetch(tNoise, ivec3(i.xy, (i.z + 1) & ${NOISE_N - 1}), 0), f.z);
+  vec2 d = mix(c.xz, c.yw, f.x);
+  return mix(d.x, d.y, f.y);
 }
 // kNoise with how fast it changes along x and y: (value, d/dx, d/dy)
 vec3 kNoiseG(vec3 x) {
-  vec3 i = floor(x);
-  vec3 f = fract(x);
+  vec3 fl = floor(x);
+  vec3 f = x - fl;
   vec3 u = f * f * (3.0 - 2.0 * f);
   vec3 du = 6.0 * f * (1.0 - f);
-  float a = kHash(i);
-  float b = kHash(i + vec3(1.0, 0.0, 0.0));
-  float c = kHash(i + vec3(0.0, 1.0, 0.0));
-  float d = kHash(i + vec3(1.0, 1.0, 0.0));
-  float e = kHash(i + vec3(0.0, 0.0, 1.0));
-  float g = kHash(i + vec3(1.0, 0.0, 1.0));
-  float h = kHash(i + vec3(0.0, 1.0, 1.0));
-  float k = kHash(i + vec3(1.0, 1.0, 1.0));
-  float lo = mix(mix(a, b, u.x), mix(c, d, u.x), u.y);
-  float hi = mix(mix(e, g, u.x), mix(h, k, u.x), u.y);
-  float sx = mix(mix(b - a, d - c, u.y), mix(g - e, k - h, u.y), u.z);
-  float sy = mix(mix(c, d, u.x) - mix(a, b, u.x), mix(h, k, u.x) - mix(e, g, u.x), u.z);
-  return vec3(mix(lo, hi, u.z), sx * du.x, sy * du.y);
+  ivec3 i = ivec3(fl) & ${NOISE_N - 1};
+  vec4 c = mix(texelFetch(tNoise, i, 0), texelFetch(tNoise, ivec3(i.xy, (i.z + 1) & ${NOISE_N - 1}), 0), u.z);
+  vec2 d = mix(c.xz, c.yw, u.x);
+  // along x: the far corners less the near ones; along y the same
+  float sx = mix(c.y - c.x, c.w - c.z, u.y);
+  float sy = d.y - d.x;
+  return vec3(mix(d.x, d.y, u.y), sx * du.x, sy * du.y);
 }
 `;
 
@@ -246,9 +313,10 @@ flat varying float vThreadCode;
 varying vec3 vThread;
 // How the part's own point (kPx, kPy), the view's (kVx, kVy) and a thread's place change from this pixel to the next
 // across and down, with kFw and kThW the widths of the first and last (their fwidth). Taken once at the top of main
-// and nowhere else: Direct3D's compiler takes seconds over a width asked for inside a branch, which it has to work
-// free of the branch first, and the parts' shader asked for some twenty. Everything below works its widths out from
-// these: kW for a value that changes by g for each mm along the part's axes.
+// and nowhere else: a width asked for inside a branch is one Direct3D's compiler has to work free of the branch
+// first, which has broken a shader of this app before (the stress results', PR #185), and the parts' shader asked
+// for some twenty. (It did not make this shader quicker to build: that time is the noise's, see kNoise.) Everything
+// below works its widths out from these: kW for a value that changes by g for each mm along the part's axes.
 vec3 kPx;
 vec3 kPy;
 vec3 kFw;
@@ -784,7 +852,7 @@ vThread = aThread.yzw;`,
   };
   // a mesh without threads has no aThread: its default, zero, draws none (whatever another program left at its slot)
   (mat as unknown as { defaultAttributeValues: Record<string, number[]> }).defaultAttributeValues = { aThread: [0, 0, 0, 0], aBevel: [0, 0, 0, 0] };
-  mat.customProgramCacheKey = () => "kerf-part-13";
+  mat.customProgramCacheKey = () => "kerf-part-14";
 }
 
 /**

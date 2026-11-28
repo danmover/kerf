@@ -70,7 +70,9 @@ To compare two versions, build each in its own worktree on its own port and run 
 the same hooked build, keeps the text of every shader of the parts the view asks for, and then has the card build
 them one at a time in a page with nothing else going on: each as it is, and the first of them with one piece of
 Kerf's additions taken out each time (the finish detail, the making marks, the noise, the widths taken with
-`fwidth`, and so on). The time a build loses when a piece is gone is what that piece costs.
+`fwidth`, and so on). The time a build loses when a piece is gone is what that piece costs. One line puts the
+noise back to how it was worked out before its values were read from a block of them (a hash for each corner),
+which is what that change saved: on an RX 7800 XT the noise was 1.3 s of the 1.9 s a build took.
 
 ```
 node bench/shadercost.cjs http://localhost:5302/ bench/designs/robot-dog.kerf cost.json

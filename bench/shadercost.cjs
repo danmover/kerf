@@ -50,6 +50,25 @@ const noWidths = (src, names) => {
   return out.slice(0, at.start) + FW + out.slice(at.start);
 };
 
+/** The function's body replaced by `text`, where the shader has the function. */
+const rebody = (src, name, text) => { const s = span(src, name); return s ? src.slice(0, s.open) + text + src.slice(s.end) : src; };
+// The noise as it was before its values were read from a block of them (tNoise): each of a point's eight corners
+// worked out with a hash. For what the block saves, on the same shader in the same run.
+const HASH_NOISE = `{
+  vec3 i = floor(x); vec3 f = fract(x); f = f * f * (3.0 - 2.0 * f);
+  return mix(mix(mix(kHash(i), kHash(i + vec3(1.0, 0.0, 0.0)), f.x), mix(kHash(i + vec3(0.0, 1.0, 0.0)), kHash(i + vec3(1.0, 1.0, 0.0)), f.x), f.y),
+             mix(mix(kHash(i + vec3(0.0, 0.0, 1.0)), kHash(i + vec3(1.0, 0.0, 1.0)), f.x), mix(kHash(i + vec3(0.0, 1.0, 1.0)), kHash(i + vec3(1.0, 1.0, 1.0)), f.x), f.y), f.z);
+}`;
+const HASH_NOISE_G = `{
+  vec3 i = floor(x); vec3 f = fract(x); vec3 u = f * f * (3.0 - 2.0 * f); vec3 du = 6.0 * f * (1.0 - f);
+  float a = kHash(i); float b = kHash(i + vec3(1.0, 0.0, 0.0)); float c = kHash(i + vec3(0.0, 1.0, 0.0)); float d = kHash(i + vec3(1.0, 1.0, 0.0));
+  float e = kHash(i + vec3(0.0, 0.0, 1.0)); float g = kHash(i + vec3(1.0, 0.0, 1.0)); float h = kHash(i + vec3(0.0, 1.0, 1.0)); float k = kHash(i + vec3(1.0, 1.0, 1.0));
+  float lo = mix(mix(a, b, u.x), mix(c, d, u.x), u.y); float hi = mix(mix(e, g, u.x), mix(h, k, u.x), u.y);
+  float sx = mix(mix(b - a, d - c, u.y), mix(g - e, k - h, u.y), u.z);
+  float sy = mix(mix(c, d, u.x) - mix(a, b, u.x), mix(h, k, u.x) - mix(e, g, u.x), u.z);
+  return vec3(mix(lo, hi, u.z), sx * du.x, sy * du.y);
+}`;
+
 /** The parts' shader with a piece of Kerf's additions taken out, by name. */
 const VARIANTS = [
   ['as it is', (s) => s],
@@ -57,6 +76,7 @@ const VARIANTS = [
   ['no making marks (kMake)', (s) => stub(s, 'kMake', 'vec3(0.0)')],
   ['no finish detail or making marks', (s) => stub(stub(s, 'kDetail', 'vec3(0.0)'), 'kMake', 'vec3(0.0)')],
   ['noise a constant (kNoise)', (s) => stubIf(stub(s, 'kNoise', '0.5'), 'kNoiseG', 'vec3(0.5, 0.0, 0.0)')],
+  ['noise worked out with a hash, as it was before its values were read from a block', (s) => rebody(rebody(s, 'kNoise', HASH_NOISE), 'kNoiseG', HASH_NOISE_G)],
   ['no widths taken in finish detail and making marks (fwidth)', (s) => noWidths(s, ['kDetail', 'kMake'])],
   ['finish detail of one kind only (grain), no making marks', (s) => swap(stub(s, 'kMake', 'vec3(0.0)'), 'int kind = int(uDetail.x + 0.5);', 'int kind = 3;')],
   ['finish detail of no kind, no making marks', (s) => swap(swap(s, 'int kind = int(uDetail.x + 0.5);', 'int kind = 0;'), 'int mk = int(uMake.x + 0.5);', 'int mk = 0;')],
