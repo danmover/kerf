@@ -626,16 +626,18 @@ export function setSeeThrough(mat: THREE.Material & { map?: THREE.Texture | null
 }
 
 /**
- * A trial, on with `localStorage kerf.debug.oneShader = 1`: every part's shader has a clear coat, a sheen and a grain
- * in it, used or not, so that parts of every finish share one build where they now have one for each mix of the
- * three. A layer a finish does not have is given the least there is of it, as rough as it goes, which adds under a
- * millionth to the picture, and a finish with no grain keeps a plain finish's highlights (`LIGHTS_PARS`).
+ * Every part's shader has a clear coat, a sheen and a grain in it, used or not, so that parts of every finish share
+ * one build where they would have one for each mix of the three. The parts' shader is by far the longest build a
+ * graphics card is given (seconds each with Direct3D), and a design with five mixes of finishes waited for five of
+ * them before its first whole picture. A layer a finish does not have is given the least there is of it, as rough
+ * as it goes, which adds under a millionth to the picture, and a finish with no grain keeps a plain finish's
+ * highlights (`LIGHTS_PARS`). `localStorage kerf.debug.oneShader = 0` gives each mix its own build again.
  */
-const ALL_IN_ONE = (() => {
+export const ALL_IN_ONE = (() => {
   try {
-    return typeof localStorage !== "undefined" && localStorage.getItem("kerf.debug.oneShader") === "1";
+    return typeof localStorage === "undefined" || localStorage.getItem("kerf.debug.oneShader") !== "0";
   } catch {
-    return false; // storage blocked
+    return true; // storage blocked
   }
 })();
 const LEAST = 1e-6;

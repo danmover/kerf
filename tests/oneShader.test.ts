@@ -5,7 +5,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import * as THREE from "three";
-import { cutsOf, NO_CUT, partUniforms, patchPartMaterial, setSeeThrough } from "../src/ui/viewport/render/partShader";
+import { ALL_IN_ONE, applyAppearance, applyMake, cutsOf, NO_CUT, partUniforms, patchPartMaterial, setSeeThrough } from "../src/ui/viewport/render/partShader";
+import { appearanceFor, Make } from "../src/ui/viewport/render/appearance";
 
 /** whether the renderer takes its shader for a solid material, as three.js r169 decides it (see the last test) */
 const solidShader = (m: THREE.Material) => m.transparent === false && m.blending === THREE.NormalBlending && m.alphaToCoverage === false;
@@ -101,7 +102,65 @@ describe("a part's cutting planes", () => {
   });
 });
 
-describe("a finish with a grain in its shader and none to show (the trial of one shader for every finish)", () => {
+describe("one shader for parts of every finish", () => {
+  // the finishes of bench/designs/finishes.kerf: every mix of clear coat, sheen and grain there is among them
+  const finishes: [string, string | undefined][] = [
+    ["PLA", undefined],
+    ["ABS", "matte"],
+    ["ABS", "textured"],
+    ["ABS", "gloss"],
+    ["Aluminum 6061", "machined"],
+    ["Aluminum 6061", "brushed"],
+    ["Aluminum 6061", "anodized"],
+    ["Aluminum 6061", "bead-blasted"],
+    ["Stainless 304", "machined"],
+    ["Steel", "black-oxide"],
+    ["Carbon fiber", "gloss"],
+    ["Wood", "varnished"],
+    ["Wood", "raw"],
+    ["Polyurethane", undefined],
+    ["Silicone", undefined],
+  ];
+  /** what of a material the renderer picks its shader by, as three.js r169 does (see the last tests) */
+  const layers = (m: THREE.MeshPhysicalMaterial) => [m.clearcoat > 0, m.sheen > 0, m.anisotropy > 0, m.iridescence > 0, m.transmission > 0].join();
+  const made = (material: string, finish: string | undefined, make = Make.None) => {
+    const look = appearanceFor(material, finish, "#8090a0");
+    const mat = new THREE.MeshPhysicalMaterial();
+    const u = partUniforms();
+    applyAppearance(mat, u, look);
+    applyMake(mat, u, look, make, 0, null);
+    return { mat, look };
+  };
+
+  it("is on unless turned off", () => {
+    expect(ALL_IN_ONE).toBe(true);
+  });
+
+  it("gives every finish a clear coat, a sheen and a grain, so the renderer picks one shader for all of them", () => {
+    const mixes = new Set(finishes.map(([m, f]) => layers(made(m, f).mat)));
+    expect([...mixes]).toEqual(["true,true,true,false,false"]);
+    // without it these finishes are of several mixes: that many builds of the parts' shader
+    expect(new Set(finishes.map(([m, f]) => `${appearanceFor(m, f, "#8090a0").clearcoat > 0},${appearanceFor(m, f, "#8090a0").sheen > 0},${appearanceFor(m, f, "#8090a0").aniso > 0}`)).size).toBeGreaterThan(2);
+  });
+
+  it("keeps a layer a finish has as it is, and gives one it has not the least there is, as rough as it goes", () => {
+    for (const [m, f] of finishes) {
+      const { mat, look } = made(m, f);
+      if (look.clearcoat > 0) expect([mat.clearcoat, mat.clearcoatRoughness]).toEqual([look.clearcoat, look.clearcoatRoughness]);
+      else expect([mat.clearcoat, mat.clearcoatRoughness]).toEqual([1e-6, 1]);
+      if (look.sheen > 0) expect([mat.sheen, mat.sheenRoughness]).toEqual([look.sheen, look.sheenRoughness]);
+      else expect([mat.sheen, mat.sheenRoughness]).toEqual([1e-6, 1]);
+      expect(mat.anisotropy).toBe(look.aniso > 0 ? look.aniso : 1e-6);
+    }
+  });
+
+  it("a turned part's grain is the turning's, whatever its finish", () => {
+    expect(made("ABS", "matte", Make.Turned).mat.anisotropy).toBe(0.55);
+    expect(made("ABS", "matte").mat.anisotropy).toBe(1e-6);
+  });
+});
+
+describe("a finish with a grain in its shader and none to show", () => {
   const fragment = () => {
     const mat = new THREE.MeshPhysicalMaterial();
     patchPartMaterial(mat, partUniforms());
@@ -145,5 +204,11 @@ describe("what this rests on in the renderer (three.js r169)", () => {
 
   it("builds a shader by how many planes cut a material, not by which", () => {
     expect(programs).toContain("numClippingPlanes: clipping.numPlanes");
+  });
+
+  it("picks a shader with a clear coat, a sheen or a grain by whether the material has any at all", () => {
+    expect(programs).toContain("const HAS_ANISOTROPY = material.anisotropy > 0;");
+    expect(programs).toContain("const HAS_CLEARCOAT = material.clearcoat > 0;");
+    expect(programs).toContain("const HAS_SHEEN = material.sheen > 0;");
   });
 });

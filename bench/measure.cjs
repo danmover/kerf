@@ -62,8 +62,9 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
   await ctx.addInitScript(([everyCall, atOnce, oneShader]) => {
     // ATONCE=<n>|all: how many shader builds the card is given at once (the app's own choice when not set)
     try { if (atOnce) localStorage.setItem('kerf.debug.shadersAtOnce', atOnce); else localStorage.removeItem('kerf.debug.shadersAtOnce'); } catch {}
-    // ONESHADER=1: the trial of one shader for parts of every finish (each finish has its own when not set)
-    try { if (oneShader) localStorage.setItem('kerf.debug.oneShader', '1'); else localStorage.removeItem('kerf.debug.oneShader'); } catch {}
+    // ONESHADER=0: a shader for each mix of finishes, as it was before parts of every finish shared one
+    // (ONESHADER=1 turns the sharing on in a build from when it was a trial)
+    try { if (oneShader) localStorage.setItem('kerf.debug.oneShader', oneShader); else localStorage.removeItem('kerf.debug.oneShader'); } catch {}
     try { if (!localStorage.getItem('kerf.settings.v1')) localStorage.setItem('kerf.settings.v1', JSON.stringify({ onboarded: true, termsAccepted: '2026-10-draft-2' })); } catch {}
     // every stop of the page, and every call into the graphics card that waited, with the phase it happened in
     const M = (window.__m = { phase: 'load', longs: [], waits: [], links: 0, lost: 0, frames: [] });
@@ -92,7 +93,7 @@ function busiest(p, minMs = +(process.env.STRETCH || 150), keep = 14, top = 18) 
     const every = Object.getOwnPropertyNames(P).filter((n) => n !== 'constructor' && n !== 'linkProgram' && typeof Object.getOwnPropertyDescriptor(P, n).value === 'function');
     for (const n of everyCall ? every : listed)
       wrap(n, (ms, a) => { if (ms >= 8) M.waits.push([M.phase, n === 'readPixels' ? (typeof a[6] === 'number' ? 'readPixels to a buffer' : 'readPixels to memory') : n, Math.round(ms)]); });
-  }, [!!process.env.GLALL, process.env.ATONCE || '', process.env.ONESHADER === '1']);
+  }, [!!process.env.GLALL, process.env.ATONCE || '', /^[01]$/.test(process.env.ONESHADER || '') ? process.env.ONESHADER : '']);
   const page = kept ? (ctx.pages()[0] ?? (await ctx.newPage())) : await ctx.newPage();
   const errs = [];
   page.on('pageerror', (e) => errs.push('PAGEERROR ' + String(e).slice(0, 300)));

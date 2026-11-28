@@ -97,8 +97,8 @@ const salted = (src, to) => {
   const browser = await chromium.launch(launch);
   const ctx = await browser.newContext({ viewport: { width: 1600, height: 900 } });
   await ctx.addInitScript(([oneShader]) => {
-    // ONESHADER=1: the trial of one shader for parts of every finish, as in measure.cjs
-    try { if (oneShader) localStorage.setItem('kerf.debug.oneShader', '1'); else localStorage.removeItem('kerf.debug.oneShader'); } catch {}
+    // ONESHADER=0 or 1: a shader for each mix of finishes, or one for all, as in measure.cjs
+    try { if (oneShader) localStorage.setItem('kerf.debug.oneShader', oneShader); else localStorage.removeItem('kerf.debug.oneShader'); } catch {}
     try { if (!localStorage.getItem('kerf.settings.v1')) localStorage.setItem('kerf.settings.v1', JSON.stringify({ onboarded: true, termsAccepted: '2026-10-draft-2' })); } catch {}
     // the text of every shader of the parts the view hands the card, with the vertex shader that came before it
     const P = WebGL2RenderingContext.prototype;
@@ -112,7 +112,7 @@ const salted = (src, to) => {
       } catch {}
       return real.call(this, shader, src);
     };
-  }, [process.env.ONESHADER === '1']);
+  }, [/^[01]$/.test(process.env.ONESHADER || '') ? process.env.ONESHADER : '']);
   const page = await ctx.newPage();
   page.setDefaultTimeout(1_800_000);
   await page.goto(url);
