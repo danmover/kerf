@@ -32,6 +32,8 @@ function stub(src, name, value) {
   if (!s) throw new Error(`no function ${name} in the shader`);
   return src.slice(0, s.open) + `{ return ${value}; }` + src.slice(s.end);
 }
+/** The same where the shader has the function, and the shader as it is where it has not. */
+const stubIf = (src, name, value) => (span(src, name) ? stub(src, name, value) : src);
 /** `edit` applied inside the function only. */
 function inside(src, name, edit) {
   const s = span(src, name);
@@ -40,10 +42,10 @@ function inside(src, name, edit) {
 }
 const swap = (src, from, to) => { if (!src.includes(from)) throw new Error(`the shader has no "${from}"`); return src.split(from).join(to); };
 // a width that is no derivative: what a piece costs with its fwidth calls gone but all else the same
-const FW = 'float kFw(float x) { return 0.01 + 0.0 * x; }\nvec2 kFw(vec2 x) { return vec2(0.01) + 0.0 * x; }\nvec3 kFw(vec3 x) { return vec3(0.01) + 0.0 * x; }\n';
+const FW = 'float kNoWidth(float x) { return 0.01 + 0.0 * x; }\nvec2 kNoWidth(vec2 x) { return vec2(0.01) + 0.0 * x; }\nvec3 kNoWidth(vec3 x) { return vec3(0.01) + 0.0 * x; }\n';
 const noWidths = (src, names) => {
   let out = src;
-  for (const n of names) out = inside(out, n, (body) => body.split('fwidth(').join('kFw('));
+  for (const n of names) out = inside(out, n, (body) => body.split('fwidth(').join('kNoWidth('));
   const at = span(out, 'kNoise');
   return out.slice(0, at.start) + FW + out.slice(at.start);
 };
@@ -54,7 +56,7 @@ const VARIANTS = [
   ['no finish detail (kDetail)', (s) => stub(s, 'kDetail', 'vec3(0.0)')],
   ['no making marks (kMake)', (s) => stub(s, 'kMake', 'vec3(0.0)')],
   ['no finish detail or making marks', (s) => stub(stub(s, 'kDetail', 'vec3(0.0)'), 'kMake', 'vec3(0.0)')],
-  ['noise a constant (kNoise)', (s) => stub(s, 'kNoise', '0.5')],
+  ['noise a constant (kNoise)', (s) => stubIf(stub(s, 'kNoise', '0.5'), 'kNoiseG', 'vec3(0.5, 0.0, 0.0)')],
   ['no widths taken in finish detail and making marks (fwidth)', (s) => noWidths(s, ['kDetail', 'kMake'])],
   ['finish detail of one kind only (grain), no making marks', (s) => swap(stub(s, 'kMake', 'vec3(0.0)'), 'int kind = int(uDetail.x + 0.5);', 'int kind = 3;')],
   ['finish detail of no kind, no making marks', (s) => swap(swap(s, 'int kind = int(uDetail.x + 0.5);', 'int kind = 0;'), 'int mk = int(uMake.x + 0.5);', 'int mk = 0;')],
@@ -65,7 +67,7 @@ const VARIANTS = [
   ['none of the above', (s) => {
     let o = s;
     for (const [n, v] of [['kDetail', 'vec3(0.0)'], ['kMake', 'vec3(0.0)'], ['kNoise', '0.5'], ['kThread', 'vec2(0.0)'], ['kChangedHere', '1.0'], ['kSweepAt', '0.0'], ['kPerturb', 'n'], ['kFillIrradiance', 'getIBLIrradiance(normal)']]) o = stub(o, n, v);
-    return o;
+    return stubIf(o, 'kNoiseG', 'vec3(0.5, 0.0, 0.0)');
   }],
   ['as it is, again', (s) => s],
 ];
@@ -127,8 +129,10 @@ const salted = (src, to) => {
   // a page with nothing in it but a canvas: one build at a time, timed from the text to the card's answer
   const bench = await ctx.newPage();
   bench.setDefaultTimeout(1_800_000);
-  await bench.goto(url.replace(/\/?$/, '/') + 'favicon.ico').catch(() => {});
-  await bench.setContent('<canvas id="c" width="64" height="64"></canvas>');
+  // (a page of the app's own address that the browser is handed here, so nothing of the app loads into it)
+  const blank = url.replace(/\/?$/, '/') + 'shadercost-blank';
+  await ctx.route(blank, (route) => route.fulfill({ status: 200, contentType: 'text/html', body: '<!doctype html><title>shader cost</title><canvas id="c" width="64" height="64"></canvas>' }));
+  await bench.goto(blank);
   const gpu = await bench.evaluate(() => { const gl = (window.__gl = document.getElementById('c').getContext('webgl2')); const ext = gl && gl.getExtension('WEBGL_debug_renderer_info'); return ext ? gl.getParameter(ext.UNMASKED_RENDERER_WEBGL) : 'no webgl2'; });
   const build = (vs, fsText) => bench.evaluate(([vs, fsText]) => {
     const gl = window.__gl;
